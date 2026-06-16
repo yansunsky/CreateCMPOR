@@ -1,0 +1,25 @@
+# Gradle
+.gradle/
+build/
+out/
+run/
+runs/
+run-data/
+
+# 依赖参考源码（不发布他人代码）
+reference/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+eclipse/
+
+# 本地依赖 jar（运行测试用，不纳入版本控制）
+libs/
+
+# 系统
+*.log

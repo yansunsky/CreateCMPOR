@@ -1,0 +1,43 @@
+modLoader = "javafml"
+loaderVersion = "${loader_version_range}"
+license = "${mod_license}"
+
+[[mods]]
+modId = "${mod_id}"
+version = "${mod_version}"
+displayName = "${mod_name}"
+authors = "${mod_authors}"
+description = '''
+${mod_description}
+'''
+
+# === 依赖声明 ===
+[[dependencies.${mod_id}]]
+modId = "neoforge"
+type = "required"
+versionRange = "${neo_version_range}"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.${mod_id}]]
+modId = "minecraft"
+type = "required"
+versionRange = "${minecraft_version_range}"
+ordering = "NONE"
+side = "BOTH"
+
+# Create：必需（本模组复用其应力系统与渲染）
+[[dependencies.${mod_id}]]
+modId = "create"
+type = "required"
+versionRange = "[6.0,)"
+ordering = "AFTER"
+side = "BOTH"
+
+# CompactMachinesPOR：必需（集成目标）
+[[dependencies.${mod_id}]]
+modId = "compactmachinespor"
+type = "required"
+versionRange = "[0.9,)"
+ordering = "AFTER"
+side = "BOTH"

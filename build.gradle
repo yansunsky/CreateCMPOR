@@ -1,0 +1,138 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev' version '2.0.141'
+    id 'idea'
+}
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = mod_id
+}
+
+// Minecraft 1.21.1 面向 Java 21
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+repositories {
+    mavenCentral()
+    // Create / Ponder / Flywheel
+    maven { url = 'https://maven.createmod.net' }
+    // Registrate
+    maven { url = 'https://maven.ithundxr.dev/snapshots' }
+    // CurseForge（CompactMachines 等）
+    exclusiveContent {
+        forRepository { maven { url = 'https://cursemaven.com' } }
+        filter { includeGroup 'curse.maven' }
+    }
+    // Modrinth
+    exclusiveContent {
+        forRepository {
+            maven {
+                name = 'Modrinth'
+                url = 'https://api.modrinth.com/maven'
+            }
+        }
+        filter { includeGroup 'maven.modrinth' }
+    }
+    // 本地 jar（CMPOR 运行版）
+    flatDir { dirs "${projectDir}/libs" }
+}
+
+neoForge {
+    version = project.neo_version
+
+    parchment {
+        mappingsVersion = project.parchment_mappings_version
+        minecraftVersion = project.parchment_minecraft_version
+    }
+
+    runs {
+        client {
+            client()
+            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+            // 无 GPU 环境（Windows Server）使用 Mesa llvmpipe 软件渲染：
+            // 指定 lwjgl 加载本地 Mesa 的 opengl32.dll，并强制软件渲染
+            systemProperty 'org.lwjgl.opengl.libname', file("${projectDir}/mesa/opengl32.dll").getAbsolutePath()
+            environment 'GALLIUM_DRIVER', 'llvmpipe'
+            environment 'LIBGL_ALWAYS_SOFTWARE', '1'
+            environment 'MESA_GL_VERSION_OVERRIDE', '4.6'
+            environment 'MESA_GLSL_VERSION_OVERRIDE', '460'
+            // 让 opengl32.dll 能找到同目录的 libgallium_wgl.dll
+            environment 'PATH', file("${projectDir}/mesa").getAbsolutePath() + java.io.File.pathSeparator + System.getenv('PATH')
+        }
+        data {
+            data()
+            programArguments.addAll '--mod', project.mod_id, '--all',
+                    '--output', file('src/generated/resources/').getAbsolutePath(),
+                    '--existing', file('src/main/resources/').getAbsolutePath()
+        }
+        configureEach {
+            systemProperty 'forge.logging.markers', 'REGISTRIES'
+            logLevel = org.slf4j.event.Level.DEBUG
+        }
+    }
+
+    mods {
+        "${mod_id}" {
+            sourceSet(sourceSets.main)
+        }
+    }
+}
+
+// localRuntime：运行测试时存在，但不作为本模组对外暴露的依赖
+configurations {
+    runtimeClasspath.extendsFrom localRuntime
+}
+
+dependencies {
+    // === Create（编译 + 运行）===
+    implementation("com.simibubi.create:create-${minecraft_version}:${create_version}:slim") {
+        transitive = false
+    }
+    implementation("net.createmod.ponder:ponder-neoforge:${ponder_version}+mc${minecraft_version}")
+    implementation("com.tterrag.registrate:Registrate:${registrate_version}")
+    compileOnly("dev.engine-room.flywheel:flywheel-neoforge-api-${minecraft_version}:${flywheel_version}")
+    runtimeOnly("dev.engine-room.flywheel:flywheel-neoforge-${minecraft_version}:${flywheel_version}")
+
+    // === CompactMachines（运行测试，CMPOR 前置）===
+    localRuntime "curse.maven:compact-machines-224218:${compactmachines_file}"
+
+    // === CompactMachinesPOR（运行测试，使用本地 jar）===
+    localRuntime files("${projectDir}/libs/compactmachinespor.jar")
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+// 处理 templates 中的 neoforge.mods.toml 占位符
+var generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
+    var replaceProperties = [
+            minecraft_version      : minecraft_version,
+            minecraft_version_range: minecraft_version_range,
+            neo_version            : neo_version,
+            neo_version_range      : neo_version_range,
+            loader_version_range   : loader_version_range,
+            mod_id                 : mod_id,
+            mod_name               : mod_name,
+            mod_license            : mod_license,
+            mod_version            : mod_version,
+            mod_authors            : mod_authors,
+            mod_description        : mod_description,
+            create_version         : create_version,
+    ]
+    inputs.properties replaceProperties
+    expand replaceProperties
+    from 'src/main/templates'
+    into 'build/generated/sources/modMetadata'
+}
+sourceSets.main.resources.srcDir generateModMetadata
+neoForge.ideSyncTask generateModMetadata
+
+idea {
+    module {
+        downloadSources = true
+        downloadJavadoc = true
+    }
+}
