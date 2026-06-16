@@ -61,12 +61,22 @@ public class StressIOBlock extends DirectionalKineticBlock implements IBE<Stress
     protected InteractionResult useWithoutItem(BlockState state, Level level, BlockPos pos, Player player,
                                                BlockHitResult hit) {
         if (!level.isClientSide()) {
+            // 生产模式：仅由评估激活，右键无效
+            if (!com.createcmpor.Config.DEV_MANUAL_ACTIVATION.get()) {
+                player.displayClientMessage(
+                        net.minecraft.network.chat.Component.translatable(
+                                "message.createcmpor.stress_io.auto_only"),
+                        true);
+                return InteractionResult.sidedSuccess(level.isClientSide());
+            }
+            // 开发期：右键手动切换激活
             boolean newActive = !state.getValue(ACTIVE);
             level.setBlock(pos, state.setValue(ACTIVE, newActive), Block.UPDATE_ALL);
             // 状态变化后重新评估发电（让父类的应力源逻辑及时刷新）
             if (level.getBlockEntity(pos) instanceof StressIOBlockEntity be) {
                 be.onActiveChanged();
             }
+            com.createcmpor.CreateCMPOR.LOGGER.debug("[CreateCMPOR] stress_io @{} 手动切换 -> {}", pos, newActive);
             player.displayClientMessage(
                     net.minecraft.network.chat.Component.translatable(
                             newActive ? "message.createcmpor.stress_io.activated"

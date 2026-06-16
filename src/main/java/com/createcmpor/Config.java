@@ -18,6 +18,15 @@ public class Config {
      */
     public static final ModConfigSpec.BooleanValue ENABLE_STRESS_OUTPUT;
 
+    /**
+     * 开发期：是否允许空手右键手动激活/停用应力 IO 方块。
+     * <ul>
+     *     <li>{@code true}（默认，开发期）：保留右键手动切换，便于测试人员激活。</li>
+     *     <li>{@code false}（生产）：仅由 CMPOR 评估自动激活，右键无效。</li>
+     * </ul>
+     */
+    public static final ModConfigSpec.BooleanValue DEV_MANUAL_ACTIVATION;
+
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
 
@@ -28,6 +37,12 @@ public class Config {
                         "true：应力 > 0 时向外提供（输出模式），同时处理 < 0 的输入。",
                         "false：禁止输出，仅在应力 < 0 时从外部吸取，绝不向外提供。")
                 .define("enableStressOutput", true);
+        DEV_MANUAL_ACTIVATION = builder
+                .comment(
+                        "开发期：是否允许空手右键手动激活/停用应力 IO 方块。",
+                        "true（默认，开发期）：保留右键手动切换，便于测试。",
+                        "false（生产）：仅由 CMPOR 评估自动激活，右键无效。")
+                .define("devManualActivation", true);
         builder.pop();
 
         SPEC = builder.build();

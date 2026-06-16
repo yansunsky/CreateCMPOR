@@ -41,3 +41,8 @@ type = "required"
 versionRange = "[0.9,)"
 ordering = "AFTER"
 side = "BOTH"
+
+# Mixin 配置（注入 CMPOR 的 Core.finish / Core.processBlock）
+[[mixins]]
+config = "createcmpor.mixins.json"
+
