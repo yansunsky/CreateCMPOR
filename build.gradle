@@ -51,15 +51,13 @@ neoForge {
         client {
             client()
             systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
-            // 无 GPU 环境（Windows Server）使用 Mesa llvmpipe 软件渲染：
-            // 指定 lwjgl 加载本地 Mesa 的 opengl32.dll，并强制软件渲染
-            systemProperty 'org.lwjgl.opengl.libname', file("${projectDir}/mesa/opengl32.dll").getAbsolutePath()
-            environment 'GALLIUM_DRIVER', 'llvmpipe'
-            environment 'LIBGL_ALWAYS_SOFTWARE', '1'
-            environment 'MESA_GL_VERSION_OVERRIDE', '4.6'
-            environment 'MESA_GLSL_VERSION_OVERRIDE', '460'
-            // 让 opengl32.dll 能找到同目录的 libgallium_wgl.dll
-            environment 'PATH', file("${projectDir}/mesa").getAbsolutePath() + java.io.File.pathSeparator + System.getenv('PATH')
+            // 有 NVIDIA RTX 4060 独显，不需要 Mesa 软件渲染
+            // systemProperty 'org.lwjgl.opengl.libname', file("${projectDir}/mesa/opengl32.dll").getAbsolutePath()
+            // environment 'GALLIUM_DRIVER', 'llvmpipe'
+            // environment 'LIBGL_ALWAYS_SOFTWARE', '1'
+            // environment 'MESA_GL_VERSION_OVERRIDE', '4.6'
+            // environment 'MESA_GLSL_VERSION_OVERRIDE', '460'
+            // environment 'PATH', file("${projectDir}/mesa").getAbsolutePath() + java.io.File.pathSeparator + System.getenv('PATH')
         }
         data {
             data()
