@@ -27,6 +27,12 @@ public class Config {
      */
     public static final ModConfigSpec.BooleanValue DEV_MANUAL_ACTIVATION;
 
+    /**
+     * 应力输出损耗系数（0~1）。应力拓展方块对外输出应力时的损耗：
+     * 实际输出应力 = 工厂可提供应力 ×(1 - stressLossFactor)。
+     */
+    public static final ModConfigSpec.DoubleValue STRESS_LOSS_FACTOR;
+
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
 
@@ -43,6 +49,11 @@ public class Config {
                         "true（默认，开发期）：保留右键手动切换，便于测试。",
                         "false（生产）：仅由 CMPOR 评估自动激活，右键无效。")
                 .define("devManualActivation", true);
+        STRESS_LOSS_FACTOR = builder
+                .comment(
+                        "应力输出损耗系数（0~1，默认 0.1）。",
+                        "应力拓展方块对外输出应力时：实际输出 = 工厂可提供应力 ×(1 - stressLossFactor)。")
+                .defineInRange("stressLossFactor", 0.1, 0.0, 1.0);
         builder.pop();
 
         SPEC = builder.build();

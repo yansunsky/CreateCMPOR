@@ -53,35 +53,38 @@ public class ModBlocks {
      * 代理转发到自身，从而把工厂的 IO 能力拓展到拓展方块处（指向同一底层容器）。
      */
     public static void registerCapabilities(RegisterCapabilitiesEvent event) {
-        // 物品
+        // 物品：转发到链上任一工厂的 handler（联合拓展，返回第一个可用的）
         event.registerBlockEntity(Capabilities.ItemHandler.BLOCK, ModBlockEntities.STRESS_EXTENSION.get(),
                 (be, side) -> {
                     if (be.getLevel() == null || !be.isIoFace(side))
                         return null;
-                    if (be.getBoundFactoryPos() == null)
-                        return null;
-                    return be.getLevel().getCapability(Capabilities.ItemHandler.BLOCK,
-                            be.getBoundFactoryPos(), side);
+                    for (var fp : be.getChainFactories()) {
+                        var h = be.getLevel().getCapability(Capabilities.ItemHandler.BLOCK, fp, side);
+                        if (h != null) return h;
+                    }
+                    return null;
                 });
         // 流体
         event.registerBlockEntity(Capabilities.FluidHandler.BLOCK, ModBlockEntities.STRESS_EXTENSION.get(),
                 (be, side) -> {
                     if (be.getLevel() == null || !be.isIoFace(side))
                         return null;
-                    if (be.getBoundFactoryPos() == null)
-                        return null;
-                    return be.getLevel().getCapability(Capabilities.FluidHandler.BLOCK,
-                            be.getBoundFactoryPos(), side);
+                    for (var fp : be.getChainFactories()) {
+                        var h = be.getLevel().getCapability(Capabilities.FluidHandler.BLOCK, fp, side);
+                        if (h != null) return h;
+                    }
+                    return null;
                 });
         // 能量
         event.registerBlockEntity(Capabilities.EnergyStorage.BLOCK, ModBlockEntities.STRESS_EXTENSION.get(),
                 (be, side) -> {
                     if (be.getLevel() == null || !be.isIoFace(side))
                         return null;
-                    if (be.getBoundFactoryPos() == null)
-                        return null;
-                    return be.getLevel().getCapability(Capabilities.EnergyStorage.BLOCK,
-                            be.getBoundFactoryPos(), side);
+                    for (var fp : be.getChainFactories()) {
+                        var h = be.getLevel().getCapability(Capabilities.EnergyStorage.BLOCK, fp, side);
+                        if (h != null) return h;
+                    }
+                    return null;
                 });
     }
 
