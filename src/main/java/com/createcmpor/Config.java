@@ -48,7 +48,7 @@ public class Config {
                         "开发期：是否允许空手右键手动激活/停用应力 IO 方块。",
                         "true（默认，开发期）：保留右键手动切换，便于测试。",
                         "false（生产）：仅由 CMPOR 评估自动激活，右键无效。")
-                .define("devManualActivation", true);
+                .define("devManualActivation", false);
         STRESS_LOSS_FACTOR = builder
                 .comment(
                         "应力输出损耗系数（0~1，默认 0.1）。",

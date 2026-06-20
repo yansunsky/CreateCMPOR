@@ -47,8 +47,8 @@ public class StressOutputBlockEntity extends KineticBlockEntity {
     public void bindEvaluation(String roomCode) {
         this.roomCode = roomCode;
         setChanged();
-        CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_output @{} 绑定评估 room={} active={} hasNetwork={}",
-                worldPosition, roomCode, isActive(), hasNetwork());
+//        CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_output @{} 绑定评估 room={} active={} hasNetwork={}",
+//                worldPosition, roomCode, isActive(), hasNetwork());
     }
 
     @Override
@@ -60,8 +60,8 @@ public class StressOutputBlockEntity extends KineticBlockEntity {
             return;
         var machine = Core.getMachine(roomCode);
         if (machine == null) {
-            CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_output @{} room={} Core.MACHINES 已移除，停止采样",
-                    worldPosition, roomCode);
+//            CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_output @{} room={} Core.MACHINES 已移除，停止采样",
+//                    worldPosition, roomCode);
             return;
         }
 
@@ -71,8 +71,8 @@ public class StressOutputBlockEntity extends KineticBlockEntity {
 
         KineticNetwork net = getOrCreateNetwork();
         if (net == null) {
-            CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_output @{} room={} 暂无应力网络，跳过本次采样",
-                    worldPosition, roomCode);
+//            CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_output @{} room={} 暂无应力网络，跳过本次采样",
+//                    worldPosition, roomCode);
             return;
         }
 
@@ -80,8 +80,8 @@ public class StressOutputBlockEntity extends KineticBlockEntity {
         float netStress = net.calculateStress();
         float speed = Math.abs(getTheoreticalSpeed());
 
-        CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_output @{} room={} netId={} 采样: netCap={} netStress={} virtualCap=0 speed={}",
-                worldPosition, roomCode, this.network, netCapacity, netStress, speed);
+//        CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_output @{} room={} netId={} 采样: netCap={} netStress={} virtualCap=0 speed={}",
+//                worldPosition, roomCode, this.network, netCapacity, netStress, speed);
 
         StressEvaluationRegistry.record(roomCode, worldPosition.asLong(),
                 new StressEvaluationRegistry.Sample(netCapacity, netStress, 0f, speed,
