@@ -1,0 +1,16 @@
+{
+  "variants": {
+    "facing=down,powered=false": { "model": "create:block/creative_motor/block_vertical", "x": 180 },
+    "facing=down,powered=true":  { "model": "create:block/creative_motor/block_vertical", "x": 180 },
+    "facing=up,powered=false":   { "model": "create:block/creative_motor/block_vertical" },
+    "facing=up,powered=true":    { "model": "create:block/creative_motor/block_vertical" },
+    "facing=north,powered=false":{ "model": "create:block/creative_motor/block", "y": 180 },
+    "facing=north,powered=true": { "model": "create:block/creative_motor/block", "y": 180 },
+    "facing=south,powered=false":{ "model": "create:block/creative_motor/block" },
+    "facing=south,powered=true": { "model": "create:block/creative_motor/block" },
+    "facing=west,powered=false": { "model": "create:block/creative_motor/block", "y": 90 },
+    "facing=west,powered=true":  { "model": "create:block/creative_motor/block", "y": 90 },
+    "facing=east,powered=false": { "model": "create:block/creative_motor/block", "y": 270 },
+    "facing=east,powered=true":  { "model": "create:block/creative_motor/block", "y": 270 }
+  }
+}
