@@ -1,16 +1,16 @@
 {
   "variants": {
-    "facing=down,powered=false":  { "model": "create:block/gauge/base", "x": 180 },
-    "facing=down,powered=true":   { "model": "create:block/gauge/base", "x": 180 },
-    "facing=up,powered=false":    { "model": "create:block/gauge/base" },
-    "facing=up,powered=true":     { "model": "create:block/gauge/base" },
-    "facing=north,powered=false": { "model": "create:block/gauge/base_wall", "x": 90, "y": 270 },
-    "facing=north,powered=true":  { "model": "create:block/gauge/base_wall", "x": 90, "y": 270 },
-    "facing=south,powered=false": { "model": "create:block/gauge/base_wall", "x": 90, "y": 90 },
-    "facing=south,powered=true":  { "model": "create:block/gauge/base_wall", "x": 90, "y": 90 },
-    "facing=west,powered=false":  { "model": "create:block/gauge/base_wall", "y": 180 },
-    "facing=west,powered=true":   { "model": "create:block/gauge/base_wall", "y": 180 },
-    "facing=east,powered=false":  { "model": "create:block/gauge/base_wall" },
-    "facing=east,powered=true":   { "model": "create:block/gauge/base_wall" }
+    "facing=down,powered=false":  { "model": "createcmpor:block/gauge/base", "x": 180 },
+    "facing=down,powered=true":   { "model": "createcmpor:block/gauge/base", "x": 180 },
+    "facing=up,powered=false":    { "model": "createcmpor:block/gauge/base" },
+    "facing=up,powered=true":     { "model": "createcmpor:block/gauge/base" },
+    "facing=north,powered=false": { "model": "createcmpor:block/gauge/base_wall", "x": 90, "y": 270 },
+    "facing=north,powered=true":  { "model": "createcmpor:block/gauge/base_wall", "x": 90, "y": 270 },
+    "facing=south,powered=false": { "model": "createcmpor:block/gauge/base_wall", "x": 90, "y": 90 },
+    "facing=south,powered=true":  { "model": "createcmpor:block/gauge/base_wall", "x": 90, "y": 90 },
+    "facing=west,powered=false":  { "model": "createcmpor:block/gauge/base_wall", "y": 180 },
+    "facing=west,powered=true":   { "model": "createcmpor:block/gauge/base_wall", "y": 180 },
+    "facing=east,powered=false":  { "model": "createcmpor:block/gauge/base_wall" },
+    "facing=east,powered=true":   { "model": "createcmpor:block/gauge/base_wall" }
   }
 }

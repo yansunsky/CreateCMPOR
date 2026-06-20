@@ -1,0 +1,7 @@
+{
+	"parent": "createcmpor:block/encased_shaft/item",
+	"textures": {
+		"casing": "createcmpor:block/andesite_casing",
+		"opening": "createcmpor:block/gearbox"
+	}
+}
