@@ -13,9 +13,9 @@ import com.mojang.serialization.codecs.RecordCodecBuilder;
  *     <li>两者互斥：评估时净值为负→input，净值为正→output。</li>
  * </ul>
  *
- * @param inputSU   需输入的应力值（SU），>=0
+ * @param inputSU   需输入的应力值（实际 SU，已含转速乘法），>=0
  * @param inputRPM  需输入的转速（RPM，绝对值），>=0
- * @param outputSU  可输出的应力值（SU），>=0
+ * @param outputSU  可输出的应力值（实际 SU，已含转速乘法），>=0
  * @param outputRPM 可输出的转速（RPM，绝对值），>=0
  */
 public record StressProfile(float inputSU, float inputRPM, float outputSU, float outputRPM) {
