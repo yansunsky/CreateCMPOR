@@ -47,9 +47,9 @@ public class StressEvaluationRegistry {
         DATA.computeIfAbsent(roomCode, k -> new ConcurrentHashMap<>())
                 .computeIfAbsent(ioPosKey, k -> new ArrayList<>())
                 .add(sample);
-        CreateCMPOR.LOGGER.info("[CreateCMPOR] 应力采样 room={} io={} type={} net={} cap={} stress={} virtual={} speed={}",
-                roomCode, ioPosKey, sample.type(), sample.networkId(),
-                sample.capacity(), sample.stress(), sample.virtualCapacity(), sample.speed());
+//        CreateCMPOR.LOGGER.info("[CreateCMPOR] 应力采样 room={} io={} type={} net={} cap={} stress={} virtual={} speed={}",
+//                roomCode, ioPosKey, sample.type(), sample.networkId(),
+//                sample.capacity(), sample.stress(), sample.virtualCapacity(), sample.speed());
     }
 
     /**
@@ -68,7 +68,7 @@ public class StressEvaluationRegistry {
     public static StressProfile consume(String roomCode) {
         Map<Long, List<Sample>> perIo = DATA.remove(roomCode);
         if (perIo == null || perIo.isEmpty()) {
-            CreateCMPOR.LOGGER.info("[CreateCMPOR] room={} 无应力采样，profile=EMPTY", roomCode);
+//            CreateCMPOR.LOGGER.info("[CreateCMPOR] room={} 无应力采样，profile=EMPTY", roomCode);
             return StressProfile.EMPTY;
         }
 
@@ -130,8 +130,8 @@ public class StressEvaluationRegistry {
             float realCapacity = sCap - totalVirtual;
             float net = realCapacity - sStress;
 
-            CreateCMPOR.LOGGER.info("[CreateCMPOR] room={} net={} 计算: cap={} virtual={} stress={} → realCap={} net={} (speed={})",
-                    roomCode, netId, sCap, totalVirtual, sStress, realCapacity, net, sSpeed);
+//            CreateCMPOR.LOGGER.info("[CreateCMPOR] room={} net={} 计算: cap={} virtual={} stress={} → realCap={} net={} (speed={})",
+//                    roomCode, netId, sCap, totalVirtual, sStress, realCapacity, net, sSpeed);
 
             if (net > 0f) {
                 outputSU += net;
@@ -145,25 +145,25 @@ public class StressEvaluationRegistry {
         float inputRPM = inputSU > 0f ? inputMaxSpeed : 0f;
         float outputRPM = outputSU > 0f ? outputMaxSpeed : 0f;
 
-        CreateCMPOR.LOGGER.info("[CreateCMPOR] room={} 聚合结果: inputSU={} outputSU={} (实际SU)",
-                roomCode, inputSU, outputSU);
+//        CreateCMPOR.LOGGER.info("[CreateCMPOR] room={} 聚合结果: inputSU={} outputSU={} (实际SU)",
+//                roomCode, inputSU, outputSU);
 
         StressProfile profile = (inputSU == 0f && outputSU == 0f)
                 ? StressProfile.EMPTY
                 : new StressProfile(inputSU, inputRPM, outputSU, outputRPM);
-        CreateCMPOR.LOGGER.info("[CreateCMPOR] room={} 聚合应力档案: {} (网络数={})",
-                roomCode, profile, byNetwork.size());
+//        CreateCMPOR.LOGGER.info("[CreateCMPOR] room={} 聚合应力档案: {} (网络数={})",
+//                roomCode, profile, byNetwork.size());
         return profile;
     }
 
     /** dump 当前 DATA 状态（诊断用）。 */
     public static void dumpState() {
-        CreateCMPOR.LOGGER.info("[CreateCMPOR] StressEvaluationRegistry DATA 状态: rooms={}",
-                DATA.keySet());
+//        CreateCMPOR.LOGGER.info("[CreateCMPOR] StressEvaluationRegistry DATA 状态: rooms={}",
+//                DATA.keySet());
         DATA.forEach((room, perIo) -> {
             int total = perIo.values().stream().mapToInt(List::size).sum();
-            CreateCMPOR.LOGGER.info("[CreateCMPOR]   room={} IO方块数={} 总采样数={}",
-                    room, perIo.size(), total);
+//            CreateCMPOR.LOGGER.info("[CreateCMPOR]   room={} IO方块数={} 总采样数={}",
+//                    room, perIo.size(), total);
         });
     }
 

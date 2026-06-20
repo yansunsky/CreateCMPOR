@@ -42,14 +42,14 @@ public class CoreFinishMixin {
     )
     private static void createcmpor$writeStressProfile(ServerLevel overworld, ServerLevel compactWorld,
                                                        String roomCode, BlockPos overworldPos, CallbackInfo ci) {
-        CreateCMPOR.LOGGER.info("[CreateCMPOR] CoreFinishMixin(finalizeMachine) 触发 room={} pos={}", roomCode, overworldPos);
+//        CreateCMPOR.LOGGER.info("[CreateCMPOR] CoreFinishMixin(finalizeMachine) 触发 room={} pos={}", roomCode, overworldPos);
 
         // 诊断：消费前先 dump DATA 状态
         StressEvaluationRegistry.dumpState();
 
         // 消费采样数据，聚合成 StressProfile
         StressProfile profile = StressEvaluationRegistry.consume(roomCode);
-        CreateCMPOR.LOGGER.info("[CreateCMPOR] CoreFinishMixin consume 结果: {}", profile);
+//        CreateCMPOR.LOGGER.info("[CreateCMPOR] CoreFinishMixin consume 结果: {}", profile);
 
         // 此时 overworldPos 处已是刚创建的 FactoryBlockEntity（replaceBlock 已执行）
         BlockEntity be = overworld.getBlockEntity(overworldPos);
@@ -58,14 +58,14 @@ public class CoreFinishMixin {
             return;
         }
 
-        CreateCMPOR.LOGGER.info("[CreateCMPOR] 找到工厂方块实体: {} @ {}, 准备写入 profile={}",
-                be.getClass().getSimpleName(), overworldPos, profile);
+//        CreateCMPOR.LOGGER.info("[CreateCMPOR] 找到工厂方块实体: {} @ {}, 准备写入 profile={}",
+//                be.getClass().getSimpleName(), overworldPos, profile);
 
         // 写入 Data Attachment（即使 EMPTY 也写入，清除旧数据）
         FactoryStressAccess.set(be, profile);
 
         // 验证写入
         StressProfile readBack = FactoryStressAccess.get(be);
-        CreateCMPOR.LOGGER.info("[CreateCMPOR] 写入验证: 写入={} 读回={}", profile, readBack);
+//        CreateCMPOR.LOGGER.info("[CreateCMPOR] 写入验证: 写入={} 读回={}", profile, readBack);
     }
 }

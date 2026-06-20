@@ -48,10 +48,10 @@ public class CoreProcessBlockMixin {
 
         if (level.getBlockEntity(pos) instanceof StressInputBlockEntity io) {
             io.bindEvaluation(roomCode);
-            CreateCMPOR.LOGGER.info("[CreateCMPOR] 评估扫描登记应力输入方块 @{} room={} active={} hasNetwork={}",
-                    pos, roomCode,
-                    level.getBlockState(pos).getValue(StressInputBlock.ACTIVE),
-                    io.hasNetwork());
+//            CreateCMPOR.LOGGER.info("[CreateCMPOR] 评估扫描登记应力输入方块 @{} room={} active={} hasNetwork={}",
+//                    pos, roomCode,
+//                    level.getBlockState(pos).getValue(StressInputBlock.ACTIVE),
+//                    io.hasNetwork());
         } else {
             CreateCMPOR.LOGGER.warn("[CreateCMPOR] 评估扫描登记应力输入方块 @{} 失败：setBlock 后 BE 类型不匹配", pos);
         }
@@ -67,9 +67,9 @@ public class CoreProcessBlockMixin {
 
         if (level.getBlockEntity(pos) instanceof StressOutputBlockEntity io) {
             io.bindEvaluation(roomCode);
-            CreateCMPOR.LOGGER.info("[CreateCMPOR] 评估扫描登记应力输出方块 @{} room={} active={}",
-                    pos, roomCode,
-                    level.getBlockState(pos).getValue(StressOutputBlock.ACTIVE));
+//            CreateCMPOR.LOGGER.info("[CreateCMPOR] 评估扫描登记应力输出方块 @{} room={} active={}",
+//                    pos, roomCode,
+//                    level.getBlockState(pos).getValue(StressOutputBlock.ACTIVE));
         } else {
             CreateCMPOR.LOGGER.warn("[CreateCMPOR] 评估扫描登记应力输出方块 @{} 失败：setBlock 后 BE 类型不匹配", pos);
         }

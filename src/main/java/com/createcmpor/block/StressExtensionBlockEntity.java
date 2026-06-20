@@ -224,8 +224,8 @@ public class StressExtensionBlockEntity extends GeneratingKineticBlockEntity {
         rebuildChain();
 
         if (oldNet != chainNetStress || oldPrimary != isPrimary) {
-            CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_extension @{} 链变更: net={} primary={} (工厂{}个, 链成员{}个, 转速{})",
-                    worldPosition, chainNetStress, isPrimary, chainFactories.size(), chainMembers.size(), chainSpeed);
+//            CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_extension @{} 链变更: net={} primary={} (工厂{}个, 链成员{}个, 转速{})",
+//                    worldPosition, chainNetStress, isPrimary, chainFactories.size(), chainMembers.size(), chainSpeed);
             updateGeneratedRotation();
             if (hasNetwork()) {
                 notifyStressCapacityChange(calculateAddedStressCapacity());

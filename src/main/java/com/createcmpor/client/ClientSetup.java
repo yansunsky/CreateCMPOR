@@ -60,6 +60,6 @@ public class ClientSetup {
                 .skipVanillaRender(be -> true)
                 .apply();
 
-        CreateCMPOR.LOGGER.info("[CreateCMPOR] 已注册 Flywheel visual（SingleAxisRotatingVisual::shaft）：stress_extension / stress_input / stress_output");
+//        CreateCMPOR.LOGGER.info("[CreateCMPOR] 已注册 Flywheel visual（SingleAxisRotatingVisual::shaft）：stress_extension / stress_input / stress_output");
     }
 }

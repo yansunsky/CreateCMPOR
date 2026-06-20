@@ -55,8 +55,8 @@ public class StressInputBlockEntity extends GeneratingKineticBlockEntity {
         this.roomCode = roomCode;
         setChanged();
         updateGeneratedRotation();
-        CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_input @{} 绑定评估 room={} active={} generatedSpeed={} hasNetwork={}",
-                worldPosition, roomCode, isActive(), getGeneratedSpeed(), hasNetwork());
+//        CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_input @{} 绑定评估 room={} active={} generatedSpeed={} hasNetwork={}",
+//                worldPosition, roomCode, isActive(), getGeneratedSpeed(), hasNetwork());
     }
 
     @Override
@@ -75,8 +75,8 @@ public class StressInputBlockEntity extends GeneratingKineticBlockEntity {
             return;
         var machine = Core.getMachine(roomCode);
         if (machine == null) {
-            CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_input @{} room={} Core.MACHINES 已移除，停止采样",
-                    worldPosition, roomCode);
+//            CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_input @{} room={} Core.MACHINES 已移除，停止采样",
+//                    worldPosition, roomCode);
             return;
         }
 
@@ -86,8 +86,8 @@ public class StressInputBlockEntity extends GeneratingKineticBlockEntity {
 
         KineticNetwork net = getOrCreateNetwork();
         if (net == null) {
-            CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_input @{} room={} 暂无应力网络，尝试 updateGeneratedRotation 重建",
-                    worldPosition, roomCode);
+//            CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_input @{} room={} 暂无应力网络，尝试 updateGeneratedRotation 重建",
+//                    worldPosition, roomCode);
             updateGeneratedRotation();
             net = getOrCreateNetwork();
             if (net == null) {
@@ -107,8 +107,8 @@ public class StressInputBlockEntity extends GeneratingKineticBlockEntity {
         float rawStressValue = calculateAddedStressCapacity();
         float myVirtualCapacity = rawStressValue * speed;
 
-        CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_input @{} room={} netId={} 采样: netCap={} netStress={} rawStressValue={} virtualCap={} (×{}rpm) speed={}",
-                worldPosition, roomCode, this.network, netCapacity, netStress, rawStressValue, myVirtualCapacity, speed, speed);
+//        CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_input @{} room={} netId={} 采样: netCap={} netStress={} rawStressValue={} virtualCap={} (×{}rpm) speed={}",
+//                worldPosition, roomCode, this.network, netCapacity, netStress, rawStressValue, myVirtualCapacity, speed, speed);
 
         StressEvaluationRegistry.record(roomCode, worldPosition.asLong(),
                 new StressEvaluationRegistry.Sample(netCapacity, netStress, myVirtualCapacity, speed,
