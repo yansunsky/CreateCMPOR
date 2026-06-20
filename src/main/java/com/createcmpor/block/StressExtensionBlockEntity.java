@@ -7,6 +7,8 @@ import com.createcmpor.stress.FactorySatisfaction;
 import com.createcmpor.stress.FactoryStressAccess;
 import com.createcmpor.stress.StressProfile;
 import com.simibubi.create.content.kinetics.base.GeneratingKineticBlockEntity;
+import com.simibubi.create.content.kinetics.base.IRotate;
+import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 import com.simibubi.create.foundation.blockEntity.behaviour.BlockEntityBehaviour;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -27,15 +29,19 @@ import java.util.Set;
  *
  * <p>继承 {@link GeneratingKineticBlockEntity}，是 Create 应力网络的成员，可作为应力源或负载。
  *
- * <p><b>链式收集 + Primary 选举</b>：
+ * <p><b>双机制设计</b>：
  * <ul>
- *     <li>BFS 遍历相邻的应力拓展方块，<b>穿过工厂方块</b>继续搜索，
- *         这样贴合同一工厂方块不同面的应力拓展方块都属于同一条链。</li>
- *     <li>链中所有拓展方块通过一致的确定性算法（{@code BlockPos.asLong()} 最小值）
- *         选举出<b>唯一一个 Primary 方块</b>。</li>
- *     <li><b>只有 Primary 方块</b>真正承载应力消耗/输出（{@code calculateStressApplied()} /
- *         {@code calculateAddedStressCapacity()} 返回非零值）。</li>
- *     <li><b>其余方块</b>返回 0，纯传递——就像 Create 的传动轴/齿轮箱，
+ *     <li><b>逻辑链（BFS）</b>：{@link #rebuildChain()} BFS 遍历相邻的应力拓展方块，
+ *         <b>穿过工厂方块</b>继续搜索，收集所有关联工厂的应力档案，选举 Primary。</li>
+ *     <li><b>物理网络（Create）</b>：通过覆盖 {@link #addPropagationLocations} 和
+ *         {@link #propagateRotationTo}，让 Create 的 {@code RotationPropagator} "看穿"工厂方块，
+ *         把贴在工厂不同面的应力拓展方块连接到同一个 {@code KineticNetwork}。</li>
+ * </ul>
+ *
+ * <p><b>Primary 选举</b>：链中 {@code BlockPos.asLong()} 最小的方块为 Primary。
+ * <ul>
+ *     <li><b>只有 Primary</b> 生成转速（{@code getGeneratedSpeed()} 返回非零）并承载应力消耗/输出。</li>
+ *     <li><b>其余方块</b>返回 0，作为被动成员接收转速——就像 Create 的传动轴/齿轮箱，
  *         只传递转速不额外消耗应力。</li>
  * </ul>
  * 这样无论拓展了多少个应力拓展方块，它们应力网络的应力和都等于工厂方块的 input/output，
@@ -76,9 +82,14 @@ public class StressExtensionBlockEntity extends GeneratingKineticBlockEntity {
 
     // ===================== Create 应力网络接入 =====================
 
+    /**
+     * <b>只有 Primary 方块</b>生成转速。
+     * 非 Primary 返回 0，成为被动成员，由 Create 的转速传播机制从 Primary 接收转速。
+     * 这样所有拓展方块都在同一个 KineticNetwork 中，只有一个应力源。
+     */
     @Override
     public float getGeneratedSpeed() {
-        if (chainNetStress == 0f)
+        if (!isPrimary || chainNetStress == 0f)
             return 0;
         Direction.Axis axis = getBlockState().getValue(StressExtensionBlock.AXIS);
         Direction dir = Direction.fromAxisAndDirection(axis, Direction.AxisDirection.POSITIVE);
@@ -129,6 +140,62 @@ public class StressExtensionBlockEntity extends GeneratingKineticBlockEntity {
         float su = (-chainNetStress) / speed;
         this.lastStressApplied = su;
         return su;
+    }
+
+    // ===================== Create 网络穿工厂连接 =====================
+
+    /**
+     * 告诉 Create 的 {@code RotationPropagator}：除了6个直接相邻位置，
+     * 还要检查<b>穿过工厂方块</b>的对侧位置（2格远）。
+     *
+     * <p>这样贴在工厂方块不同面的应力拓展方块能被 Create 识别为潜在邻居，
+     * 进而通过 {@link #propagateRotationTo} 建立连接，合并到同一个 KineticNetwork。
+     */
+    @Override
+    public List<BlockPos> addPropagationLocations(IRotate block, BlockState state, List<BlockPos> neighbours) {
+        super.addPropagationLocations(block, state, neighbours);
+        if (level == null)
+            return neighbours;
+        for (Direction d : Direction.values()) {
+            BlockPos adjacent = worldPosition.relative(d);
+            if (isFactoryBlock(level.getBlockState(adjacent))) {
+                BlockPos through = worldPosition.relative(d, 2);
+                if (!neighbours.contains(through))
+                    neighbours.add(through);
+            }
+        }
+        return neighbours;
+    }
+
+    /**
+     * 当目标也是应力拓展方块、且中间隔着工厂方块时，返回 1（1:1 同速同向传递）。
+     *
+     * <p>这让 Create 把工厂方块视为"虚拟传动轴"，把两侧的应力拓展方块连入同一网络。
+     * 对于非工厂穿过的连接（如直接相邻），返回 0 让 Create 的默认逻辑处理。
+     */
+    @Override
+    public float propagateRotationTo(KineticBlockEntity target, BlockState stateFrom, BlockState stateTo,
+                                     BlockPos diff, boolean connectedByAxis, boolean connectedByGears) {
+        // 只处理穿过工厂方块的连接（曼哈顿距离=2）
+        int manhattan = Math.abs(diff.getX()) + Math.abs(diff.getY()) + Math.abs(diff.getZ());
+        if (manhattan != 2)
+            return 0;
+        if (!(target instanceof StressExtensionBlockEntity))
+            return 0;
+        if (level == null)
+            return 0;
+        // 检查是否存在一个工厂方块同时与自身和目标相邻
+        BlockPos targetPos = target.getBlockPos();
+        for (Direction d : Direction.values()) {
+            BlockPos factoryPos = worldPosition.relative(d);
+            if (!isFactoryBlock(level.getBlockState(factoryPos)))
+                continue;
+            for (Direction d2 : Direction.values()) {
+                if (factoryPos.relative(d2).equals(targetPos))
+                    return 1; // 工厂方块作为 1:1 传动介质
+            }
+        }
+        return 0;
     }
 
     // ===================== 每秒刷新链与档案 =====================
@@ -234,6 +301,11 @@ public class StressExtensionBlockEntity extends GeneratingKineticBlockEntity {
         chainFactories.add(factoryPos);
         chainNetStress += profile.net();
         chainSpeed = Math.max(chainSpeed, profile.netSpeed());
+    }
+
+    private boolean isFactoryBlock(BlockState state) {
+        ResourceLocation id = BuiltInRegistries.BLOCK.getKey(state.getBlock());
+        return CreateCMPOR.CMPOR_FACTORY_BLOCK_ID.equals(id.toString());
     }
 
     // ===================== 供 capability 联合拓展 =====================
