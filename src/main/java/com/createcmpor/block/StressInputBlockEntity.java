@@ -107,12 +107,12 @@ public class StressInputBlockEntity extends GeneratingKineticBlockEntity {
         float rawStressValue = calculateAddedStressCapacity();
         float myVirtualCapacity = rawStressValue * speed;
 
-        CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_input @{} room={} 采样: netCap={} netStress={} rawStressValue={} virtualCap={} (×{}rpm) speed={}",
-                worldPosition, roomCode, netCapacity, netStress, rawStressValue, myVirtualCapacity, speed, speed);
+        CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_input @{} room={} netId={} 采样: netCap={} netStress={} rawStressValue={} virtualCap={} (×{}rpm) speed={}",
+                worldPosition, roomCode, this.network, netCapacity, netStress, rawStressValue, myVirtualCapacity, speed, speed);
 
         StressEvaluationRegistry.record(roomCode, worldPosition.asLong(),
                 new StressEvaluationRegistry.Sample(netCapacity, netStress, myVirtualCapacity, speed,
-                        StressEvaluationRegistry.SampleType.INPUT));
+                        this.network, StressEvaluationRegistry.SampleType.INPUT));
     }
 
     public boolean isActive() {

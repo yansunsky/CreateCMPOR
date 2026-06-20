@@ -80,12 +80,12 @@ public class StressOutputBlockEntity extends KineticBlockEntity {
         float netStress = net.calculateStress();
         float speed = Math.abs(getTheoreticalSpeed());
 
-        CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_output @{} room={} 采样: netCap={} netStress={} virtualCap=0 speed={}",
-                worldPosition, roomCode, netCapacity, netStress, speed);
+        CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_output @{} room={} netId={} 采样: netCap={} netStress={} virtualCap=0 speed={}",
+                worldPosition, roomCode, this.network, netCapacity, netStress, speed);
 
         StressEvaluationRegistry.record(roomCode, worldPosition.asLong(),
                 new StressEvaluationRegistry.Sample(netCapacity, netStress, 0f, speed,
-                        StressEvaluationRegistry.SampleType.OUTPUT));
+                        this.network, StressEvaluationRegistry.SampleType.OUTPUT));
     }
 
     public boolean isActive() {
