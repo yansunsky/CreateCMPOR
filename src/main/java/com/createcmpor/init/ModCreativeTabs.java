@@ -8,9 +8,6 @@ import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredRegister;
 
-/**
- * 创造模式物品栏注册。
- */
 public class ModCreativeTabs {
 
     public static final DeferredRegister<CreativeModeTab> TABS =
@@ -22,7 +19,8 @@ public class ModCreativeTabs {
                     .icon(() -> ModItems.STRESS_EXTENSION.get().getDefaultInstance())
                     .displayItems((parameters, output) -> {
                         output.accept(ModItems.STRESS_EXTENSION.get());
-                        output.accept(ModItems.STRESS_IO.get());
+                        output.accept(ModItems.STRESS_INPUT.get());
+                        output.accept(ModItems.STRESS_OUTPUT.get());
                     })
                     .build());
 

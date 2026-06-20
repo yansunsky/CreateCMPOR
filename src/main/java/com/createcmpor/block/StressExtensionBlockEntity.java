@@ -7,6 +7,7 @@ import com.createcmpor.stress.FactorySatisfaction;
 import com.createcmpor.stress.FactoryStressAccess;
 import com.createcmpor.stress.StressProfile;
 import com.simibubi.create.content.kinetics.base.GeneratingKineticBlockEntity;
+import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 import com.simibubi.create.foundation.blockEntity.behaviour.BlockEntityBehaviour;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -28,30 +29,33 @@ import java.util.Set;
  *
  * <p>继承 {@link GeneratingKineticBlockEntity}，是 Create 应力网络的成员，可作为应力源或负载。
  *
+ * <p>由于 {@link StressExtensionBlock#hasShaftTowards} 对所有面返回 true，
+ * 相邻的应力拓展方块自动属于同一 Create 应力网络（无需手动连轴）。
+ *
  * <p>核心逻辑（每秒刷新）：
  * <ol>
- *     <li><b>链式收集</b>：沿相邻的应力拓展方块链（不限跳数）做 BFS，收集链上所有方块各自贴合的
- *         CMPOR 工厂方块（去重），读取每个工厂的有符号应力档案并求和（{@link #chainNetStress}）。</li>
- *     <li><b>方向</b>：求和为正 → 输出（向外 Create 网络提供应力，经损耗后），为负 → 输入
- *         （作为负载，需外部应力带动；满足后标记工厂可工作）。</li>
- *     <li><b>IO 容器拓展</b>：链上任一工厂的物品/流体/能量 capability 由整条链共享（见
- *         {@link com.createcmpor.init.ModBlocks#registerCapabilities}，本类提供 {@link #getChainFactories}）。</li>
+ *     <li><b>链式收集</b>：沿相邻的应力拓展方块链 BFS，收集链上所有工厂方块的应力档案并求和。</li>
+ *     <li><b>输出模式</b>（净应力 > 0）：提供转速 + 应力容量（扣除损耗）。</li>
+ *     <li><b>输入模式</b>（净应力 < 0）：作为负载消耗应力，满足后标记工厂可工作。</li>
  * </ol>
+ *
+ * <p><b>关键 API 注意事项：</b>
+ * <ul>
+ *     <li>{@code calculateAddedStressCapacity()} 返回的是 <b>stress value</b>（未乘转速），
+ *         Create 内部在计算网络容量时会自动乘以 {@code |speed|}。</li>
+ *     <li>因此我们返回的值应该是 <b>原始 SU 值</b>（即工厂档案中的 outputSU），
+ *         不要手动乘转速——否则会导致双重乘法，输出应力远大于理论值。</li>
+ *     <li>同理 {@code calculateStressApplied()} 也返回原始 SU 值，Create 内部会乘转速。</li>
+ * </ul>
  */
 public class StressExtensionBlockEntity extends GeneratingKineticBlockEntity {
 
-    /** 输入模式（链净应力为负，需外部供应）时本方块运行的转速。 */
+    /** 输入模式时本方块运行的转速。 */
     public static final int INPUT_SPEED = 32;
 
-    /** 链上去重后的工厂坐标（用于 IO capability 联合拓展）。 */
     private final List<BlockPos> chainFactories = new ArrayList<>();
-
-    /** 链上所有工厂有符号应力之和（正=净输出，负=净输入需求）。 */
     private float chainNetStress = 0f;
-
-    /** 链上工厂转速档案的最大值。 */
     private float chainSpeed = 0f;
-
     private int scanCooldown = 0;
 
     public StressExtensionBlockEntity(BlockPos pos, BlockState state) {
@@ -65,19 +69,24 @@ public class StressExtensionBlockEntity extends GeneratingKineticBlockEntity {
 
     // ===================== Create 应力网络接入 =====================
 
-    /** 净输出（链和为正）时沿轴向供给转速；否则若净输入则以 {@link #INPUT_SPEED} 运行作为负载载体。 */
+    /**
+     * 输出模式时提供转速；输入模式也提供转速（作为负载载体需要被驱动）。
+     * 无应力交互时返回 0。
+     */
     @Override
     public float getGeneratedSpeed() {
+        if (chainNetStress == 0f)
+            return 0;
         Direction.Axis axis = getBlockState().getValue(StressExtensionBlock.AXIS);
         Direction dir = Direction.fromAxisAndDirection(axis, Direction.AxisDirection.POSITIVE);
-        if (chainNetStress > 0f) {
-            // 输出：向外提供工厂的转速
-            return convertToDirection(chainSpeed > 0 ? chainSpeed : INPUT_SPEED, dir);
-        }
-        return 0;
+        float speed = chainSpeed > 0 ? chainSpeed : INPUT_SPEED;
+        return convertToDirection(speed, dir);
     }
 
-    /** 净输出时向网络贡献应力容量（= 工厂可提供应力，扣除损耗）。 */
+    /**
+     * 输出模式时向网络贡献应力容量。
+     * <p>返回的是 stress value（未乘转速），Create 内部会乘 |speed| 得到实际容量。
+     */
     @Override
     public float calculateAddedStressCapacity() {
         float cap = 0f;
@@ -89,7 +98,10 @@ public class StressExtensionBlockEntity extends GeneratingKineticBlockEntity {
         return cap;
     }
 
-    /** 净输入时作为负载向网络施加应力消耗（= |链净应力|）。 */
+    /**
+     * 输入模式时作为负载向网络施加应力消耗。
+     * <p>返回的是 stress value（未乘转速），Create 内部会乘 |speed| 得到实际消耗。
+     */
     @Override
     public float calculateStressApplied() {
         float su = (chainNetStress < 0f) ? -chainNetStress : 0f;
@@ -115,13 +127,16 @@ public class StressExtensionBlockEntity extends GeneratingKineticBlockEntity {
             CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_extension @{} 链净应力变更: {} -> {} (工厂{}个, 转速{})",
                     worldPosition, oldNet, chainNetStress, chainFactories.size(), chainSpeed);
             updateGeneratedRotation();
-            notifyStressCapacityChange(calculateAddedStressCapacity());
+            // 安全刷新：先确保网络存在
+            if (hasNetwork()) {
+                notifyStressCapacityChange(calculateAddedStressCapacity());
+            }
             setChanged();
         }
 
-        // 输入模式：若本地 Create 网络能满足需求（容量≥消耗），标记链上各工厂"应力已满足"→ 工厂可工作
+        // 输入模式：检查外部网络是否满足需求
         if (chainNetStress < 0f) {
-            boolean satisfied = (capacity - stress) >= 0 && getSpeed() != 0;
+            boolean satisfied = hasNetwork() && (capacity - stress) >= 0 && getSpeed() != 0;
             if (satisfied) {
                 long now = level.getGameTime();
                 for (BlockPos fp : chainFactories) {
@@ -132,7 +147,7 @@ public class StressExtensionBlockEntity extends GeneratingKineticBlockEntity {
     }
 
     /**
-     * 沿相邻应力拓展方块链 BFS，收集链上所有方块各自贴合的工厂（去重），并对其有符号应力求和。
+     * 沿相邻应力拓展方块链 BFS，收集链上所有方块各自贴合的工厂（去重），并对其净应力求和。
      */
     private void rebuildChain() {
         chainFactories.clear();
@@ -149,20 +164,14 @@ public class StressExtensionBlockEntity extends GeneratingKineticBlockEntity {
 
         while (!queue.isEmpty()) {
             BlockPos ext = queue.poll();
-            // 该拓展方块的非轴向四面找工厂；六面找相邻拓展方块（链不限轴向）
-            Direction.Axis axis = level.getBlockState(ext).hasProperty(StressExtensionBlock.AXIS)
-                    ? level.getBlockState(ext).getValue(StressExtensionBlock.AXIS) : null;
             for (Direction d : Direction.values()) {
                 BlockPos np = ext.relative(d);
                 BlockState ns = level.getBlockState(np);
                 ResourceLocation id = BuiltInRegistries.BLOCK.getKey(ns.getBlock());
                 String idStr = id.toString();
                 if (CreateCMPOR.CMPOR_FACTORY_BLOCK_ID.equals(idStr)) {
-                    // 工厂只在非轴向面拓展（轴向两端是应力接口面）
-                    if (axis == null || d.getAxis() != axis) {
-                        if (seenFactory.add(np))
-                            accumulateFactory(np);
-                    }
+                    if (seenFactory.add(np))
+                        accumulateFactory(np);
                 } else if ("createcmpor:stress_extension".equals(idStr)) {
                     if (visitedExt.add(np))
                         queue.add(np);
@@ -171,25 +180,26 @@ public class StressExtensionBlockEntity extends GeneratingKineticBlockEntity {
         }
     }
 
-    /** 累加单个工厂的有符号应力与转速。 */
     private void accumulateFactory(BlockPos factoryPos) {
         BlockEntity be = level.getBlockEntity(factoryPos);
         StressProfile profile = FactoryStressAccess.get(be);
         if (profile.isEmpty())
             return;
         chainFactories.add(factoryPos);
-        chainNetStress += profile.net();       // input 为负、output 为正
-        chainSpeed = Math.max(chainSpeed, profile.speed());
+        chainNetStress += profile.net();
+        chainSpeed = Math.max(chainSpeed, profile.netSpeed());
     }
 
     // ===================== 供 capability 联合拓展 =====================
 
-    /** @return 链上去重后的所有工厂坐标（IO capability 联合拓展用）。 */
     public List<BlockPos> getChainFactories() {
         return chainFactories;
     }
 
-    /** @return 该侧面是否为非轴向的 IO 拓展面（轴向两端仅接应力）。 */
+    /**
+     * 该侧面是否为 IO 拓展面（用于 capability 代理）。
+     * 所有面都可接轴，但 IO 代理只在非轴向面生效。
+     */
     public boolean isIoFace(@Nullable Direction side) {
         if (side == null)
             return true;

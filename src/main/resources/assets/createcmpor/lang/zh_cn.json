@@ -1,8 +1,12 @@
 {
   "itemGroup.createcmpor": "CreateCMPOR",
   "block.createcmpor.stress_extension": "应力拓展方块",
-  "block.createcmpor.stress_io": "应力 I/O 方块",
-  "message.createcmpor.stress_io.activated": "应力 I/O 方块已激活",
-  "message.createcmpor.stress_io.deactivated": "应力 I/O 方块已停用",
-  "message.createcmpor.stress_io.auto_only": "激活由评估流程控制（已禁用手动切换）"
+  "block.createcmpor.stress_input": "应力输入方块",
+  "block.createcmpor.stress_output": "应力输出方块",
+  "message.createcmpor.stress_input.activated": "应力输入方块已激活",
+  "message.createcmpor.stress_input.deactivated": "应力输入方块已停用",
+  "message.createcmpor.stress_input.auto_only": "激活由评估流程控制（已禁用手动切换）",
+  "message.createcmpor.stress_output.activated": "应力输出方块已激活",
+  "message.createcmpor.stress_output.deactivated": "应力输出方块已停用",
+  "message.createcmpor.stress_output.auto_only": "激活由评估流程控制（已禁用手动切换）"
 }

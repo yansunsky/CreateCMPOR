@@ -1,8 +1,12 @@
 {
   "itemGroup.createcmpor": "CreateCMPOR",
   "block.createcmpor.stress_extension": "Stress Extension Block",
-  "block.createcmpor.stress_io": "Stress I/O Block",
-  "message.createcmpor.stress_io.activated": "Stress I/O Block activated",
-  "message.createcmpor.stress_io.deactivated": "Stress I/O Block deactivated",
-  "message.createcmpor.stress_io.auto_only": "Activation is controlled by evaluation (manual toggle disabled)"
+  "block.createcmpor.stress_input": "Stress Input Block",
+  "block.createcmpor.stress_output": "Stress Output Block",
+  "message.createcmpor.stress_input.activated": "Stress Input Block activated",
+  "message.createcmpor.stress_input.deactivated": "Stress Input Block deactivated",
+  "message.createcmpor.stress_input.auto_only": "Activation is controlled by evaluation (manual toggle disabled)",
+  "message.createcmpor.stress_output.activated": "Stress Output Block activated",
+  "message.createcmpor.stress_output.deactivated": "Stress Output Block deactivated",
+  "message.createcmpor.stress_output.auto_only": "Activation is controlled by evaluation (manual toggle disabled)"
 }

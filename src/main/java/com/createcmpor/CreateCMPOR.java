@@ -19,8 +19,10 @@ import org.slf4j.Logger;
  * <ul>
  *     <li><b>应力拓展方块</b>（{@code stress_extension}）——复用安山传动箱外观，
  *         接入 Create 应力网络，并把相邻 CMPOR 工厂方块的物品/流体/能量 IO 能力拓展到自身四侧。</li>
- *     <li><b>应力 IO 方块</b>（{@code stress_io}）——复用创造马达外观，放置于压缩空间内，
- *         激活后根据本地应力网络的盈亏作为应力源/读取器工作。</li>
+ *     <li><b>应力输入方块</b>（{@code stress_input}）——复用创造马达外观，放置于压缩空间内，
+ *         评估期作为应力源驱动内部机器运转，测得真实应力消耗。</li>
+ *     <li><b>应力输出方块</b>（{@code stress_output}）——复用应力表外观，放置于压缩空间内，
+ *         评估期被动观察网络应力余量，测得工厂可对外提供的应力。</li>
  * </ul>
  */
 @Mod(CreateCMPOR.MOD_ID)

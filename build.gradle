@@ -85,10 +85,8 @@ configurations {
 }
 
 dependencies {
-    // === Create（编译 + 运行）===
-    implementation("com.simibubi.create:create-${minecraft_version}:${create_version}:slim") {
-        transitive = false
-    }
+    // === Create（编译 + 运行，使用本地 jar，避免远程下载慢）===
+    implementation files("${projectDir}/libs/create-1.21.1-6.0.10-281-slim.jar")
     implementation("net.createmod.ponder:ponder-neoforge:${ponder_version}+mc${minecraft_version}")
     implementation("com.tterrag.registrate:Registrate:${registrate_version}")
     compileOnly("dev.engine-room.flywheel:flywheel-neoforge-api-${minecraft_version}:${flywheel_version}")
