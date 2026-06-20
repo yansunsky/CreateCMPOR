@@ -19,9 +19,11 @@ import java.util.concurrent.ConcurrentHashMap;
  *         用于计算工厂的 output 可提供应力。</li>
  * </ul>
  *
- * <p><b>关键：存储的是原始 stress/impact 值（未乘转速）。</b>
- * 因为 Create 的 {@code calculateAddedStressCapacity()} 和 {@code calculateStressApplied()}
- * 返回的值会被 Create 内部乘以转速。如果存储的值已经乘了转速，就会双重乘法。
+ * <p><b>关键：存储的是实际 SU 值（已乘转速）。</b>
+ * 网络 capacity/stress 本身就是实际 SU（Create 内部已乘转速）。
+ * StressProfile 存储实际 SU，由应力拓展方块的 {@code calculateStressApplied()} /
+ * {@code calculateAddedStressCapacity()} 在返回时除以转速转为 raw stress value，
+ * Create 内部再乘回转速，得到正确的实际 SU。
  */
 public class StressEvaluationRegistry {
 
@@ -44,10 +46,10 @@ public class StressEvaluationRegistry {
     /**
      * 评估结束：分别聚合 INPUT 和 OUTPUT 采样，计算工厂的 input/output 应力。
      *
-     * <p><b>关键修复</b>：network 的 capacity/stress 已经乘了转速（impact × |speed|），
-     * 但 StressProfile 存储的应该是<b>原始值</b>（未乘转速），因为
-     * {@code calculateAddedStressCapacity()} / {@code calculateStressApplied()}
-     * 返回的值会被 Create 内部再乘一次转速。
+     * <p><b>存储实际 SU（已乘转速）</b>：network 的 capacity/stress 本身就是实际 SU，
+     * 直接存入 StressProfile。应力拓展方块在返回给 Create API 时会除以转速，
+     * Create 内部再乘回转速，得到正确的实际 SU。
+     * <p>之前错误地在此处除以转速，导致拓展方块再次除以转速时产生双重除法。
      */
     public static StressProfile consume(String roomCode) {
         Map<Long, List<Sample>> perIo = DATA.remove(roomCode);
@@ -88,22 +90,17 @@ public class StressEvaluationRegistry {
             }
         }
 
-        // INPUT: 网络应力消耗 - 真实容量 = 需输入的应力（网络单位，已乘转速）
+        // INPUT: 网络应力消耗 - 真实容量 = 需输入的应力（实际 SU，已含转速）
         float realInputCapacity = inputTotalCap - inputTotalVirtual;
-        float inputSUNetwork = Math.max(0f, inputTotalStress - realInputCapacity);
-        // 转换为原始值（除以转速），Create 内部会再乘转速
-        float inputSU = inputMaxSpeed > 0 ? inputSUNetwork / inputMaxSpeed : 0f;
+        float inputSU = Math.max(0f, inputTotalStress - realInputCapacity);
         float inputRPM = inputSU > 0f ? inputMaxSpeed : 0f;
 
-        // OUTPUT: 网络容量 - 网络消耗 = 可输出的应力（网络单位，已乘转速）
-        float outputSUNetwork = Math.max(0f, outputTotalCap - outputTotalStress);
-        // 转换为原始值
-        float outputSU = outputMaxSpeed > 0 ? outputSUNetwork / outputMaxSpeed : 0f;
+        // OUTPUT: 网络容量 - 网络消耗 = 可输出的应力（实际 SU，已含转速）
+        float outputSU = Math.max(0f, outputTotalCap - outputTotalStress);
         float outputRPM = outputSU > 0f ? outputMaxSpeed : 0f;
 
-        CreateCMPOR.LOGGER.info("[CreateCMPOR] room={} 聚合计算: inputSUNetwork={} / inputMaxSpeed={} = inputSU={} (原始值); outputSUNetwork={} / outputMaxSpeed={} = outputSU={} (原始值)",
-                roomCode, inputSUNetwork, inputMaxSpeed, inputSU,
-                outputSUNetwork, outputMaxSpeed, outputSU);
+        CreateCMPOR.LOGGER.info("[CreateCMPOR] room={} 聚合计算: inputSU={} (实际SU); outputSU={} (实际SU)",
+                roomCode, inputSU, outputSU);
 
         StressProfile profile = (inputSU == 0f && outputSU == 0f)
                 ? StressProfile.EMPTY
