@@ -159,18 +159,28 @@ public class StressExtensionBlockEntity extends GeneratingKineticBlockEntity {
         for (Direction d : Direction.values()) {
             BlockPos adjacent = worldPosition.relative(d);
             if (isFactoryBlock(level.getBlockState(adjacent))) {
-                BlockPos through = worldPosition.relative(d, 2);
-                if (!neighbours.contains(through))
-                    neighbours.add(through);
+                // 把工厂方块周围6个面的位置全部加入邻居列表（排除自身位置）。
+                // 这样不仅正对面（manhattan=2），斜对角（manhattan=2）的拓展方块
+                // 也能被 Create 的 findConnectedNeighbour 发现并建立连接。
+                for (Direction fd : Direction.values()) {
+                    BlockPos around = adjacent.relative(fd);
+                    if (!around.equals(worldPosition) && !neighbours.contains(around))
+                        neighbours.add(around);
+                }
             }
         }
         return neighbours;
     }
 
     /**
-     * 当目标也是应力拓展方块、且中间隔着工厂方块时，返回 1（1:1 同速同向传递）。
+     * 当目标也是应力拓展方块、且中间隔着同一个工厂方块时，返回 1（1:1 同速同向传递）。
      *
-     * <p>这让 Create 把工厂方块视为"虚拟传动轴"，把两侧的应力拓展方块连入同一网络。
+     * <p>涵盖所有穿工厂的配对：
+     * <ul>
+     *     <li><b>正对面</b>（如上↔下）：diff 在单轴上 = ±2，manhattan=2</li>
+     *     <li><b>斜对角面</b>（如前↔左）：diff 在两轴上各 = ±1，manhattan=2</li>
+     * </ul>
+     * 两种情况的 manhattan 距离都是 2，且都存在一个工厂方块同时与双方相邻。
      * 对于非工厂穿过的连接（如直接相邻），返回 0 让 Create 的默认逻辑处理。
      */
     @Override
