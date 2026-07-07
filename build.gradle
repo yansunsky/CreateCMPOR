@@ -35,7 +35,7 @@ repositories {
         }
         filter { includeGroup 'maven.modrinth' }
     }
-    // 本地 jar（CMPOR 运行版）
+    // 本地 jar（Create 运行版）
     flatDir { dirs "${projectDir}/libs" }
 }
 
@@ -92,13 +92,9 @@ dependencies {
     compileOnly("dev.engine-room.flywheel:flywheel-neoforge-api-${minecraft_version}:${flywheel_version}")
     runtimeOnly("dev.engine-room.flywheel:flywheel-neoforge-${minecraft_version}:${flywheel_version}")
 
-    // === CompactMachines（CMPOR 前置；Core 引用其 API，mixin 编译需可见）===
+    // === CompactMachines（直接前置；平行房间评估主线使用其房间 API）===
     compileOnly "curse.maven:compact-machines-224218:${compactmachines_file}"
     localRuntime "curse.maven:compact-machines-224218:${compactmachines_file}"
-
-    // === CompactMachinesPOR（平面 jar；mixin 目标 Core / 直接引用，需编译期可见）===
-    compileOnly files("${projectDir}/libs/compactmachinespor.jar")
-    localRuntime files("${projectDir}/libs/compactmachinespor.jar")
 }
 
 tasks.withType(JavaCompile).configureEach {

@@ -14,6 +14,9 @@ public class ModItems {
     public static final DeferredItem<BlockItem> STRESS_EXTENSION =
             ITEMS.registerSimpleBlockItem("stress_extension", ModBlocks.STRESS_EXTENSION);
 
+    public static final DeferredItem<BlockItem> FACTORY =
+            ITEMS.registerSimpleBlockItem("factory_block", ModBlocks.FACTORY);
+
     public static final DeferredItem<BlockItem> STRESS_INPUT =
             ITEMS.registerSimpleBlockItem("stress_input", ModBlocks.STRESS_INPUT);
 

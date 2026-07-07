@@ -19,6 +19,7 @@ public class ModCreativeTabs {
                     .icon(() -> ModItems.STRESS_EXTENSION.get().getDefaultInstance())
                     .displayItems((parameters, output) -> {
                         output.accept(ModItems.STRESS_EXTENSION.get());
+                        output.accept(ModItems.FACTORY.get());
                         output.accept(ModItems.STRESS_INPUT.get());
                         output.accept(ModItems.STRESS_OUTPUT.get());
                     })

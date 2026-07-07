@@ -1,6 +1,7 @@
 {
   "itemGroup.createcmpor": "CreateCMPOR",
   "block.createcmpor.stress_extension": "应力拓展方块",
+  "block.createcmpor.factory_block": "平行工厂方块",
   "block.createcmpor.stress_input": "应力输入方块",
   "block.createcmpor.stress_output": "应力输出方块",
   "message.createcmpor.stress_input.activated": "应力输入方块已激活",

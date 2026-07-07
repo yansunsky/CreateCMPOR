@@ -279,7 +279,7 @@ public class StressExtensionBlockEntity extends GeneratingKineticBlockEntity {
                 ResourceLocation id = BuiltInRegistries.BLOCK.getKey(ns.getBlock());
                 String idStr = id.toString();
 
-                if (CreateCMPOR.CMPOR_FACTORY_BLOCK_ID.equals(idStr)) {
+                if (CreateCMPOR.FACTORY_BLOCK_ID.equals(idStr)) {
                     // 工厂方块：累加应力档案，并加入队列穿过它继续搜索
                     visited.add(np);
                     if (seenFactory.add(np))
@@ -315,7 +315,7 @@ public class StressExtensionBlockEntity extends GeneratingKineticBlockEntity {
 
     private boolean isFactoryBlock(BlockState state) {
         ResourceLocation id = BuiltInRegistries.BLOCK.getKey(state.getBlock());
-        return CreateCMPOR.CMPOR_FACTORY_BLOCK_ID.equals(id.toString());
+        return CreateCMPOR.FACTORY_BLOCK_ID.equals(id.toString());
     }
 
     // ===================== 供 capability 联合拓展 =====================

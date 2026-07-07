@@ -11,8 +11,8 @@ import java.util.function.Supplier;
 /**
  * NeoForge Data Attachment 注册。
  *
- * <p>用 Data Attachment 给 CMPOR 的工厂方块实体附加「应力档案」，无需修改 CMPOR 的
- * private 字段——attachment 会自动随方块实体存档/读档（写入 BE 的 {@code neoforge:attachments}）。
+     * <p>用 Data Attachment 给本模组工厂方块实体附加「应力档案」，避免把应力数据塞入主数据模型。
+     * attachment 会自动随方块实体存档/读档（写入 BE 的 {@code neoforge:attachments}）。
  */
 public class ModAttachments {
 
