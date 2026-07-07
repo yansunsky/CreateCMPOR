@@ -1,5 +1,6 @@
 package com.createcmpor;
 
+import com.createcmpor.command.ModCommands;
 import com.createcmpor.init.ModBlockEntities;
 import com.createcmpor.init.ModBlocks;
 import com.createcmpor.init.ModCreativeTabs;
@@ -8,6 +9,7 @@ import com.mojang.logging.LogUtils;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
+import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.fml.config.ModConfig;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 import org.slf4j.Logger;
@@ -45,6 +47,7 @@ public class CreateCMPOR {
 
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(ModBlocks::registerCapabilities);
+        NeoForge.EVENT_BUS.addListener(ModCommands::onRegisterCommands);
 
         // 配置文件（含 enableStressOutput）
         modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
