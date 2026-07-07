@@ -6,7 +6,7 @@ import com.mojang.serialization.codecs.RecordCodecBuilder;
 /**
  * 工厂方块的应力档案，记录评估得出的内部应力输入/输出需求。
  *
- * <p>采用 input/output 双轴模型（类似 CMPOR 能量的 inputEnergy/outputEnergy）：
+ * <p>采用 input/output 双轴模型（类似能量通道的 input/output）：
  * <ul>
  *     <li>{@code inputSU > 0}：工厂内部消耗应力，需从外部输入的应力值（SU）。</li>
  *     <li>{@code outputSU > 0}：工厂内部产应力，可向外部提供的应力值（SU）。</li>

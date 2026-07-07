@@ -3,11 +3,7 @@
   "minVersion": "0.8",
   "package": "com.createcmpor.mixin",
   "compatibilityLevel": "JAVA_21",
-  "mixins": [
-    "CoreFinishMixin",
-    "CoreProcessBlockMixin",
-    "FactoryTickMixin"
-  ],
+  "mixins": [],
   "client": [],
   "injectors": {
     "defaultRequire": 1

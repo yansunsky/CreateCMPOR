@@ -34,15 +34,15 @@ versionRange = "[6.0,)"
 ordering = "AFTER"
 side = "BOTH"
 
-# CompactMachinesPOR：必需（集成目标）
+# CompactMachines：必需（提供压缩房间与绑定机器）
 [[dependencies.${mod_id}]]
-modId = "compactmachinespor"
+modId = "compactmachines"
 type = "required"
-versionRange = "[0.9,)"
+versionRange = "[7.0,)"
 ordering = "AFTER"
 side = "BOTH"
 
-# Mixin 配置（注入 CMPOR 的 Core.finish / Core.processBlock）
+# Mixin 配置（后续阶段注入 CompactMachines 的入口交互）
 [[mixins]]
 config = "createcmpor.mixins.json"
 

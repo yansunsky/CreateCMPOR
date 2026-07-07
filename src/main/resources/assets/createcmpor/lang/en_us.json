@@ -1,6 +1,7 @@
 {
   "itemGroup.createcmpor": "CreateCMPOR",
   "block.createcmpor.stress_extension": "Stress Extension Block",
+  "block.createcmpor.factory_block": "Parallel Factory Block",
   "block.createcmpor.stress_input": "Stress Input Block",
   "block.createcmpor.stress_output": "Stress Output Block",
   "message.createcmpor.stress_input.activated": "Stress Input Block activated",

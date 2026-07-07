@@ -3,7 +3,6 @@ package com.createcmpor.block;
 import com.createcmpor.CreateCMPOR;
 import com.createcmpor.init.ModBlockEntities;
 import com.createcmpor.stress.StressEvaluationRegistry;
-import com.compactmachinespor.core.Core;
 import com.simibubi.create.content.kinetics.KineticNetwork;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 import com.simibubi.create.foundation.blockEntity.behaviour.BlockEntityBehaviour;
@@ -58,13 +57,8 @@ public class StressOutputBlockEntity extends KineticBlockEntity {
             return;
         if (!isActive() || roomCode == null)
             return;
-        var machine = Core.getMachine(roomCode);
-        if (machine == null) {
-//            CreateCMPOR.LOGGER.info("[CreateCMPOR] stress_output @{} room={} Core.MACHINES 已移除，停止采样",
-//                    worldPosition, roomCode);
-            return;
-        }
-
+        // Phase 1 已剥离旧外部评估主线，不再查询外部 Core.MACHINES。
+        // 后续平行房间评估会由 EvaluationManager 控制 roomCode 生命周期；当前只以 roomCode 存在作为采样开关。
         if (--sampleCooldown > 0)
             return;
         sampleCooldown = 20;

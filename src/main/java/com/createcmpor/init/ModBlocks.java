@@ -1,6 +1,7 @@
 package com.createcmpor.init;
 
 import com.createcmpor.CreateCMPOR;
+import com.createcmpor.block.FactoryBlock;
 import com.createcmpor.block.StressExtensionBlock;
 import com.createcmpor.block.StressInputBlock;
 import com.createcmpor.block.StressOutputBlock;
@@ -25,6 +26,14 @@ public class ModBlocks {
                             .mapColor(MapColor.PODZOL)
                             .strength(2.0f)
                             .sound(SoundType.WOOD)
+                            .noOcclusion()));
+
+    public static final DeferredBlock<FactoryBlock> FACTORY =
+            BLOCKS.register("factory_block", () -> new FactoryBlock(
+                    BlockBehaviour.Properties.of()
+                            .mapColor(MapColor.METAL)
+                            .strength(3.0f)
+                            .sound(SoundType.METAL)
                             .noOcclusion()));
 
     public static final DeferredBlock<StressInputBlock> STRESS_INPUT =

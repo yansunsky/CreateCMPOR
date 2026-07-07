@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "createcmpor:block/factory_block"
+    }
+  }
+}

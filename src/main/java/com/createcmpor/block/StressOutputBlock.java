@@ -29,7 +29,7 @@ import net.minecraft.world.phys.BlockHitResult;
  * 采样类型标记为 {@link com.createcmpor.stress.StressEvaluationRegistry.SampleType#OUTPUT}，
  * 评估结束后聚合计算工厂的 output 可提供应力。
  *
- * <p>含 {@code ACTIVE} 状态，默认 {@code false}（不激活），由 CMPOR 评估流程自动激活。
+ * <p>含 {@code ACTIVE} 状态，默认 {@code false}（不激活），后续由本模组平行房间评估流程自动激活。
  */
 public class StressOutputBlock extends DirectionalKineticBlock implements IBE<StressOutputBlockEntity> {
 
