@@ -1,17 +1,28 @@
 package com.createcmpor;
 
 import com.createcmpor.command.ModCommands;
+import com.createcmpor.command.EvalWorldCommands;
 import com.createcmpor.init.ModBlockEntities;
 import com.createcmpor.init.ModBlocks;
 import com.createcmpor.init.ModCreativeTabs;
 import com.createcmpor.init.ModItems;
+import com.createcmpor.evaluation.EvalWorldGuard;
 import com.mojang.logging.LogUtils;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.packs.PackType;
+import net.minecraft.server.packs.repository.Pack;
+import net.minecraft.server.packs.repository.PackSource;
+import net.minecraft.world.level.Level;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.fml.config.ModConfig;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
+import net.neoforged.neoforge.event.AddPackFindersEvent;
 import org.slf4j.Logger;
 
 /**
@@ -33,6 +44,8 @@ public class CreateCMPOR {
 
     public static final String MOD_ID = "createcmpor";
     public static final Logger LOGGER = LogUtils.getLogger();
+    public static final ResourceKey<Level> EVAL_WORLD = ResourceKey.create(
+            Registries.DIMENSION, ResourceLocation.fromNamespaceAndPath(MOD_ID, "eval_world"));
 
     /** 本模组工厂方块的注册名。后续阶段会改为 block tag，Phase 1 先用常量完成脱离 CMPOR 的最小骨架。 */
     public static final String FACTORY_BLOCK_ID = "createcmpor:factory_block";
@@ -47,7 +60,11 @@ public class CreateCMPOR {
 
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(ModBlocks::registerCapabilities);
+        modEventBus.addListener(CreateCMPOR::onAddPackFinders);
         NeoForge.EVENT_BUS.addListener(ModCommands::onRegisterCommands);
+        NeoForge.EVENT_BUS.addListener(EvalWorldCommands::onRegisterCommands);
+        NeoForge.EVENT_BUS.addListener(EvalWorldGuard::onServerTick);
+        NeoForge.EVENT_BUS.addListener(EvalWorldGuard::onPlayerRespawn);
 
         // 配置文件（含 enableStressOutput）
         modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
@@ -56,5 +73,25 @@ public class CreateCMPOR {
     private void commonSetup(FMLCommonSetupEvent event) {
         // 在主线程安全地向 Create 注册应力值（不能用 CStress——它对非 Create 方块抛异常）
         event.enqueueWork(ModBlocks::registerStressValues);
+    }
+
+    /**
+     * 默认启用 CompactMachines 内置的 basic_templates 数据包（房间模板）。
+     *
+     * <p>CompactMachines 7.0.81 把房间模板放在内置数据包 {@code data/compactmachines/datapacks/basic_templates}
+     * 中，但默认不激活，玩家必须手动点击启用。这里在 mod 总线事件中把该数据包注册为 always-active，
+     * 使新建世界默认拥有房间模板，消除 "No Room Templates are registered!" 提示。
+     */
+    private static void onAddPackFinders(AddPackFindersEvent event) {
+        if (event.getPackType() != PackType.SERVER_DATA) {
+            return;
+        }
+        event.addPackFinders(
+                ResourceLocation.fromNamespaceAndPath("compactmachines", "data/compactmachines/datapacks/basic_templates"),
+                PackType.SERVER_DATA,
+                Component.literal("Compact Machines Basic Templates"),
+                PackSource.BUILT_IN,
+                true,
+                Pack.Position.TOP);
     }
 }
