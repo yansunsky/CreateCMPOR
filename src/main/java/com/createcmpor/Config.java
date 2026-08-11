@@ -2,6 +2,8 @@ package com.createcmpor;
 
 import net.neoforged.neoforge.common.ModConfigSpec;
 
+import java.util.List;
+
 /**
  * 模组配置（COMMON）。
  */
@@ -32,6 +34,9 @@ public class Config {
      * 实际输出应力 = 工厂可提供应力 ×(1 - stressLossFactor)。
      */
     public static final ModConfigSpec.DoubleValue STRESS_LOSS_FACTOR;
+    public static final ModConfigSpec.BooleanValue ENABLE_INVENTORY_AUDIT;
+    public static final ModConfigSpec.ConfigValue<List<? extends String>> SUSPICIOUS_MODS;
+    public static final ModConfigSpec.ConfigValue<List<? extends String>> SUSPICIOUS_BLOCKS;
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
@@ -54,6 +59,18 @@ public class Config {
                         "应力输出损耗系数（0~1，默认 0.1）。",
                         "应力拓展方块对外输出应力时：实际输出 = 工厂可提供应力 ×(1 - stressLossFactor)。")
                 .defineInRange("stressLossFactor", 0.1, 0.0, 1.0);
+        builder.pop();
+
+        builder.comment("评估安全配置").push("evaluation");
+        ENABLE_INVENTORY_AUDIT = builder
+                .comment("是否启用评估前后库存守恒审计。")
+                .define("enableInventoryAudit", true);
+        SUSPICIOUS_MODS = builder
+                .comment("包含不可审计存储方块的模组 ID。")
+                .defineListAllowEmpty("suspiciousMods", List.of("ae2", "refinedstorage"), value -> value instanceof String);
+        SUSPICIOUS_BLOCKS = builder
+                .comment("明确禁止进入评估的方块 ID。")
+                .defineListAllowEmpty("suspiciousBlocks", List.of(), value -> value instanceof String);
         builder.pop();
 
         SPEC = builder.build();

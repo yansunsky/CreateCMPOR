@@ -1,7 +1,10 @@
 package com.createcmpor.init;
 
 import com.createcmpor.CreateCMPOR;
+import com.createcmpor.block.EvaluatorBlock;
 import com.createcmpor.block.FactoryBlock;
+import com.createcmpor.block.InputBlock;
+import com.createcmpor.block.OutputBlock;
 import com.createcmpor.block.StressExtensionBlock;
 import com.createcmpor.block.StressInputBlock;
 import com.createcmpor.block.StressOutputBlock;
@@ -35,6 +38,24 @@ public class ModBlocks {
                             .strength(3.0f)
                             .sound(SoundType.METAL)
                             .noOcclusion()));
+
+    public static final DeferredBlock<InputBlock> INPUT =
+            BLOCKS.register("input_block", () -> new InputBlock(
+                    BlockBehaviour.Properties.of()
+                            .mapColor(MapColor.COLOR_BLACK)
+                            .strength(3.0f, 6.0f)));
+
+    public static final DeferredBlock<OutputBlock> OUTPUT =
+            BLOCKS.register("output_block", () -> new OutputBlock(
+                    BlockBehaviour.Properties.of()
+                            .mapColor(MapColor.COLOR_BLACK)
+                            .strength(3.0f, 6.0f)));
+
+    public static final DeferredBlock<EvaluatorBlock> EVALUATOR =
+            BLOCKS.register("evaluator_block", () -> new EvaluatorBlock(
+                    BlockBehaviour.Properties.of()
+                            .mapColor(MapColor.COLOR_BLACK)
+                            .strength(-1.0f, 3600000.0f)));
 
     public static final DeferredBlock<StressInputBlock> STRESS_INPUT =
             BLOCKS.register("stress_input", () -> new StressInputBlock(
@@ -87,6 +108,20 @@ public class ModBlocks {
                     }
                     return null;
                 });
+
+        event.registerBlockEntity(Capabilities.ItemHandler.BLOCK, ModBlockEntities.INPUT.get(),
+                (be, side) -> be.getItemHandler());
+        event.registerBlockEntity(Capabilities.FluidHandler.BLOCK, ModBlockEntities.INPUT.get(),
+                (be, side) -> be.getFluidHandler());
+        event.registerBlockEntity(Capabilities.EnergyStorage.BLOCK, ModBlockEntities.INPUT.get(),
+                (be, side) -> be.getEnergyHandler());
+
+        event.registerBlockEntity(Capabilities.ItemHandler.BLOCK, ModBlockEntities.OUTPUT.get(),
+                (be, side) -> be.getItemHandler());
+        event.registerBlockEntity(Capabilities.FluidHandler.BLOCK, ModBlockEntities.OUTPUT.get(),
+                (be, side) -> be.getFluidHandler());
+        event.registerBlockEntity(Capabilities.EnergyStorage.BLOCK, ModBlockEntities.OUTPUT.get(),
+                (be, side) -> be.getEnergyHandler());
     }
 
     public static void registerStressValues() {

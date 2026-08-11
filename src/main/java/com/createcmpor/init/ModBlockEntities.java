@@ -1,7 +1,10 @@
 package com.createcmpor.init;
 
 import com.createcmpor.CreateCMPOR;
+import com.createcmpor.block.EvaluatorBlockEntity;
 import com.createcmpor.block.FactoryBlockEntity;
+import com.createcmpor.block.InputBlockEntity;
+import com.createcmpor.block.OutputBlockEntity;
 import com.createcmpor.block.StressExtensionBlockEntity;
 import com.createcmpor.block.StressInputBlockEntity;
 import com.createcmpor.block.StressOutputBlockEntity;
@@ -23,6 +26,18 @@ public class ModBlockEntities {
     public static final DeferredHolder<BlockEntityType<?>, BlockEntityType<FactoryBlockEntity>> FACTORY =
             BLOCK_ENTITIES.register("factory_block", () -> BlockEntityType.Builder.of(
                     FactoryBlockEntity::new, ModBlocks.FACTORY.get()).build(null));
+
+    public static final DeferredHolder<BlockEntityType<?>, BlockEntityType<InputBlockEntity>> INPUT =
+            BLOCK_ENTITIES.register("input_block", () -> BlockEntityType.Builder.of(
+                    InputBlockEntity::new, ModBlocks.INPUT.get()).build(null));
+
+    public static final DeferredHolder<BlockEntityType<?>, BlockEntityType<OutputBlockEntity>> OUTPUT =
+            BLOCK_ENTITIES.register("output_block", () -> BlockEntityType.Builder.of(
+                    OutputBlockEntity::new, ModBlocks.OUTPUT.get()).build(null));
+
+    public static final DeferredHolder<BlockEntityType<?>, BlockEntityType<EvaluatorBlockEntity>> EVALUATOR =
+            BLOCK_ENTITIES.register("evaluator_block", () -> BlockEntityType.Builder.of(
+                    EvaluatorBlockEntity::new, ModBlocks.EVALUATOR.get()).build(null));
 
     public static final DeferredHolder<BlockEntityType<?>, BlockEntityType<StressInputBlockEntity>> STRESS_INPUT =
             BLOCK_ENTITIES.register("stress_input", () -> BlockEntityType.Builder.of(

@@ -1,0 +1,20 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "III",
+    "IRI",
+    "III"
+  ],
+  "key": {
+    "I": {
+      "tag": "c:dyed/black"
+    },
+    "R": {
+      "tag": "c:storage_blocks/iron"
+    }
+  },
+  "result": {
+    "count": 1,
+    "id": "createcmpor:output_block"
+  }
+}

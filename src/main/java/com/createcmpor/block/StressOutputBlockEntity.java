@@ -57,7 +57,7 @@ public class StressOutputBlockEntity extends KineticBlockEntity {
             return;
         if (!isActive() || roomCode == null)
             return;
-        // Phase 1 已剥离旧外部评估主线，不再查询外部 Core.MACHINES。
+        // Phase 1 已剥离旧外部评估主线，不再查询旧评估注册表。
         // 后续平行房间评估会由 EvaluationManager 控制 roomCode 生命周期；当前只以 roomCode 存在作为采样开关。
         if (--sampleCooldown > 0)
             return;

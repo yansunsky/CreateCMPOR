@@ -10,9 +10,13 @@ import com.simibubi.create.content.kinetics.base.SingleAxisRotatingVisual;
 import dev.engine_room.flywheel.lib.visualization.SimpleBlockEntityVisualizer;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
 import net.neoforged.neoforge.client.event.EntityRenderersEvent;
+import net.neoforged.neoforge.client.gui.ConfigurationScreen;
+import net.neoforged.neoforge.client.gui.IConfigScreenFactory;
 
 /**
  * 客户端渲染绑定。
@@ -28,8 +32,13 @@ import net.neoforged.neoforge.client.event.EntityRenderersEvent;
  * 因此也需要注册渲染。{@link com.simibubi.create.content.kinetics.base.KineticBlockEntityRenderer#renderSafe}
  * 在 Flywheel 可用时会直接 return，因此**必须同时注册 Flywheel visual**，否则传动杆永远不渲染。
  */
+@Mod(value = CreateCMPOR.MOD_ID, dist = Dist.CLIENT)
 @EventBusSubscriber(modid = CreateCMPOR.MOD_ID, value = Dist.CLIENT)
 public class ClientSetup {
+
+    public ClientSetup(ModContainer container) {
+        container.registerExtensionPoint(IConfigScreenFactory.class, ConfigurationScreen::new);
+    }
 
     @SubscribeEvent
     public static void registerRenderers(EntityRenderersEvent.RegisterRenderers event) {

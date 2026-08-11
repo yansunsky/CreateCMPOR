@@ -1,0 +1,10 @@
+{
+  "variants": {
+    "powered=false": {
+      "model": "createcmpor:block/evaluator_block"
+    },
+    "powered=true": {
+      "model": "createcmpor:block/evaluator_block"
+    }
+  }
+}
