@@ -1,0 +1,9 @@
+{
+  "replace": false,
+  "values": [
+    "createcmpor:factory_block",
+    "createcmpor:input_block",
+    "createcmpor:output_block",
+    "createcmpor:evaluator_block"
+  ]
+}

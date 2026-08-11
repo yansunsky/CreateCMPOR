@@ -1,0 +1,10 @@
+{
+  "variants": {
+    "active=false": {
+      "model": "createcmpor:block/output_block"
+    },
+    "active=true": {
+      "model": "createcmpor:block/output_block"
+    }
+  }
+}

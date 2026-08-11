@@ -21,6 +21,9 @@ public class ModCreativeTabs {
                         output.accept(ModItems.LAUNCHER_STICK.get());
                         output.accept(ModItems.STRESS_EXTENSION.get());
                         output.accept(ModItems.FACTORY.get());
+                        output.accept(ModItems.INPUT.get());
+                        output.accept(ModItems.OUTPUT.get());
+                        output.accept(ModItems.EVALUATOR.get());
                         output.accept(ModItems.STRESS_INPUT.get());
                         output.accept(ModItems.STRESS_OUTPUT.get());
                     })
