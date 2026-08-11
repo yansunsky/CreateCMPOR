@@ -4,6 +4,8 @@ import com.createcmpor.CreateCMPOR;
 import dev.compactmods.machines.api.room.spatial.IRoomBoundaries;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.AABB;
@@ -75,6 +77,50 @@ public class RoomCloner {
         }
     }
 
+    /**
+     * 比较两个维度中同一房间坐标范围的持久化状态。
+     */
+    public DiffSummary compareSameCoordinates(ServerLevel source, ServerLevel target, IRoomBoundaries boundaries) {
+        AABB inner = boundaries.innerBounds();
+        BlockPos min = minCorner(inner);
+        BlockPos max = maxCornerExclusive(inner);
+        int blockMismatches = 0;
+        int blockEntityMismatches = 0;
+
+        for (BlockPos pos : BlockPos.betweenClosed(min, max.offset(-1, -1, -1))) {
+            BlockPos immutablePos = pos.immutable();
+            if (!source.getBlockState(immutablePos).equals(target.getBlockState(immutablePos))) {
+                blockMismatches++;
+            }
+
+            var sourceBlockEntity = source.getBlockEntity(immutablePos);
+            var targetBlockEntity = target.getBlockEntity(immutablePos);
+            if (sourceBlockEntity == null && targetBlockEntity == null) {
+                continue;
+            }
+            if (sourceBlockEntity == null || targetBlockEntity == null) {
+                blockEntityMismatches++;
+                continue;
+            }
+
+            var sourceTag = sourceBlockEntity.saveWithFullMetadata(source.registryAccess());
+            var targetTag = targetBlockEntity.saveWithFullMetadata(target.registryAccess());
+            if (!sourceTag.equals(targetTag)) {
+                blockEntityMismatches++;
+            }
+        }
+
+        int sourceEntities = countNonPlayerEntities(source, inner);
+        int targetEntities = countNonPlayerEntities(target, inner);
+        return new DiffSummary(blockMismatches, blockEntityMismatches, sourceEntities, targetEntities);
+    }
+
+    private static int countNonPlayerEntities(ServerLevel level, AABB bounds) {
+        return (int) level.getEntitiesOfClass(Entity.class, bounds).stream()
+                .filter(entity -> !(entity instanceof Player))
+                .count();
+    }
+
     private static BlockPos minCorner(AABB bounds) {
         return BlockPos.containing(bounds.minX, bounds.minY, bounds.minZ);
     }
@@ -84,5 +130,9 @@ public class RoomCloner {
      */
     private static BlockPos maxCornerExclusive(AABB bounds) {
         return BlockPos.containing(bounds.maxX, bounds.maxY, bounds.maxZ);
+    }
+
+    public record DiffSummary(int blockMismatches, int blockEntityMismatches,
+                              int sourceEntities, int targetEntities) {
     }
 }

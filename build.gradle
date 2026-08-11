@@ -60,6 +60,9 @@ neoForge {
             // environment 'MESA_GLSL_VERSION_OVERRIDE', '460'
             // environment 'PATH', file("${projectDir}/mesa").getAbsolutePath() + java.io.File.pathSeparator + System.getenv('PATH')
         }
+        server {
+            server()
+        }
         data {
             data()
             programArguments.addAll '--mod', project.mod_id, '--all',

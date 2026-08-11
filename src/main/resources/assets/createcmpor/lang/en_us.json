@@ -17,6 +17,7 @@
   "config.createcmpor.enable_inventory_audit": "Enable Inventory Audit",
   "config.createcmpor.suspicious_mods": "Suspicious Mod IDs",
   "config.createcmpor.suspicious_blocks": "Suspicious Block IDs",
+  "message.createcmpor.eval_world.exiled": "You were returned to the Overworld because eval_world is restricted to operators.",
   "message.createcmpor.stress_input.activated": "Stress Input Block activated",
   "message.createcmpor.stress_input.deactivated": "Stress Input Block deactivated",
   "message.createcmpor.stress_input.auto_only": "Activation is controlled by evaluation (manual toggle disabled)",
