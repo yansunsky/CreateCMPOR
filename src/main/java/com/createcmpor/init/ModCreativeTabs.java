@@ -18,6 +18,7 @@ public class ModCreativeTabs {
                     .title(Component.translatable("itemGroup.createcmpor"))
                     .icon(() -> ModItems.STRESS_EXTENSION.get().getDefaultInstance())
                     .displayItems((parameters, output) -> {
+                        output.accept(ModItems.LAUNCHER_STICK.get());
                         output.accept(ModItems.STRESS_EXTENSION.get());
                         output.accept(ModItems.FACTORY.get());
                         output.accept(ModItems.STRESS_INPUT.get());

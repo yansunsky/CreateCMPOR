@@ -4,6 +4,7 @@
   "block.createcmpor.factory_block": "平行工厂方块",
   "block.createcmpor.stress_input": "应力输入方块",
   "block.createcmpor.stress_output": "应力输出方块",
+  "item.createcmpor.launcher_stick": "平行评估启动棒",
   "message.createcmpor.stress_input.activated": "应力输入方块已激活",
   "message.createcmpor.stress_input.deactivated": "应力输入方块已停用",
   "message.createcmpor.stress_input.auto_only": "激活由评估流程控制（已禁用手动切换）",

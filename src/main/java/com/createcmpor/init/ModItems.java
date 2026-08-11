@@ -1,7 +1,9 @@
 package com.createcmpor.init;
 
 import com.createcmpor.CreateCMPOR;
+import com.createcmpor.item.LauncherStickItem;
 import net.minecraft.world.item.BlockItem;
+import net.minecraft.world.item.Item;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.registries.DeferredItem;
 import net.neoforged.neoforge.registries.DeferredRegister;
@@ -22,6 +24,9 @@ public class ModItems {
 
     public static final DeferredItem<BlockItem> STRESS_OUTPUT =
             ITEMS.registerSimpleBlockItem("stress_output", ModBlocks.STRESS_OUTPUT);
+
+    public static final DeferredItem<LauncherStickItem> LAUNCHER_STICK =
+            ITEMS.register("launcher_stick", () -> new LauncherStickItem(new Item.Properties().stacksTo(1)));
 
     public static void register(IEventBus modEventBus) {
         ITEMS.register(modEventBus);

@@ -4,6 +4,7 @@
   "block.createcmpor.factory_block": "Parallel Factory Block",
   "block.createcmpor.stress_input": "Stress Input Block",
   "block.createcmpor.stress_output": "Stress Output Block",
+  "item.createcmpor.launcher_stick": "Parallel Evaluation Launcher Stick",
   "message.createcmpor.stress_input.activated": "Stress Input Block activated",
   "message.createcmpor.stress_input.deactivated": "Stress Input Block deactivated",
   "message.createcmpor.stress_input.auto_only": "Activation is controlled by evaluation (manual toggle disabled)",
