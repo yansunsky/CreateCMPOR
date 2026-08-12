@@ -12,6 +12,7 @@ import com.simibubi.create.api.stress.BlockStressValues;
 import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.state.BlockBehaviour;
 import net.minecraft.world.level.material.MapColor;
+import net.minecraft.world.level.material.PushReaction;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.capabilities.Capabilities;
 import net.neoforged.neoforge.capabilities.RegisterCapabilitiesEvent;
@@ -54,8 +55,10 @@ public class ModBlocks {
     public static final DeferredBlock<EvaluatorBlock> EVALUATOR =
             BLOCKS.register("evaluator_block", () -> new EvaluatorBlock(
                     BlockBehaviour.Properties.of()
-                            .mapColor(MapColor.COLOR_BLACK)
-                            .strength(-1.0f, 3600000.0f)));
+                             .mapColor(MapColor.COLOR_BLACK)
+                             .strength(-1.0f, 3600000.0f)
+                             .pushReaction(PushReaction.BLOCK)
+                             .noLootTable()));
 
     public static final DeferredBlock<StressInputBlock> STRESS_INPUT =
             BLOCKS.register("stress_input", () -> new StressInputBlock(
