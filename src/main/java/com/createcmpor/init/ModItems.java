@@ -25,9 +25,6 @@ public class ModItems {
     public static final DeferredItem<BlockItem> OUTPUT =
             ITEMS.registerSimpleBlockItem("output_block", ModBlocks.OUTPUT);
 
-    public static final DeferredItem<BlockItem> EVALUATOR =
-            ITEMS.registerSimpleBlockItem("evaluator_block", ModBlocks.EVALUATOR);
-
     public static final DeferredItem<BlockItem> STRESS_INPUT =
             ITEMS.registerSimpleBlockItem("stress_input", ModBlocks.STRESS_INPUT);
 

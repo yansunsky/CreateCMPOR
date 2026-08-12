@@ -13,15 +13,17 @@ import net.minecraft.world.level.block.state.StateDefinition;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.state.properties.BooleanProperty;
 import net.minecraft.world.level.material.MapColor;
+import net.minecraft.world.level.material.PushReaction;
 import org.jetbrains.annotations.Nullable;
 
-/** Phase 1 evaluator marker; the evaluation workflow is added in later phases. */
+/** 评估期间替代原机器的不可破坏标记方块。 */
 public class EvaluatorBlock extends BaseEntityBlock {
     public static final MapCodec<EvaluatorBlock> CODEC = simpleCodec(EvaluatorBlock::new);
     public static final BooleanProperty POWERED = BlockStateProperties.POWERED;
 
     public EvaluatorBlock() {
-        this(BlockBehaviour.Properties.of().mapColor(MapColor.COLOR_BLACK).strength(-1.0f, 3600000.0f));
+        this(BlockBehaviour.Properties.of().mapColor(MapColor.COLOR_BLACK).strength(-1.0f, 3600000.0f)
+                .pushReaction(PushReaction.BLOCK).noLootTable());
     }
 
     public EvaluatorBlock(Properties properties) {
@@ -50,9 +52,6 @@ public class EvaluatorBlock extends BaseEntityBlock {
         if (!level.isClientSide) {
             boolean powered = level.hasNeighborSignal(pos);
             if (powered != state.getValue(POWERED)) {
-                if (powered && level.getBlockEntity(pos) instanceof EvaluatorBlockEntity evaluator) {
-                    evaluator.trigger();
-                }
                 level.setBlockAndUpdate(pos, state.setValue(POWERED, powered));
             }
         }

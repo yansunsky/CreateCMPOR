@@ -1,12 +1,12 @@
 package com.createcmpor;
 
-import com.createcmpor.command.ModCommands;
 import com.createcmpor.command.EvalWorldCommands;
 import com.createcmpor.init.ModBlockEntities;
 import com.createcmpor.init.ModBlocks;
 import com.createcmpor.init.ModCreativeTabs;
 import com.createcmpor.init.ModItems;
 import com.createcmpor.evaluation.EvalWorldGuard;
+import com.createcmpor.evaluation.EvaluationManager;
 import com.mojang.logging.LogUtils;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
@@ -61,8 +61,11 @@ public class CreateCMPOR {
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(ModBlocks::registerCapabilities);
         modEventBus.addListener(CreateCMPOR::onAddPackFinders);
-        NeoForge.EVENT_BUS.addListener(ModCommands::onRegisterCommands);
         NeoForge.EVENT_BUS.addListener(EvalWorldCommands::onRegisterCommands);
+        NeoForge.EVENT_BUS.addListener(EvaluationManager.INSTANCE::onServerTick);
+        NeoForge.EVENT_BUS.addListener(EvaluationManager.INSTANCE::onServerStarted);
+        NeoForge.EVENT_BUS.addListener(EvaluationManager.INSTANCE::onPlayerLogin);
+        NeoForge.EVENT_BUS.addListener(EvaluationManager.INSTANCE::onBlockBreak);
         NeoForge.EVENT_BUS.addListener(EvalWorldGuard::onServerTick);
         NeoForge.EVENT_BUS.addListener(EvalWorldGuard::onPlayerRespawn);
 

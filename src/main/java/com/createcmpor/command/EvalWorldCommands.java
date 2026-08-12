@@ -25,7 +25,6 @@ import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 
 import java.util.Optional;
-import java.util.UUID;
 
 /** Phase 2 调试命令：检查原房间与 eval_world 同坐标副本。 */
 public final class EvalWorldCommands {
@@ -92,24 +91,18 @@ public final class EvalWorldCommands {
         }
 
         RoomInstance room = roomOptional.get();
-        UUID ticketId = UUID.randomUUID();
-        try {
-            CM_ADAPTER.initializeDefaultSpawn(room);
-            CM_ADAPTER.setRoomForced(room, ticketId, true);
-            loadRoomChunks(room.level(), room);
+        CM_ADAPTER.initializeDefaultSpawn(room);
+        loadRoomChunks(room.level(), room);
 
-            var spawn = CompactMachines.spawnManagers().get(room.code()).spawns().defaultSpawn();
-            Vec3 pos = spawn.position();
-            player.teleportTo(room.level(), pos.x(), pos.y(), pos.z(), spawn.rotation().y, spawn.rotation().x);
-            player.setData(CMDataAttachments.CURRENT_ROOM_CODE, room.code());
-            player.setData(CMDataAttachments.CURRENT_ROOM_DEBUG_INFO,
-                    new RoomDebugInformation(room.code(), room.getData(CMDataAttachments.ROOM_OWNER)));
+        var spawn = CompactMachines.spawnManagers().get(room.code()).spawns().defaultSpawn();
+        Vec3 pos = spawn.position();
+        player.teleportTo(room.level(), pos.x(), pos.y(), pos.z(), spawn.rotation().y, spawn.rotation().x);
+        player.setData(CMDataAttachments.CURRENT_ROOM_CODE, room.code());
+        player.setData(CMDataAttachments.CURRENT_ROOM_DEBUG_INFO,
+                new RoomDebugInformation(room.code(), room.getData(CMDataAttachments.ROOM_OWNER)));
 
-            source.sendSuccess(() -> Component.literal("已进入原房间：" + roomCode), true);
-            return 1;
-        } finally {
-            CM_ADAPTER.setRoomForced(room, ticketId, false);
-        }
+        source.sendSuccess(() -> Component.literal("已进入原房间：" + roomCode), true);
+        return 1;
     }
 
     private static int enterEval(CommandSourceStack source, String roomCode) throws CommandSyntaxException {
@@ -147,21 +140,15 @@ public final class EvalWorldCommands {
         }
 
         RoomInstance room = roomOptional.get();
-        UUID ticketId = UUID.randomUUID();
-        try {
-            CM_ADAPTER.setRoomForced(room, ticketId, true);
-            loadRoomChunks(room.level(), room);
-            loadRoomChunks(evalWorld, room);
+        loadRoomChunks(room.level(), room);
+        loadRoomChunks(evalWorld, room);
 
-            RoomCloner.DiffSummary diff = ROOM_CLONER.compareSameCoordinates(
-                    room.level(), evalWorld, room.boundaries());
-            source.sendSuccess(() -> Component.literal("房间 " + roomCode + " 差异：方块="
-                    + diff.blockMismatches() + "，方块实体=" + diff.blockEntityMismatches()
-                    + "，非玩家实体 original/eval=" + diff.sourceEntities() + "/" + diff.targetEntities()), false);
-            return 1;
-        } finally {
-            CM_ADAPTER.setRoomForced(room, ticketId, false);
-        }
+        RoomCloner.DiffSummary diff = ROOM_CLONER.compareSameCoordinates(
+                room.level(), evalWorld, room.boundaries());
+        source.sendSuccess(() -> Component.literal("房间 " + roomCode + " 差异：方块="
+                + diff.blockMismatches() + "，方块实体=" + diff.blockEntityMismatches()
+                + "，非玩家实体 original/eval=" + diff.sourceEntities() + "/" + diff.targetEntities()), false);
+        return 1;
     }
 
     private static void loadRoomChunks(ServerLevel level, RoomInstance room) {
