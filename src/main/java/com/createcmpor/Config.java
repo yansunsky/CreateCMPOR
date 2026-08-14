@@ -37,6 +37,7 @@ public class Config {
     public static final ModConfigSpec.BooleanValue ENABLE_INVENTORY_AUDIT;
     public static final ModConfigSpec.ConfigValue<List<? extends String>> SUSPICIOUS_MODS;
     public static final ModConfigSpec.ConfigValue<List<? extends String>> SUSPICIOUS_BLOCKS;
+    public static final ModConfigSpec.IntValue MAX_CONCURRENT_EVALUATIONS;
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
@@ -71,6 +72,9 @@ public class Config {
         SUSPICIOUS_BLOCKS = builder
                 .comment("明确禁止进入评估的方块 ID。")
                 .defineListAllowEmpty("suspiciousBlocks", List.of(), value -> value instanceof String);
+        MAX_CONCURRENT_EVALUATIONS = builder
+                .comment("同时进行区块副本克隆的评估会话上限；超出后按创建顺序排队。")
+                .defineInRange("maxConcurrentEvaluations", 4, 1, 16);
         builder.pop();
 
         SPEC = builder.build();

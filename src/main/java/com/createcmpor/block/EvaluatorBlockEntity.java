@@ -21,6 +21,7 @@ public class EvaluatorBlockEntity extends RoomCodeBlockEntity {
     private CompoundTag originalMachineState;
     @Nullable
     private CompoundTag savedOriginalNbt;
+    private boolean phase4CleanupRequired;
 
     public EvaluatorBlockEntity(BlockPos pos, BlockState state) {
         super(ModBlockEntities.EVALUATOR.get(), pos, state);
@@ -34,6 +35,7 @@ public class EvaluatorBlockEntity extends RoomCodeBlockEntity {
         this.roomCode = roomCode;
         originalMachineState = NbtUtils.writeBlockState(originalState);
         savedOriginalNbt = beNbt.copy();
+        phase4CleanupRequired = false;
         setChanged();
     }
 
@@ -61,6 +63,15 @@ public class EvaluatorBlockEntity extends RoomCodeBlockEntity {
         return savedOriginalNbt == null ? null : savedOriginalNbt.copy();
     }
 
+    public boolean isPhase4CleanupRequired() {
+        return phase4CleanupRequired;
+    }
+
+    public void markPhase4CleanupRequired() {
+        phase4CleanupRequired = true;
+        setChanged();
+    }
+
     @Override
     protected void loadCommon(CompoundTag tag) {
         super.loadCommon(tag);
@@ -73,6 +84,7 @@ public class EvaluatorBlockEntity extends RoomCodeBlockEntity {
         savedOriginalNbt = tag.contains("original_machine_nbt")
                 ? tag.getCompound("original_machine_nbt")
                 : null;
+        phase4CleanupRequired = tag.getBoolean("phase4_cleanup_required");
     }
 
     @Override
@@ -91,5 +103,6 @@ public class EvaluatorBlockEntity extends RoomCodeBlockEntity {
         if (savedOriginalNbt != null) {
             tag.put("original_machine_nbt", savedOriginalNbt.copy());
         }
+        tag.putBoolean("phase4_cleanup_required", phase4CleanupRequired);
     }
 }

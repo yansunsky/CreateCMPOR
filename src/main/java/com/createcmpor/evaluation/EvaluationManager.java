@@ -27,6 +27,7 @@ import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
+import net.neoforged.neoforge.common.IOUtilities;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -124,8 +125,8 @@ public final class EvaluationManager {
                 tickSession(server, data, session);
             } catch (RuntimeException exception) {
                 CreateCMPOR.LOGGER.error("评估会话 {} 执行失败，开始回滚", session.id(), exception);
-                rollback(server, data, session,
-                        Component.translatable("message.createcmpor.evaluation.runtime_failed"));
+                failSession(server, data, session,
+                        "message.createcmpor.evaluation.runtime_failed");
             }
         }
     }
@@ -134,11 +135,15 @@ public final class EvaluationManager {
         playersBeingEvicted.clear();
         MinecraftServer server = event.getServer();
         EvaluationSavedData data = EvaluationSavedData.get(server);
+        EvaluationCloneManager.INSTANCE.onServerStarted(server, data);
         List<EvaluationSession> sessions = new ArrayList<>(data.sessions());
         if (!sessions.isEmpty()) {
-            CreateCMPOR.LOGGER.warn("检测到 {} 个未完成评估会话，开始回滚", sessions.size());
+            CreateCMPOR.LOGGER.warn("检测到 {} 个未完成评估会话，开始恢复", sessions.size());
         }
         for (EvaluationSession session : sessions) {
+            if (session.hasPhase4Manifest()) {
+                continue;
+            }
             try {
                 rollback(server, data, session,
                         Component.translatable("message.createcmpor.evaluation.recovered_after_restart"));
@@ -171,12 +176,17 @@ public final class EvaluationManager {
         GlobalPos machinePos = GlobalPos.of(player.level().dimension(), event.getPos());
         Optional<EvaluationSession> session = data.sessionByMachine(machinePos);
         if (session.isPresent()) {
-            rollback(player.server, data, session.get(),
-                    Component.translatable("message.createcmpor.evaluation.admin_rollback"));
+            failSession(player.server, data, session.get(),
+                    "message.createcmpor.evaluation.admin_rollback");
             return;
         }
         if (event.getLevel() instanceof ServerLevel level
                 && level.getBlockEntity(event.getPos()) instanceof EvaluatorBlockEntity evaluator) {
+            if (evaluator.isPhase4CleanupRequired()) {
+                player.displayClientMessage(
+                        Component.translatable("message.createcmpor.evaluation.orphan_cleanup_required"), false);
+                return;
+            }
             if (restoreOrphanEvaluator(level, evaluator)) {
                 queueOrphanLauncherReturn(player.server, evaluator);
                 player.displayClientMessage(
@@ -195,8 +205,8 @@ public final class EvaluationManager {
         if (session.state() != EvaluationSession.State.PREPARED
                 && session.state() != EvaluationSession.State.ROLLING_BACK
                 && evaluatorMissing(server, session)) {
-            rollback(server, data, session,
-                    Component.translatable("message.createcmpor.evaluation.evaluator_missing"));
+            failSession(server, data, session,
+                    "message.createcmpor.evaluation.evaluator_missing");
             return;
         }
         switch (session.state()) {
@@ -206,10 +216,11 @@ public final class EvaluationManager {
             case EVICTING_PLAYERS -> tickPlayerEviction(server, data, session);
             case SAVING_SOURCE -> tickSaving(server, data, session);
             case WAITING_UNLOAD -> tickWaitingForUnload(server, data, session);
-            case FROZEN -> {
-            }
+            case FROZEN, QUEUED, STAGING_SOURCE, STAGING_WRITTEN, STAGING_VERIFIED,
+                    PUBLISHING, PUBLISHED, CLEANING ->
+                    EvaluationCloneManager.INSTANCE.tick(server, data, session);
             case ROLLING_BACK -> rollback(server, data, session,
-                    Component.translatable("message.createcmpor.evaluation.runtime_failed"));
+                    Component.translatable(session.rollbackMessageKey()));
         }
     }
 
@@ -248,7 +259,8 @@ public final class EvaluationManager {
                     Component.translatable("message.createcmpor.evaluation.room_missing", session.roomCode()));
             return;
         }
-        room.level().getChunkSource().save(true);
+        room.level().save(null, true, false);
+        IOUtilities.waitUntilIOWorkerComplete();
         transition(data, session, EvaluationSession.State.WAITING_UNLOAD);
     }
 
@@ -382,14 +394,23 @@ public final class EvaluationManager {
     private void rollback(MinecraftServer server, EvaluationSavedData data, EvaluationSession session,
                           Component reason) {
         playersBeingEvicted.entrySet().removeIf(entry -> entry.getValue().sessionId().equals(session.id()));
+        if (session.hasPhase4Manifest()) {
+            EvaluationManifest manifest = session.manifest();
+            if (manifest.targetWriteIntent() || manifest.ticketsAdded() || manifest.targetReady()
+                    || session.state() != EvaluationSession.State.ROLLING_BACK) {
+                EvaluationCloneManager.INSTANCE.requestCleanup(
+                        server, data, session, session.rollbackMessageKey());
+                return;
+            }
+        }
         if (session.state() != EvaluationSession.State.ROLLING_BACK) {
             session.setState(EvaluationSession.State.ROLLING_BACK);
             data.changed();
-        } else if (session.stateTicks() < 100) {
+        } else if (session.stateTicks() > 0 && session.stateTicks() < 100) {
             session.tickState();
             data.changed();
             return;
-        } else {
+        } else if (session.stateTicks() >= 100) {
             session.resetStateTicks();
         }
         ServerLevel machineLevel = server.getLevel(session.machinePos().dimension());
@@ -399,6 +420,8 @@ public final class EvaluationManager {
                 machineLevel.getChunkSource().save(true);
             } catch (RuntimeException exception) {
                 CreateCMPOR.LOGGER.error("恢复会话 {} 的原机器失败，将在 100 tick 后重试", session.id(), exception);
+                session.tickState();
+                data.changed();
                 return;
             }
         } else {
@@ -412,6 +435,7 @@ public final class EvaluationManager {
         }
         data.remove(session.id());
         flushTransactions(server);
+        EvaluationCloneManager.INSTANCE.afterSessionRemoved(server, data);
         ServerPlayer owner = server.getPlayerList().getPlayer(session.owner());
         if (owner != null) {
             deliverPendingLaunchers(owner, data);
@@ -434,6 +458,28 @@ public final class EvaluationManager {
         level.setBlockEntity(restored);
         restored.setChanged();
         level.sendBlockUpdated(pos, session.originalState(), session.originalState(), Block.UPDATE_ALL);
+    }
+
+    void markEvaluatorPhase4(MinecraftServer server, EvaluationSession session) {
+        ServerLevel machineLevel = server.getLevel(session.machinePos().dimension());
+        if (machineLevel == null
+                || !(machineLevel.getBlockEntity(session.machinePos().pos()) instanceof EvaluatorBlockEntity evaluator)
+                || !session.id().equals(evaluator.getSessionId())) {
+            throw new IllegalStateException("无法在 EvaluatorBlockEntity 上登记 Phase 4 清理责任");
+        }
+        evaluator.markPhase4CleanupRequired();
+        machineLevel.save(null, true, false);
+        IOUtilities.waitUntilIOWorkerComplete();
+    }
+
+    private void failSession(MinecraftServer server, EvaluationSavedData data,
+                             EvaluationSession session, String messageKey) {
+        session.setRollbackMessageKey(messageKey);
+        if (session.hasPhase4Manifest()) {
+            EvaluationCloneManager.INSTANCE.requestCleanup(server, data, session, messageKey);
+        } else {
+            rollback(server, data, session, Component.translatable(messageKey));
+        }
     }
 
     private static void transition(EvaluationSavedData data, EvaluationSession session,
@@ -502,6 +548,7 @@ public final class EvaluationManager {
 
     private static void flushTransactions(MinecraftServer server) {
         server.overworld().getDataStorage().save();
+        IOUtilities.waitUntilIOWorkerComplete();
     }
 
     public record StartResult(boolean successful, EvaluationSession session, Component message) {
