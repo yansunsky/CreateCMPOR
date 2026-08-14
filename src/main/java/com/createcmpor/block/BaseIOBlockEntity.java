@@ -96,17 +96,49 @@ public abstract class BaseIOBlockEntity extends RoomCodeBlockEntity {
         return false;
     }
 
-    /** Legacy accounting was deliberately removed; Phase 6 will provide the new sampler. */
+    /** Phase 6 采样器：把 IO 流量写入活动评估会话的按秒 bucket。 */
     protected void handle(ItemStack stack) {
+        if (getLevel() == null || getLevel().isClientSide || roomCode == null || roomCode.isBlank()) {
+            return;
+        }
+        ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
+        boolean input = this instanceof InputBlockEntity;
+        com.createcmpor.evaluation.EvaluationTrace.Hub.INSTANCE.record(
+                roomCode, com.createcmpor.evaluation.EvaluationTrace.FlowKey.item(id),
+                stack.getCount(), input, getLevel().getGameTime());
     }
 
     protected void handle(FluidStack stack) {
+        if (getLevel() == null || getLevel().isClientSide || roomCode == null || roomCode.isBlank()) {
+            return;
+        }
+        ResourceLocation id = BuiltInRegistries.FLUID.getKey(stack.getFluid());
+        boolean input = this instanceof InputBlockEntity;
+        com.createcmpor.evaluation.EvaluationTrace.Hub.INSTANCE.record(
+                roomCode, com.createcmpor.evaluation.EvaluationTrace.FlowKey.fluid(id),
+                stack.getAmount(), input, getLevel().getGameTime());
     }
 
     protected void handle(Holder<?> holder, int count) {
+        if (getLevel() == null || getLevel().isClientSide || roomCode == null || roomCode.isBlank()
+                || holder.value() == null) {
+            return;
+        }
+        boolean input = this instanceof InputBlockEntity;
+        if (holder.value() instanceof net.minecraft.world.item.Item item) {
+            ResourceLocation id = BuiltInRegistries.ITEM.getKey(item);
+            com.createcmpor.evaluation.EvaluationTrace.Hub.INSTANCE.record(
+                    roomCode, com.createcmpor.evaluation.EvaluationTrace.FlowKey.item(id),
+                    count, input, getLevel().getGameTime());
+        }
     }
 
     protected void handle(int energy) {
+        if (getLevel() == null || getLevel().isClientSide || roomCode == null || roomCode.isBlank()) {
+            return;
+        }
+        com.createcmpor.evaluation.EvaluationTrace.Hub.INSTANCE.recordEnergy(
+                roomCode, energy, this instanceof InputBlockEntity, getLevel().getGameTime());
     }
 
     @Override
