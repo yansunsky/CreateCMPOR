@@ -4,6 +4,12 @@ import com.createcmpor.CreateCMPOR;
 import com.createcmpor.compat.cm.CMAdapterV7;
 import com.createcmpor.compat.cm.ICompactMachinesAdapter;
 import com.createcmpor.compat.cm.RoomCloner;
+import com.createcmpor.evaluation.EvaluationCloneManager;
+import com.createcmpor.evaluation.EvaluationManager;
+import com.createcmpor.evaluation.EvaluationManifest;
+import com.createcmpor.evaluation.EvaluationSavedData;
+import com.createcmpor.evaluation.EvaluationSession;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import dev.compactmods.machines.api.CompactMachines;
@@ -24,6 +30,8 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 /** Phase 2 调试命令：检查原房间与 eval_world 同坐标副本。 */
@@ -52,7 +60,15 @@ public final class EvalWorldCommands {
                         .then(Commands.literal("diff")
                                 .then(Commands.argument("room", StringArgumentType.word())
                                         .executes(context -> diffRoom(context.getSource(),
-                                                StringArgumentType.getString(context, "room")))))));
+                                                StringArgumentType.getString(context, "room"))))))
+                .then(Commands.literal("evaluation")
+                        .then(Commands.literal("list")
+                                .executes(context -> listEvaluations(context.getSource())))
+                        .then(Commands.literal("max")
+                                .executes(context -> showMaxEvaluations(context.getSource()))
+                                .then(Commands.argument("value", IntegerArgumentType.integer(1, 16))
+                                        .executes(context -> setMaxEvaluations(context.getSource(),
+                                                IntegerArgumentType.getInteger(context, "value")))))));
     }
 
     private static int showRoomCode(CommandSourceStack source) throws CommandSyntaxException {
@@ -84,6 +100,10 @@ public final class EvalWorldCommands {
 
     private static int enterOriginal(CommandSourceStack source, String roomCode) throws CommandSyntaxException {
         ServerPlayer player = source.getPlayerOrException();
+        if (EvaluationManager.INSTANCE.isRoomLocked(source.getServer(), roomCode)) {
+            source.sendFailure(Component.translatable("message.createcmpor.evaluation.source_locked"));
+            return 0;
+        }
         Optional<RoomInstance> roomOptional = CM_ADAPTER.getRoom(source.getServer(), roomCode);
         if (roomOptional.isEmpty()) {
             source.sendFailure(Component.literal("找不到 CompactMachines 房间：" + roomCode));
@@ -107,6 +127,12 @@ public final class EvalWorldCommands {
 
     private static int enterEval(CommandSourceStack source, String roomCode) throws CommandSyntaxException {
         ServerPlayer player = source.getPlayerOrException();
+        Optional<EvaluationSession> session = EvaluationManager.INSTANCE.sessionByRoom(source.getServer(), roomCode);
+        if (session.isEmpty() || session.get().state() != EvaluationSession.State.PUBLISHED
+                || session.get().manifest() == null || !session.get().manifest().targetReady()) {
+            source.sendFailure(Component.translatable("message.createcmpor.evaluation.copy_not_ready"));
+            return 0;
+        }
         Optional<RoomInstance> roomOptional = CM_ADAPTER.getRoom(source.getServer(), roomCode);
         if (roomOptional.isEmpty()) {
             source.sendFailure(Component.literal("找不到 CompactMachines 房间：" + roomCode));
@@ -127,6 +153,16 @@ public final class EvalWorldCommands {
     }
 
     private static int diffRoom(CommandSourceStack source, String roomCode) {
+        Optional<EvaluationSession> session = EvaluationManager.INSTANCE.sessionByRoom(source.getServer(), roomCode);
+        if (session.isPresent() && session.get().manifest() != null) {
+            long mismatches = session.get().manifest().chunks().stream()
+                    .filter(chunk -> chunk.sourceHash().isBlank()
+                            || !chunk.sourceHash().equals(chunk.targetHash()))
+                    .count();
+            source.sendSuccess(() -> Component.literal("房间 " + roomCode + " 持久化区块差异="
+                    + mismatches + "/" + session.get().manifest().chunks().size()), false);
+            return 1;
+        }
         Optional<RoomInstance> roomOptional = CM_ADAPTER.getRoom(source.getServer(), roomCode);
         if (roomOptional.isEmpty()) {
             source.sendFailure(Component.literal("找不到 CompactMachines 房间：" + roomCode));
@@ -148,6 +184,54 @@ public final class EvalWorldCommands {
         source.sendSuccess(() -> Component.literal("房间 " + roomCode + " 差异：方块="
                 + diff.blockMismatches() + "，方块实体=" + diff.blockEntityMismatches()
                 + "，非玩家实体 original/eval=" + diff.sourceEntities() + "/" + diff.targetEntities()), false);
+        return 1;
+    }
+
+    private static int listEvaluations(CommandSourceStack source) {
+        EvaluationSavedData data = EvaluationSavedData.get(source.getServer());
+        List<EvaluationSession> sessions = new ArrayList<>(data.sessions());
+        if (sessions.isEmpty()) {
+            source.sendSuccess(() -> Component.literal("没有进行中的评估会话。"), false);
+            return 1;
+        }
+        int queuePosition = 0;
+        for (EvaluationSession session : sessions) {
+            StringBuilder line = new StringBuilder("房间 ").append(session.roomCode())
+                    .append(" | 状态 ").append(session.state());
+            if (session.manifest() != null) {
+                EvaluationManifest manifest = session.manifest();
+                int total = manifest.chunks().size();
+                int verified = (int) manifest.chunks().stream()
+                        .filter(chunk -> chunk.stagingStatus() == EvaluationManifest.StagingStatus.VERIFIED).count();
+                int published = (int) manifest.chunks().stream()
+                        .filter(chunk -> chunk.publishStatus() == EvaluationManifest.PublishStatus.VERIFIED).count();
+                line.append(" | 区块 ").append(total)
+                        .append(" | 已校验 ").append(verified)
+                        .append(" | 已发布 ").append(published);
+            }
+            if (session.state() == EvaluationSession.State.QUEUED) {
+                queuePosition++;
+                line.append(" | 排队第 ").append(queuePosition);
+            }
+            String text = line.toString();
+            source.sendSuccess(() -> Component.literal(text), false);
+        }
+        return 1;
+    }
+
+    private static int showMaxEvaluations(CommandSourceStack source) {
+        int current = EvaluationCloneManager.INSTANCE.maxConcurrentEvaluations();
+        source.sendSuccess(() -> Component.literal("当前并发评估上限：" + current), false);
+        return 1;
+    }
+
+    private static int setMaxEvaluations(CommandSourceStack source, int value) {
+        if (!EvaluationCloneManager.INSTANCE.setMaxConcurrentEvaluations(value)) {
+            source.sendFailure(Component.literal("并发评估上限必须在 1-16 之间。"));
+            return 0;
+        }
+        source.sendSuccess(() -> Component.literal("并发评估上限已设为 " + value
+                + "（本次运行生效，重启后恢复配置文件值）"), true);
         return 1;
     }
 

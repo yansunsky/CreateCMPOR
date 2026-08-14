@@ -18,7 +18,7 @@ import java.util.UUID;
 /** 保存冻结事务和待退还启动棒，供崩溃恢复使用。 */
 public final class EvaluationSavedData extends SavedData {
     private static final String DATA_NAME = CreateCMPOR.MOD_ID + "_evaluations";
-    private static final int SCHEMA_VERSION = 1;
+    private static final int SCHEMA_VERSION = 2;
     private static final Factory<EvaluationSavedData> FACTORY = new Factory<>(
             EvaluationSavedData::new, EvaluationSavedData::load);
 
@@ -67,6 +67,35 @@ public final class EvaluationSavedData extends SavedData {
 
     public Optional<EvaluationSession> sessionByMachine(net.minecraft.core.GlobalPos machinePos) {
         return sessions.values().stream().filter(session -> session.machinePos().equals(machinePos)).findFirst();
+    }
+
+    public Optional<EvaluationSession> session(UUID sessionId) {
+        return Optional.ofNullable(sessions.get(sessionId));
+    }
+
+    public void reconcileCriticalSessions(Collection<EvaluationSession> criticalSessions,
+                                          boolean journalExists) {
+        Map<UUID, EvaluationSession> criticalById = new LinkedHashMap<>();
+        for (EvaluationSession session : criticalSessions) {
+            if (!session.hasPhase4Manifest()) {
+                throw new IllegalArgumentException("关键 journal 包含非 Phase 4 会话");
+            }
+            criticalById.put(session.id(), session);
+        }
+        boolean hasSavedPhase4 = sessions.values().stream().anyMatch(EvaluationSession::hasPhase4Manifest);
+        if (!journalExists && hasSavedPhase4) {
+            throw new IllegalStateException("Phase 4 会话存在，但关键 journal 缺失");
+        }
+        if (journalExists) {
+            sessions.values().removeIf(session -> session.hasPhase4Manifest()
+                    && !criticalById.containsKey(session.id()));
+            criticalById.forEach(sessions::put);
+            setDirty();
+        }
+    }
+
+    public Collection<EvaluationSession> criticalSessions() {
+        return sessions.values().stream().filter(EvaluationSession::hasPhase4Manifest).toList();
     }
 
     public void put(EvaluationSession session) {

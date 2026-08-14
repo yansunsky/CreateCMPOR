@@ -22,6 +22,13 @@ public final class EvaluationSession {
         SAVING_SOURCE,
         WAITING_UNLOAD,
         FROZEN,
+        QUEUED,
+        STAGING_SOURCE,
+        STAGING_WRITTEN,
+        STAGING_VERIFIED,
+        PUBLISHING,
+        PUBLISHED,
+        CLEANING,
         ROLLING_BACK
     }
 
@@ -34,23 +41,27 @@ public final class EvaluationSession {
     private State state;
     private int stateTicks;
     private final boolean launcherReturnEligible;
+    private EvaluationManifest manifest;
+    private String rollbackMessageKey;
 
     public EvaluationSession(UUID id, UUID owner, GlobalPos machinePos, String roomCode,
                              BlockState originalState, CompoundTag originalBlockEntityNbt) {
         this(id, owner, machinePos, roomCode, originalState, originalBlockEntityNbt,
-                State.PREPARED, 0, true);
+                State.PREPARED, 0, true, null, "message.createcmpor.evaluation.runtime_failed");
     }
 
     public EvaluationSession(UUID id, UUID owner, GlobalPos machinePos, String roomCode,
                              BlockState originalState, CompoundTag originalBlockEntityNbt,
                              boolean launcherReturnEligible) {
         this(id, owner, machinePos, roomCode, originalState, originalBlockEntityNbt,
-                State.PREPARED, 0, launcherReturnEligible);
+                State.PREPARED, 0, launcherReturnEligible, null,
+                "message.createcmpor.evaluation.runtime_failed");
     }
 
     private EvaluationSession(UUID id, UUID owner, GlobalPos machinePos, String roomCode,
-                              BlockState originalState, CompoundTag originalBlockEntityNbt,
-                              State state, int stateTicks, boolean launcherReturnEligible) {
+                               BlockState originalState, CompoundTag originalBlockEntityNbt,
+                               State state, int stateTicks, boolean launcherReturnEligible,
+                               EvaluationManifest manifest, String rollbackMessageKey) {
         this.id = id;
         this.owner = owner;
         this.machinePos = machinePos;
@@ -60,6 +71,8 @@ public final class EvaluationSession {
         this.state = state;
         this.stateTicks = stateTicks;
         this.launcherReturnEligible = launcherReturnEligible;
+        this.manifest = manifest;
+        this.rollbackMessageKey = rollbackMessageKey;
     }
 
     public UUID id() {
@@ -98,6 +111,26 @@ public final class EvaluationSession {
         return launcherReturnEligible;
     }
 
+    public EvaluationManifest manifest() {
+        return manifest;
+    }
+
+    public void setManifest(EvaluationManifest manifest) {
+        this.manifest = manifest;
+    }
+
+    public boolean hasPhase4Manifest() {
+        return manifest != null;
+    }
+
+    public String rollbackMessageKey() {
+        return rollbackMessageKey;
+    }
+
+    public void setRollbackMessageKey(String rollbackMessageKey) {
+        this.rollbackMessageKey = rollbackMessageKey;
+    }
+
     public void setState(State state) {
         this.state = state;
         this.stateTicks = 0;
@@ -123,6 +156,10 @@ public final class EvaluationSession {
         tag.putString("state", state.name());
         tag.putInt("state_ticks", stateTicks);
         tag.putBoolean("launcher_return_eligible", launcherReturnEligible);
+        if (manifest != null) {
+            tag.put("manifest", manifest.save());
+        }
+        tag.putString("rollback_message_key", rollbackMessageKey);
         return tag;
     }
 
@@ -139,6 +176,16 @@ public final class EvaluationSession {
         } catch (IllegalArgumentException exception) {
             state = State.ROLLING_BACK;
         }
+        EvaluationManifest manifest = tag.contains("manifest", net.minecraft.nbt.Tag.TAG_COMPOUND)
+                ? EvaluationManifest.load(tag.getCompound("manifest"), registries)
+                : null;
+        if (manifest != null && !manifest.sessionId().equals(tag.getUUID("id"))) {
+            throw new IllegalArgumentException("复制清单与评估会话不匹配");
+        }
+        String rollbackMessageKey = tag.getString("rollback_message_key");
+        if (rollbackMessageKey.isBlank()) {
+            rollbackMessageKey = "message.createcmpor.evaluation.runtime_failed";
+        }
         return new EvaluationSession(
                 tag.getUUID("id"),
                 tag.getUUID("owner"),
@@ -150,6 +197,8 @@ public final class EvaluationSession {
                 tag.getInt("state_ticks"),
                 tag.contains("launcher_return_eligible")
                         ? tag.getBoolean("launcher_return_eligible")
-                        : tag.getBoolean("launcher_consumed"));
+                        : tag.getBoolean("launcher_consumed"),
+                manifest,
+                rollbackMessageKey);
     }
 }
