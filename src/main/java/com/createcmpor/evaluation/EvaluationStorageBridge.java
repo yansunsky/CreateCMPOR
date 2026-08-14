@@ -1,8 +1,10 @@
 package com.createcmpor.evaluation;
 
+import com.createcmpor.Config;
 import com.createcmpor.CreateCMPOR;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.IntArrayTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtUtils;
 import net.minecraft.nbt.Tag;
@@ -116,15 +118,11 @@ final class EvaluationStorageBridge {
                 new IllegalStateException("源区块记录缺失：" + records.pos()));
         validateChunkTag(source, records.pos(), chunk);
         inspectLegacyEntities(records.pos(), chunk);
-        Optional<CompoundTag> entities = records.entities()
-                .map(tag -> entityStorage(source).upgradeChunkTag(tag.copy(), -1));
-        Optional<CompoundTag> poi = records.poi()
-                .map(tag -> poiStorage(source).upgradeChunkTag(tag.copy(), 1945));
-        inspectEntityRecord(records.pos(), entities);
-        inspectPoiRecord(records.pos(), poi);
-        inspectPoiBlockStates(source, records.pos(), chunk);
+        ListTag entities = inspectEntityRecord(records.pos(), records.entities());
+        inspectPoiRecord(records.pos(), records.poi());
+        inspectBlockPalette(source, records.pos(), chunk);
         return new SourceChunk(records.pos(), chunk.copy(), CanonicalNbtHasher.sha256(chunk),
-                chunk.getInt("DataVersion"));
+                chunk.getInt("DataVersion"), entities.copy());
     }
 
     static CompletableFuture<Void> deleteRecords(ServerLevel level, List<ChunkPos> chunks) {
@@ -186,9 +184,9 @@ final class EvaluationStorageBridge {
         }
     }
 
-    private static void inspectEntityRecord(ChunkPos pos, Optional<CompoundTag> raw) {
+    private static ListTag inspectEntityRecord(ChunkPos pos, Optional<CompoundTag> raw) {
         if (raw.isEmpty()) {
-            return;
+            return new ListTag();
         }
         CompoundTag tag = raw.get();
         if (!tag.contains("Position", Tag.TAG_INT_ARRAY)
@@ -198,10 +196,7 @@ final class EvaluationStorageBridge {
                 || !tag.contains("Entities", Tag.TAG_LIST)) {
             throw new IllegalStateException("源实体记录格式无效：" + pos);
         }
-        ListTag entities = tag.getList("Entities", Tag.TAG_COMPOUND);
-        if (!entities.isEmpty()) {
-            throw new UnsupportedContentException("message.createcmpor.evaluation.entities_unsupported");
-        }
+        return tag.getList("Entities", Tag.TAG_COMPOUND).copy();
     }
 
     private static void inspectPoiRecord(ChunkPos pos, Optional<CompoundTag> raw) {
@@ -227,7 +222,7 @@ final class EvaluationStorageBridge {
         }
     }
 
-    private static void inspectPoiBlockStates(ServerLevel source, ChunkPos pos, CompoundTag chunk) {
+    private static void inspectBlockPalette(ServerLevel source, ChunkPos pos, CompoundTag chunk) {
         var blockLookup = source.registryAccess().lookupOrThrow(Registries.BLOCK);
         ListTag sections = chunk.getList("sections", Tag.TAG_COMPOUND);
         for (int sectionIndex = 0; sectionIndex < sections.size(); sectionIndex++) {
@@ -255,8 +250,23 @@ final class EvaluationStorageBridge {
                 if (PoiTypes.hasPoi(NbtUtils.readBlockState(blockLookup, stateTag))) {
                     throw new UnsupportedContentException("message.createcmpor.evaluation.poi_unsupported");
                 }
+                if (Config.SUSPICIOUS_BLOCKS.get().contains(blockId.toString())) {
+                    throw new UnsupportedContentException("message.createcmpor.evaluation.block_blacklisted");
+                }
+                if ("create:track_signal".equals(blockId.toString())) {
+                    throw new UnsupportedContentException("message.createcmpor.evaluation.railway_signal_unsupported");
+                }
             }
         }
+    }
+
+    /** 构造目标实体记录并写入目标实体存储（必须在目标 chunk 实体未加载的发布窗口内调用）。 */
+    static void writeEntities(ServerLevel target, ChunkPos pos, ListTag entities) {
+        CompoundTag record = new CompoundTag();
+        record.put("Position", new IntArrayTag(new int[]{pos.x, pos.z}));
+        record.put("Entities", entities);
+        net.minecraft.nbt.NbtUtils.addCurrentDataVersion(record);
+        entityStorage(target).write(pos, record).join();
     }
 
     record SourceRecords(ChunkPos pos, Optional<CompoundTag> chunk,
@@ -270,7 +280,7 @@ final class EvaluationStorageBridge {
         }
     }
 
-    record SourceChunk(ChunkPos pos, CompoundTag tag, String hash, int dataVersion) {
+    record SourceChunk(ChunkPos pos, CompoundTag tag, String hash, int dataVersion, ListTag entities) {
     }
 
     static final class UnsupportedContentException extends RuntimeException {

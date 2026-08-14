@@ -26,6 +26,7 @@ public final class EvaluationSession {
         STAGING_SOURCE,
         STAGING_WRITTEN,
         STAGING_VERIFIED,
+        RAILWAY_TRANSFER,
         PUBLISHING,
         PUBLISHED,
         CLEANING,
