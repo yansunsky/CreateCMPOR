@@ -5,6 +5,7 @@ import com.createcmpor.CreateCMPOR;
 import dev.compactmods.machines.api.CompactMachines;
 import dev.compactmods.machines.api.room.RoomInstance;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -16,6 +17,7 @@ import org.jetbrains.annotations.Nullable;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -57,6 +59,7 @@ public final class EvaluationCloneManager {
                 case STAGING_SOURCE -> tickStagingSource(server, data, session);
                 case STAGING_WRITTEN -> tickStagingWritten(server, data, session);
                 case STAGING_VERIFIED -> tickStagingVerified(server, data, session);
+                case RAILWAY_TRANSFER -> tickRailwayTransfer(server, data, session);
                 case PUBLISHING -> tickPublishing(server, data, session);
                 case PUBLISHED -> tickPublished(server, data, session);
                 case CLEANING -> tickCleaning(server, data, session);
@@ -171,11 +174,21 @@ public final class EvaluationCloneManager {
                 .filter(chunk -> chunk.stagingStatus() == EvaluationManifest.StagingStatus.NONE)
                 .findFirst().orElse(null);
         if (pending == null) {
+            // 全部 chunk 源读取完成：全房间实体检查（跨 chunk 引用需要全局 UUID 集合）
+            EvaluationEntityInspector.AllChunksResult entities =
+                    EvaluationEntityInspector.inspectAll(runtime.sourceEntities);
+            runtime.rewrittenEntities = entities.rewrittenByChunk();
+            manifest.setEntityCount(entities.totalEntities());
+            data.changed();
             runtime.staging.flushWorker();
             session.setState(EvaluationSession.State.STAGING_WRITTEN);
             data.changed();
             syncCriticalState(server, data);
             runtime.clearOperation();
+            if (entities.hasEntities()) {
+                CreateCMPOR.LOGGER.info("评估会话 {} 共检查 {} 个实体（车厢 {} 个）",
+                        session.id(), entities.totalEntities(), entities.carriageUuids().size());
+            }
             return;
         }
         if (runtime.operation == Operation.NONE) {
@@ -197,6 +210,7 @@ public final class EvaluationCloneManager {
         record.setSourceHash(sourceChunk.hash());
         record.setSourceStatus(EvaluationManifest.SourceStatus.HASHED);
         record.setStagingStatus(EvaluationManifest.StagingStatus.WRITTEN);
+        runtime.sourceEntities.put(sourceChunk.pos(), sourceChunk.entities().copy());
         data.changed();
         notifyCloneProgress(server, session, manifest);
         runtime.clearOperation();
@@ -254,12 +268,17 @@ public final class EvaluationCloneManager {
         List<ChunkPos> targets = chunkPositions(manifest);
         if (runtime.footprintIndex >= targets.size()) {
             manifest.setTargetWriteIntent(true);
-            session.setState(EvaluationSession.State.PUBLISHING);
+            boolean hasRailway = runtime.rewrittenEntities.values().stream()
+                    .flatMap(List::stream)
+                    .anyMatch(tag -> EvaluationEntityInspector.CARRIAGE_CONTRAPTION_ID
+                            .equals(tag.getString("id")));
+            session.setState(hasRailway
+                    ? EvaluationSession.State.RAILWAY_TRANSFER
+                    : EvaluationSession.State.PUBLISHING);
             data.changed();
             syncCriticalState(server, data);
             runtime.clearOperation();
-            CreateCMPOR.LOGGER.info("评估会话 {} 冲突检查完成，开始发布 {} 个区块", session.id(),
-                    manifest.chunks().size());
+            CreateCMPOR.LOGGER.info("评估会话 {} 冲突检查完成，进入{}", session.id(), hasRailway ? "铁路事务" : "发布");
             return;
         }
         ChunkPos pos = targets.get(runtime.footprintIndex);
@@ -285,6 +304,20 @@ public final class EvaluationCloneManager {
         }
         runtime.footprintIndex++;
         runtime.clearOperation();
+    }
+
+    private void tickRailwayTransfer(MinecraftServer server, EvaluationSavedData data,
+                                     EvaluationSession session) {
+        EvaluationManifest manifest = requireManifest(session);
+        RuntimeState runtime = runtime(server, session);
+        List<CompoundTag> allEntities = new ArrayList<>();
+        runtime.rewrittenEntities.values().forEach(allEntities::addAll);
+        EvaluationRailwayTransfer.prepare(server, session, manifest, allEntities);
+        session.setState(EvaluationSession.State.PUBLISHING);
+        data.changed();
+        syncCriticalState(server, data);
+        CreateCMPOR.LOGGER.info("评估会话 {} 铁路事务完成，共 {} 列火车，开始发布 {} 个区块",
+                session.id(), manifest.railwayRecords().size(), manifest.chunks().size());
     }
 
     private void tickPublishing(MinecraftServer server, EvaluationSavedData data,
@@ -322,6 +355,14 @@ public final class EvaluationCloneManager {
         // 主动在主线程把房间 chunk 加载到 FULL：依赖后台 worldgen 调度在空闲维度上很慢，
         // getChunk(requireChunk=true) 会就地驱动 worldgen 直到 chunk 可加载。
         loadChunksToFull(server, session, target, manifest);
+        // 铁路：加载后自动建图 + train 复制注册（车厢实体首次 tick 前完成）
+        if (!manifest.railwayRecords().isEmpty()) {
+            EvaluationRailwayTransfer.setup(target, session, manifest);
+            data.changed();
+            syncCriticalState(server, data);
+            CreateCMPOR.LOGGER.info("评估会话 {} 铁路复制完成：{} 列火车已注册到 eval_world",
+                    session.id(), manifest.railwayRecords().size());
+        }
         runtime.clearOperation();
         publishingSession = null;
         notifyOwner(server, session, Component.translatable("message.createcmpor.evaluation.published"));
@@ -367,6 +408,13 @@ public final class EvaluationCloneManager {
             return;
         }
         runtime.writeFuture.join();
+        // 同窗口写入改写后的实体记录（目标 chunk 实体尚未加载，emptyChunks 无缓存）
+        List<CompoundTag> entities = runtime.rewrittenEntities.get(runtime.chunk);
+        if (entities != null && !entities.isEmpty()) {
+            ListTag entityList = new ListTag();
+            entities.forEach(entityList::add);
+            EvaluationStorageBridge.writeEntities(target, runtime.chunk, entityList);
+        }
         record.setPublishStatus(EvaluationManifest.PublishStatus.WRITTEN);
         data.changed();
         notifyCloneProgress(server, session, requireManifest(session));
@@ -388,8 +436,24 @@ public final class EvaluationCloneManager {
         EvaluationStorageBridge.StoredRecords records = runtime.storedFuture.join();
         CompoundTag tag = records.chunk().orElseThrow(() ->
                 new IllegalStateException("目标区块回读缺失：" + runtime.chunk));
-        if (records.entities().isPresent() || records.poi().isPresent()) {
-            throw new IllegalStateException("目标区块意外生成实体或 POI 记录：" + runtime.chunk);
+        // POI 我们从不写入：意外出现即失败。
+        if (records.poi().isPresent()) {
+            throw new IllegalStateException("目标区块意外生成 POI 记录：" + runtime.chunk);
+        }
+        // 实体：本会话写入过则校验内容一致；未写入则必须为空（Phase 5 起实体允许复制）。
+        List<CompoundTag> expectedEntities = runtime.rewrittenEntities.get(runtime.chunk);
+        if (records.entities().isPresent()) {
+            if (expectedEntities == null || expectedEntities.isEmpty()) {
+                throw new IllegalStateException("目标区块意外生成实体记录：" + runtime.chunk);
+            }
+            ListTag expectedList = new ListTag();
+            expectedEntities.forEach(expectedList::add);
+            if (!records.entities().get().getList("Entities", net.minecraft.nbt.Tag.TAG_COMPOUND)
+                    .equals(expectedList)) {
+                throw new IllegalStateException("目标区块实体记录与写入不一致：" + runtime.chunk);
+            }
+        } else if (expectedEntities != null && !expectedEntities.isEmpty()) {
+            throw new IllegalStateException("目标区块实体记录回读缺失：" + runtime.chunk);
         }
         validateStoredChunk(runtime.chunk, tag);
         String hash = CanonicalNbtHasher.sha256(tag);
@@ -437,6 +501,11 @@ public final class EvaluationCloneManager {
             runtime.ticketsRemoved = true;
             syncCriticalState(server, data);
             return;
+        }
+        if (!runtime.railwayCleaned) {
+            EvaluationRailwayTransfer.cleanup(target, session, manifest);
+            runtime.railwayCleaned = true;
+            syncCriticalState(server, data);
         }
         if (manifest.targetWriteIntent()) {
             List<ChunkPos> chunks = chunkPositions(manifest);
@@ -513,7 +582,7 @@ public final class EvaluationCloneManager {
         // PUBLISHED 之后副本加载与克隆并发无关（由 ticket 维持），释放槽位让排队会话前进。
         return (int) data.sessions().stream().filter(session -> switch (session.state()) {
             case STAGING_SOURCE, STAGING_WRITTEN, STAGING_VERIFIED,
-                    PUBLISHING, CLEANING -> true;
+                    RAILWAY_TRANSFER, PUBLISHING, CLEANING -> true;
             default -> false;
         }).count();
     }
@@ -634,6 +703,8 @@ public final class EvaluationCloneManager {
 
     private static final class RuntimeState {
         private final ChunkStorage staging;
+        private final Map<ChunkPos, ListTag> sourceEntities = new LinkedHashMap<>();
+        private Map<ChunkPos, List<CompoundTag>> rewrittenEntities = Map.of();
         private Operation operation = Operation.NONE;
         private ChunkPos chunk;
         private CompletableFuture<EvaluationStorageBridge.SourceChunk> sourceFuture;
@@ -643,6 +714,7 @@ public final class EvaluationCloneManager {
         private int footprintIndex;
         private boolean targetFlushed;
         private boolean ticketsRemoved;
+        private boolean railwayCleaned;
 
         private RuntimeState(ChunkStorage staging) {
             this.staging = staging;

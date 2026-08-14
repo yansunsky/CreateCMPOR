@@ -3,6 +3,7 @@ package com.createcmpor.evaluation;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.NbtUtils;
 import net.minecraft.nbt.Tag;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
@@ -52,6 +53,8 @@ public final class EvaluationManifest {
     private boolean targetWriteIntent;
     private boolean ticketsAdded;
     private boolean targetReady;
+    private int entityCount;
+    private final List<RailwayRecord> railwayRecords = new ArrayList<>();
 
     private EvaluationManifest(UUID sessionId, String roomCode,
                                ResourceKey<Level> sourceDimension, ResourceKey<Level> targetDimension,
@@ -155,6 +158,18 @@ public final class EvaluationManifest {
         this.targetReady = targetReady;
     }
 
+    public int entityCount() {
+        return entityCount;
+    }
+
+    public void setEntityCount(int entityCount) {
+        this.entityCount = entityCount;
+    }
+
+    public List<RailwayRecord> railwayRecords() {
+        return railwayRecords;
+    }
+
     public ChunkRecord chunk(ChunkPos position) {
         return chunks.stream().filter(chunk -> chunk.chunkPos.equals(position)).findFirst().orElse(null);
     }
@@ -189,6 +204,13 @@ public final class EvaluationManifest {
         tag.putBoolean("target_write_intent", targetWriteIntent);
         tag.putBoolean("tickets_added", ticketsAdded);
         tag.putBoolean("target_ready", targetReady);
+        tag.putInt("entity_count", entityCount);
+
+        ListTag railwayTags = new ListTag();
+        for (RailwayRecord record : railwayRecords) {
+            railwayTags.add(record.save());
+        }
+        tag.put("railway_records", railwayTags);
 
         ListTag chunkTags = new ListTag();
         for (ChunkRecord chunk : chunks) {
@@ -216,6 +238,11 @@ public final class EvaluationManifest {
                 tag.getString("staging_directory"), chunks,
                 tag.getBoolean("target_write_intent"), tag.getBoolean("tickets_added"),
                 tag.getBoolean("target_ready"));
+        manifest.entityCount = tag.getInt("entity_count");
+        ListTag railwayTags = tag.getList("railway_records", Tag.TAG_COMPOUND);
+        for (int index = 0; index < railwayTags.size(); index++) {
+            manifest.railwayRecords.add(RailwayRecord.load(railwayTags.getCompound(index)));
+        }
         manifest.validate();
         return manifest;
     }
@@ -225,6 +252,76 @@ public final class EvaluationManifest {
             throw new IllegalArgumentException("复制清单缺少维度");
         }
         return ResourceKey.create(net.minecraft.core.registries.Registries.DIMENSION, ResourceLocation.parse(id));
+    }
+
+    /** Railway 复制事务的记录：发布前分配新 train UUID，建图后补写 graph UUID。 */
+    public static final class RailwayRecord {
+        private final UUID newTrainId;
+        private final UUID sourceTrainId;
+        private final List<UUID> carriageUuids;
+        private UUID newGraphId;
+        private boolean graphBuilt;
+
+        public RailwayRecord(UUID newTrainId, UUID sourceTrainId, List<UUID> carriageUuids) {
+            this.newTrainId = newTrainId;
+            this.sourceTrainId = sourceTrainId;
+            this.carriageUuids = List.copyOf(carriageUuids);
+        }
+
+        public UUID newTrainId() {
+            return newTrainId;
+        }
+
+        public UUID sourceTrainId() {
+            return sourceTrainId;
+        }
+
+        public List<UUID> carriageUuids() {
+            return carriageUuids;
+        }
+
+        public UUID newGraphId() {
+            return newGraphId;
+        }
+
+        public boolean graphBuilt() {
+            return graphBuilt;
+        }
+
+        public void markGraphBuilt(UUID newGraphId) {
+            this.newGraphId = newGraphId;
+            this.graphBuilt = true;
+        }
+
+        private CompoundTag save() {
+            CompoundTag tag = new CompoundTag();
+            tag.putUUID("new_train", newTrainId);
+            tag.putUUID("source_train", sourceTrainId);
+            ListTag carriages = new ListTag();
+            for (UUID uuid : carriageUuids) {
+                carriages.add(NbtUtils.createUUID(uuid));
+            }
+            tag.put("carriages", carriages);
+            if (newGraphId != null) {
+                tag.putUUID("new_graph", newGraphId);
+            }
+            tag.putBoolean("graph_built", graphBuilt);
+            return tag;
+        }
+
+        private static RailwayRecord load(CompoundTag tag) {
+            List<UUID> carriages = new ArrayList<>();
+            ListTag carriageTags = tag.getList("carriages", Tag.TAG_INT_ARRAY);
+            for (int index = 0; index < carriageTags.size(); index++) {
+                carriages.add(NbtUtils.loadUUID(carriageTags.get(index)));
+            }
+            RailwayRecord record = new RailwayRecord(
+                    tag.getUUID("new_train"), tag.getUUID("source_train"), carriages);
+            if (tag.hasUUID("new_graph")) {
+                record.markGraphBuilt(tag.getUUID("new_graph"));
+            }
+            return record;
+        }
     }
 
     public static final class ChunkRecord {
