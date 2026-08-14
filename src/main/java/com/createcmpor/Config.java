@@ -39,6 +39,16 @@ public class Config {
     public static final ModConfigSpec.ConfigValue<List<? extends String>> SUSPICIOUS_BLOCKS;
     public static final ModConfigSpec.ConfigValue<List<? extends String>> SUSPICIOUS_ITEMS;
     public static final ModConfigSpec.IntValue MAX_CONCURRENT_EVALUATIONS;
+    public static final ModConfigSpec.IntValue EVALUATE_SECONDS;
+    public static final ModConfigSpec.IntValue RECORD_START;
+    public static final ModConfigSpec.ConfigValue<List<? extends String>> EVALUATION_MODE;
+    public static final ModConfigSpec.DoubleValue LOSS_RATE;
+    public static final ModConfigSpec.DoubleValue INTERMEDIATE_RATIO;
+    public static final ModConfigSpec.DoubleValue IO_ERROR_RATIO;
+    public static final ModConfigSpec.ConfigValue<List<? extends String>> CATALYST_ITEMS;
+    public static final ModConfigSpec.ConfigValue<List<? extends String>> DEDUP_BLOCKS;
+    public static final ModConfigSpec.DoubleValue ENERGY_STABILITY_RELAXATION;
+    public static final ModConfigSpec.DoubleValue STRESS_STABILITY_RELAXATION;
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
@@ -79,6 +89,38 @@ public class Config {
         MAX_CONCURRENT_EVALUATIONS = builder
                 .comment("同时进行区块副本克隆的评估会话上限；超出后按创建顺序排队。")
                 .defineInRange("maxConcurrentEvaluations", 4, 1, 16);
+        EVALUATE_SECONDS = builder
+                .comment("评估时长（秒）。开发阶段配置文件中覆盖为 60。")
+                .defineInRange("evaluateSeconds", 300, 1, 3600);
+        RECORD_START = builder
+                .comment("评估开始时的预热秒数（该时段不计入结果）。开发阶段配置文件中覆盖为 0。")
+                .defineInRange("recordStart", 60, 0, 600);
+        EVALUATION_MODE = builder
+                .comment("评估模式：AUTO 自动判定，FORCE_RATE 强制速率拟合，FORCE_REPLAY 强制录制回放。")
+                .defineListAllowEmpty("evaluationMode", List.of("AUTO"), value -> value instanceof String);
+        LOSS_RATE = builder
+                .comment("产出损耗护栏（0-1）：回放/速率结果乘以该系数，默认 0.95 即扣 5%。")
+                .defineInRange("lossRate", 0.95, 0.0, 1.0);
+        INTERMEDIATE_RATIO = builder
+                .comment("中间产物过滤比例：总量低于 评估秒数×该比例 的条目视为中间产物。")
+                .defineInRange("intermediateRatio", 0.25, 0.0, 1.0);
+        IO_ERROR_RATIO = builder
+                .comment("动态噪声阈值比例：|净产出| < max(产出,消耗)×该比例 视为噪声。")
+                .defineInRange("ioErrorRatio", 0.001, 0.0, 1.0);
+        CATALYST_ITEMS = builder
+                .comment("催化剂保留清单：这些物品即使量小也保留为输入（不按中间产物删除）。")
+                .defineListAllowEmpty("catalystItems", List.of(), value -> value instanceof String);
+        DEDUP_BLOCKS = builder
+                .comment("库存扫描需要去重的方块 ID（多方块容器防重复计数）。")
+                .defineListAllowEmpty("dedupBlocks",
+                        List.of("storagedrawers:compacting_drawers_3", "storagedrawers:compacting_drawers_2"),
+                        value -> value instanceof String);
+        ENERGY_STABILITY_RELAXATION = builder
+                .comment("能量条目的稳定性容差放宽倍数（能量网络波动大，避免误判为不稳定）。")
+                .defineInRange("energyStabilityRelaxation", 2.0, 1.0, 10.0);
+        STRESS_STABILITY_RELAXATION = builder
+                .comment("应力条目的稳定性容差放宽倍数。")
+                .defineInRange("stressStabilityRelaxation", 2.0, 1.0, 10.0);
         builder.pop();
 
         SPEC = builder.build();

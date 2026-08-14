@@ -217,7 +217,7 @@ public final class EvaluationManager {
             case SAVING_SOURCE -> tickSaving(server, data, session);
             case WAITING_UNLOAD -> tickWaitingForUnload(server, data, session);
             case FROZEN, QUEUED, STAGING_SOURCE, STAGING_WRITTEN, STAGING_VERIFIED,
-                    RAILWAY_TRANSFER, PUBLISHING, PUBLISHED, CLEANING ->
+                    RAILWAY_TRANSFER, PUBLISHING, PUBLISHED, EVALUATING, EVALUATED, CLEANING ->
                     EvaluationCloneManager.INSTANCE.tick(server, data, session);
             case ROLLING_BACK -> rollback(server, data, session,
                     Component.translatable(session.rollbackMessageKey()));

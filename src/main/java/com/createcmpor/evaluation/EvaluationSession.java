@@ -29,6 +29,8 @@ public final class EvaluationSession {
         RAILWAY_TRANSFER,
         PUBLISHING,
         PUBLISHED,
+        EVALUATING,
+        EVALUATED,
         CLEANING,
         ROLLING_BACK
     }
@@ -44,6 +46,7 @@ public final class EvaluationSession {
     private final boolean launcherReturnEligible;
     private EvaluationManifest manifest;
     private String rollbackMessageKey;
+    private EvaluationVerdict.Result evaluationResult;
 
     public EvaluationSession(UUID id, UUID owner, GlobalPos machinePos, String roomCode,
                              BlockState originalState, CompoundTag originalBlockEntityNbt) {
@@ -130,6 +133,15 @@ public final class EvaluationSession {
 
     public void setRollbackMessageKey(String rollbackMessageKey) {
         this.rollbackMessageKey = rollbackMessageKey;
+    }
+
+    /** Phase 6 评估结果（运行时内存，不持久化；重启后回滚）。 */
+    public EvaluationVerdict.Result evaluationResult() {
+        return evaluationResult;
+    }
+
+    public void setEvaluationResult(EvaluationVerdict.Result evaluationResult) {
+        this.evaluationResult = evaluationResult;
     }
 
     public void setState(State state) {

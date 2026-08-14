@@ -62,6 +62,10 @@ public final class EvaluationCloneManager {
                 case RAILWAY_TRANSFER -> tickRailwayTransfer(server, data, session);
                 case PUBLISHING -> tickPublishing(server, data, session);
                 case PUBLISHED -> tickPublished(server, data, session);
+                case EVALUATING -> EvaluationScheduler.tick(server, data, session);
+                case EVALUATED -> {
+                    // Phase 7 工厂化接管；当前阶段保持等待
+                }
                 case CLEANING -> tickCleaning(server, data, session);
                 default -> throw new IllegalStateException("非 Phase 4 状态进入克隆管理器：" + session.state());
             }
@@ -480,6 +484,11 @@ public final class EvaluationCloneManager {
             syncCriticalState(server, data);
             notifyOwner(server, session, Component.translatable("message.createcmpor.evaluation.copy_ready"));
             CreateCMPOR.LOGGER.info("评估会话 {} 的 eval_world 副本已达到 BLOCK_TICKING", session.id());
+            // Phase 6 接管：进入评估
+            session.setState(EvaluationSession.State.EVALUATING);
+            data.changed();
+            syncCriticalState(server, data);
+            EvaluationScheduler.start(target, session, manifest);
             return;
         }
         session.tickState();
@@ -501,6 +510,10 @@ public final class EvaluationCloneManager {
             runtime.ticketsRemoved = true;
             syncCriticalState(server, data);
             return;
+        }
+        if (!runtime.evaluationCleaned) {
+            EvaluationScheduler.cleanup(session.id(), session.roomCode());
+            runtime.evaluationCleaned = true;
         }
         if (!runtime.railwayCleaned) {
             EvaluationRailwayTransfer.cleanup(target, session, manifest);
@@ -637,6 +650,10 @@ public final class EvaluationCloneManager {
     }
 
     private static void syncCriticalState(MinecraftServer server, EvaluationSavedData data) {
+        syncCritical(server, data);
+    }
+
+    static void syncCritical(MinecraftServer server, EvaluationSavedData data) {
         if (data.criticalSessions().isEmpty()) {
             EvaluationCriticalJournal.deleteIfEmpty(server, data);
         } else {
@@ -715,6 +732,7 @@ public final class EvaluationCloneManager {
         private boolean targetFlushed;
         private boolean ticketsRemoved;
         private boolean railwayCleaned;
+        private boolean evaluationCleaned;
 
         private RuntimeState(ChunkStorage staging) {
             this.staging = staging;
