@@ -128,8 +128,13 @@ public final class EvalWorldCommands {
     private static int enterEval(CommandSourceStack source, String roomCode) throws CommandSyntaxException {
         ServerPlayer player = source.getPlayerOrException();
         Optional<EvaluationSession> session = EvaluationManager.INSTANCE.sessionByRoom(source.getServer(), roomCode);
-        if (session.isEmpty() || session.get().state() != EvaluationSession.State.PUBLISHED
-                || session.get().manifest() == null || !session.get().manifest().targetReady()) {
+        // 副本已发布即允许 OP 进入观察：PUBLISHED（未评估）或评估期/固化期状态
+        boolean copyLive = session.isPresent() && session.get().manifest() != null
+                && (session.get().state() == EvaluationSession.State.PUBLISHED
+                || session.get().state() == EvaluationSession.State.EVALUATING
+                || session.get().state() == EvaluationSession.State.EVALUATED
+                || session.get().state() == EvaluationSession.State.SOLIDIFYING);
+        if (!copyLive) {
             source.sendFailure(Component.translatable("message.createcmpor.evaluation.copy_not_ready"));
             return 0;
         }

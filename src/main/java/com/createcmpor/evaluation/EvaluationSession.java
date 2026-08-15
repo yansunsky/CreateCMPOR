@@ -31,6 +31,7 @@ public final class EvaluationSession {
         PUBLISHED,
         EVALUATING,
         EVALUATED,
+        SOLIDIFYING,
         CLEANING,
         ROLLING_BACK
     }
@@ -47,11 +48,12 @@ public final class EvaluationSession {
     private EvaluationManifest manifest;
     private String rollbackMessageKey;
     private EvaluationVerdict.Result evaluationResult;
+    private boolean factoryInstalled;
 
     public EvaluationSession(UUID id, UUID owner, GlobalPos machinePos, String roomCode,
                              BlockState originalState, CompoundTag originalBlockEntityNbt) {
         this(id, owner, machinePos, roomCode, originalState, originalBlockEntityNbt,
-                State.PREPARED, 0, true, null, "message.createcmpor.evaluation.runtime_failed");
+                State.PREPARED, 0, true, null, "message.createcmpor.evaluation.runtime_failed", false);
     }
 
     public EvaluationSession(UUID id, UUID owner, GlobalPos machinePos, String roomCode,
@@ -59,13 +61,14 @@ public final class EvaluationSession {
                              boolean launcherReturnEligible) {
         this(id, owner, machinePos, roomCode, originalState, originalBlockEntityNbt,
                 State.PREPARED, 0, launcherReturnEligible, null,
-                "message.createcmpor.evaluation.runtime_failed");
+                "message.createcmpor.evaluation.runtime_failed", false);
     }
 
     private EvaluationSession(UUID id, UUID owner, GlobalPos machinePos, String roomCode,
                                BlockState originalState, CompoundTag originalBlockEntityNbt,
                                State state, int stateTicks, boolean launcherReturnEligible,
-                               EvaluationManifest manifest, String rollbackMessageKey) {
+                               EvaluationManifest manifest, String rollbackMessageKey,
+                               boolean factoryInstalled) {
         this.id = id;
         this.owner = owner;
         this.machinePos = machinePos;
@@ -77,6 +80,7 @@ public final class EvaluationSession {
         this.launcherReturnEligible = launcherReturnEligible;
         this.manifest = manifest;
         this.rollbackMessageKey = rollbackMessageKey;
+        this.factoryInstalled = factoryInstalled;
     }
 
     public UUID id() {
@@ -144,6 +148,15 @@ public final class EvaluationSession {
         this.evaluationResult = evaluationResult;
     }
 
+    /** 工厂已固化到主世界（固化后清理副本但保留工厂，不再回滚机器）。 */
+    public boolean factoryInstalled() {
+        return factoryInstalled;
+    }
+
+    public void setFactoryInstalled(boolean factoryInstalled) {
+        this.factoryInstalled = factoryInstalled;
+    }
+
     public void setState(State state) {
         this.state = state;
         this.stateTicks = 0;
@@ -173,6 +186,7 @@ public final class EvaluationSession {
             tag.put("manifest", manifest.save());
         }
         tag.putString("rollback_message_key", rollbackMessageKey);
+        tag.putBoolean("factory_installed", factoryInstalled);
         return tag;
     }
 
@@ -212,6 +226,7 @@ public final class EvaluationSession {
                         ? tag.getBoolean("launcher_return_eligible")
                         : tag.getBoolean("launcher_consumed"),
                 manifest,
-                rollbackMessageKey);
+                rollbackMessageKey,
+                tag.getBoolean("factory_installed"));
     }
 }

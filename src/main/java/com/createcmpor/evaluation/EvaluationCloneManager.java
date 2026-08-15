@@ -6,6 +6,7 @@ import dev.compactmods.machines.api.CompactMachines;
 import dev.compactmods.machines.api.room.RoomInstance;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -64,8 +65,9 @@ public final class EvaluationCloneManager {
                 case PUBLISHED -> tickPublished(server, data, session);
                 case EVALUATING -> EvaluationScheduler.tick(server, data, session);
                 case EVALUATED -> {
-                    // Phase 7 工厂化接管；当前阶段保持等待
+                    // Phase 7 固化接管前保持等待（正常不会停留此状态）
                 }
+                case SOLIDIFYING -> tickSolidifying(server, data, session);
                 case CLEANING -> tickCleaning(server, data, session);
                 default -> throw new IllegalStateException("非 Phase 4 状态进入克隆管理器：" + session.state());
             }
@@ -324,6 +326,42 @@ public final class EvaluationCloneManager {
                 session.id(), manifest.railwayRecords().size(), manifest.chunks().size());
     }
 
+    private void tickSolidifying(MinecraftServer server, EvaluationSavedData data,
+                                 EvaluationSession session) {
+        EvaluationVerdict.Result result = session.evaluationResult();
+        if (result == null || result.rejected()) {
+            requestCleanup(server, data, session, "message.createcmpor.evaluation.clone_failed");
+            return;
+        }
+        ServerLevel machineLevel = server.getLevel(session.machinePos().dimension());
+        if (machineLevel == null) {
+            throw new IllegalStateException("机器维度未加载：" + session.machinePos().dimension().location());
+        }
+        BlockPos pos = session.machinePos().pos();
+        machineLevel.removeBlockEntity(pos);
+        machineLevel.setBlockAndUpdate(pos, com.createcmpor.init.ModBlocks.FACTORY.get().defaultBlockState());
+        if (!(machineLevel.getBlockEntity(pos) instanceof com.createcmpor.block.FactoryBlockEntity factory)) {
+            throw new IllegalStateException("工厂方块实体未创建");
+        }
+        factory.setRoomCode(session.roomCode());
+        if (EvaluationVerdict.VERDICT_REPLAY.equals(result.verdict())) {
+            factory.installPatterns(result.replayIn(), result.replayOut(),
+                    result.energyReplayIn(), result.energyReplayOut());
+        } else {
+            factory.installRates(result.inputRates(), result.outputRates(),
+                    result.inputEnergyRate(), result.outputEnergyRate());
+        }
+        factory.installRestoreData(session.originalState(), session.originalBlockEntityNbt(),
+                result.stressProfile());
+        session.setFactoryInstalled(true);
+        session.setState(EvaluationSession.State.CLEANING);
+        data.changed();
+        syncCriticalState(server, data);
+        notifyOwner(server, session, Component.translatable("message.createcmpor.factory.installed"));
+        CreateCMPOR.LOGGER.info("评估会话 {} 工厂已固化（{} 模式），开始清理副本",
+                session.id(), result.verdict());
+    }
+
     private void tickPublishing(MinecraftServer server, EvaluationSavedData data,
                                 EvaluationSession session) {
         EvaluationManifest manifest = requireManifest(session);
@@ -556,6 +594,24 @@ public final class EvaluationCloneManager {
 
         closeRuntime(session.id());
         EvaluationStorageBridge.deleteStaging(server, manifest);
+        if (session.factoryInstalled()) {
+            // 固化收尾：工厂保留（还原数据在工厂 BE 内），删除会话、退还启动棒、释放房间锁
+            if (session.launcherReturnEligible()) {
+                data.addPendingLauncherReturn(session.id(), session.owner());
+            }
+            data.remove(session.id());
+            server.overworld().getDataStorage().save();
+            net.neoforged.neoforge.common.IOUtilities.waitUntilIOWorkerComplete();
+            EvaluationCloneManager.INSTANCE.afterSessionRemoved(server, data);
+            var owner = server.getPlayerList().getPlayer(session.owner());
+            if (owner != null) {
+                EvaluationManager.deliverPendingLaunchers(owner, data);
+                owner.displayClientMessage(
+                        Component.translatable("message.createcmpor.factory.ready"), false);
+            }
+            CreateCMPOR.LOGGER.info("评估会话 {} 固化收尾完成：副本已清理，工厂就绪", session.id());
+            return;
+        }
         session.setState(EvaluationSession.State.ROLLING_BACK);
         data.changed();
         syncCriticalState(server, data);
