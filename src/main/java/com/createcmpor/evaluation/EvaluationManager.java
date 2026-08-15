@@ -202,7 +202,8 @@ public final class EvaluationManager {
     }
 
     private void tickSession(MinecraftServer server, EvaluationSavedData data, EvaluationSession session) {
-        if (session.state() != EvaluationSession.State.PREPARED
+        if (!session.factoryInstalled()
+                && session.state() != EvaluationSession.State.PREPARED
                 && session.state() != EvaluationSession.State.ROLLING_BACK
                 && evaluatorMissing(server, session)) {
             failSession(server, data, session,
@@ -217,7 +218,8 @@ public final class EvaluationManager {
             case SAVING_SOURCE -> tickSaving(server, data, session);
             case WAITING_UNLOAD -> tickWaitingForUnload(server, data, session);
             case FROZEN, QUEUED, STAGING_SOURCE, STAGING_WRITTEN, STAGING_VERIFIED,
-                    RAILWAY_TRANSFER, PUBLISHING, PUBLISHED, EVALUATING, EVALUATED, CLEANING ->
+                    RAILWAY_TRANSFER, PUBLISHING, PUBLISHED, EVALUATING, EVALUATED,
+                    SOLIDIFYING, CLEANING ->
                     EvaluationCloneManager.INSTANCE.tick(server, data, session);
             case ROLLING_BACK -> rollback(server, data, session,
                     Component.translatable(session.rollbackMessageKey()));
@@ -488,7 +490,7 @@ public final class EvaluationManager {
         data.changed();
     }
 
-    private static void deliverPendingLaunchers(ServerPlayer player, EvaluationSavedData data) {
+    static void deliverPendingLaunchers(ServerPlayer player, EvaluationSavedData data) {
         boolean inventoryChanged = false;
         for (UUID sessionId : data.pendingLauncherReturns(player.getUUID()).keySet()) {
             if (!hasLauncherTransaction(player, sessionId)) {

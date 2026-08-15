@@ -16,10 +16,12 @@ final class EvaluationVerdict {
     static final String VERDICT_REJECTED = "REJECTED";
 
     record Result(String verdict, String rejectReason,
-                  Map<EvaluationTrace.FlowKey, Double> rates,
+                  Map<EvaluationTrace.FlowKey, Double> inputRates,
+                  Map<EvaluationTrace.FlowKey, Double> outputRates,
                   Map<EvaluationTrace.FlowKey, int[]> replayIn,
                   Map<EvaluationTrace.FlowKey, int[]> replayOut,
-                  double energyRate, int[] energyReplayIn, int[] energyReplayOut,
+                  double inputEnergyRate, double outputEnergyRate,
+                  int[] energyReplayIn, int[] energyReplayOut,
                   StressProfile stressProfile, String detail) {
         boolean rejected() {
             return VERDICT_REJECTED.equals(verdict);
@@ -39,18 +41,27 @@ final class EvaluationVerdict {
                          StressProfile stressProfile) {
         String mode = Config.EVALUATION_MODE.get().isEmpty()
                 ? "AUTO" : Config.EVALUATION_MODE.get().getFirst();
-        Map<EvaluationTrace.FlowKey, Double> rates = new HashMap<>();
+        // 输入速率：每个有输入流量的条目拟合稳定消耗速率（工厂消耗原料需要）
+        Map<EvaluationTrace.FlowKey, Double> inputRates = new HashMap<>();
+        Map<EvaluationTrace.FlowKey, Double> outputRates = new HashMap<>();
         for (Map.Entry<EvaluationTrace.FlowKey, EvaluationTrace.Series> entry : trace.series().entrySet()) {
+            if (EvaluationTrace.total(entry.getValue().input) > 0) {
+                inputRates.put(entry.getKey(),
+                        EvaluationRateEvaluator.evaluateStableRate(entry.getValue().input));
+            }
             if (EvaluationTrace.total(entry.getValue().output) > 0) {
-                rates.put(entry.getKey(),
+                outputRates.put(entry.getKey(),
                         EvaluationRateEvaluator.evaluateStableRate(entry.getValue().output));
             }
         }
-        double energyRate = trace.energy().output == null ? 0
+        double inputEnergyRate = trace.energy().input == null ? 0
+                : EvaluationRateEvaluator.evaluateStableRate(trace.energy().input);
+        double outputEnergyRate = trace.energy().output == null ? 0
                 : EvaluationRateEvaluator.evaluateStableRate(trace.energy().output);
 
         if ("FORCE_RATE".equals(mode)) {
-            return rateResult(trace, s0, s1, rates, energyRate, stressProfile);
+            return rateResult(trace, s0, s1, inputRates, outputRates,
+                    inputEnergyRate, outputEnergyRate, stressProfile);
         }
 
         boolean replayNeeded = "FORCE_REPLAY".equals(mode);
@@ -72,14 +83,16 @@ final class EvaluationVerdict {
         }
 
         if (!replayNeeded) {
-            return rateResult(trace, s0, s1, rates, energyRate, stressProfile);
+            return rateResult(trace, s0, s1, inputRates, outputRates,
+                    inputEnergyRate, outputEnergyRate, stressProfile);
         }
 
         EvaluationReplay.ReplayResult replay = EvaluationReplay.build(
                 trace, s0, s1, baseline, trace.seconds());
         String detail = "REPLAY：净平衡+损耗+" + Config.LOSS_RATE.get();
-        return new Result(VERDICT_REPLAY, null, Map.of(), replay.replayIn(), replay.replayOut(),
-                EvaluationTrace.total(replay.energyOut()) > 0
+        return new Result(VERDICT_REPLAY, null, Map.of(), Map.of(),
+                replay.replayIn(), replay.replayOut(),
+                0, EvaluationTrace.total(replay.energyOut()) > 0
                         ? (double) EvaluationTrace.total(replay.energyOut()) / trace.seconds() : 0,
                 replay.energyIn(), replay.energyOut(), stressProfile, detail);
     }
@@ -87,19 +100,22 @@ final class EvaluationVerdict {
     private static Result rateResult(EvaluationTrace trace,
                                      EvaluationAudit.InventorySnapshot s0,
                                      EvaluationAudit.InventorySnapshot s1,
-                                     Map<EvaluationTrace.FlowKey, Double> rates,
-                                     double energyRate, StressProfile stressProfile) {
+                                     Map<EvaluationTrace.FlowKey, Double> inputRates,
+                                     Map<EvaluationTrace.FlowKey, Double> outputRates,
+                                     double inputEnergyRate, double outputEnergyRate,
+                                     StressProfile stressProfile) {
         Map<EvaluationTrace.FlowKey, Double> audited = EvaluationAudit.auditRates(
-                s0, s1, trace, rates);
+                s0, s1, trace, outputRates);
         double auditedEnergy = EvaluationAudit.auditEnergyRate(
-                s0, s1, trace.energy(), energyRate, trace.seconds());
-        return new Result(VERDICT_RATE, null, audited, Map.of(), Map.of(),
-                auditedEnergy, null, null, stressProfile, "RATE：稳定速率拟合");
+                s0, s1, trace.energy(), outputEnergyRate, trace.seconds());
+        return new Result(VERDICT_RATE, null, inputRates, audited,
+                Map.of(), Map.of(), inputEnergyRate, auditedEnergy,
+                null, null, stressProfile, "RATE：稳定速率拟合");
     }
 
     static Result reject(String reason, String detail) {
-        return new Result(VERDICT_REJECTED, reason, Map.of(), Map.of(), Map.of(),
-                0, null, null, StressProfile.EMPTY, detail);
+        return new Result(VERDICT_REJECTED, reason, Map.of(), Map.of(), Map.of(), Map.of(),
+                0, 0, null, null, StressProfile.EMPTY, detail);
     }
 
     private static boolean isStable(int[] series) {

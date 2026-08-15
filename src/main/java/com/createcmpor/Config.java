@@ -49,6 +49,7 @@ public class Config {
     public static final ModConfigSpec.ConfigValue<List<? extends String>> DEDUP_BLOCKS;
     public static final ModConfigSpec.DoubleValue ENERGY_STABILITY_RELAXATION;
     public static final ModConfigSpec.DoubleValue STRESS_STABILITY_RELAXATION;
+    public static final ModConfigSpec.BooleanValue ENABLE_FACTORY_REVERT;
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
@@ -121,6 +122,9 @@ public class Config {
         STRESS_STABILITY_RELAXATION = builder
                 .comment("应力条目的稳定性容差放宽倍数。")
                 .defineInRange("stressStabilityRelaxation", 2.0, 1.0, 10.0);
+        ENABLE_FACTORY_REVERT = builder
+                .comment("是否允许启动棒把工厂还原为原 CompactMachines 机器（新版无库存复制风险，默认开启）。")
+                .define("enableFactoryRevert", true);
         builder.pop();
 
         SPEC = builder.build();

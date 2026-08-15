@@ -70,5 +70,20 @@
   "message.createcmpor.stress_input.auto_only": "Activation is controlled by evaluation (manual toggle disabled)",
   "message.createcmpor.stress_output.activated": "Stress Output Block activated",
   "message.createcmpor.stress_output.deactivated": "Stress Output Block deactivated",
-  "message.createcmpor.stress_output.auto_only": "Activation is controlled by evaluation (manual toggle disabled)"
+  "message.createcmpor.stress_output.auto_only": "Activation is controlled by evaluation (manual toggle disabled)",
+  "createcmpor.tooltip.factory.title": "Parallel Factory",
+  "createcmpor.tooltip.factory.mode_rate": "Mode: RATE (stable throughput)",
+  "createcmpor.tooltip.factory.mode_replay": "Mode: REPLAY (recorded playback)",
+  "createcmpor.tooltip.factory.io_in_item": "Input: %1$s x%2$s/s",
+  "createcmpor.tooltip.factory.io_in_fluid": "Input: %1$s x%2$s mB/s",
+  "createcmpor.tooltip.factory.io_out_item": "Output: %1$s x%2$s/s",
+  "createcmpor.tooltip.factory.io_out_fluid": "Output: %1$s x%2$s mB/s",
+  "createcmpor.tooltip.factory.stress": "Stress: input %1$s SU / output %2$s SU",
+  "message.createcmpor.factory.installed": "Evaluation finished. The factory was installed; the replica is being cleaned up.",
+  "message.createcmpor.factory.ready": "The factory is ready and the room lock was released.",
+  "message.createcmpor.factory.revert_hint": "Right-click with the evaluation launcher to restore the original machine.",
+  "message.createcmpor.factory.revert_disabled": "Factory revert is disabled.",
+  "message.createcmpor.factory.revert_unavailable": "This factory has no restore data and cannot be reverted.",
+  "message.createcmpor.factory.reverted": "The factory was reverted to the original machine.",
+  "message.createcmpor.factory.revert_failed": "Factory revert failed; check the server log."
 }

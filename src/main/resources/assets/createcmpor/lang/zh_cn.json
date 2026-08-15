@@ -70,5 +70,20 @@
   "message.createcmpor.stress_input.auto_only": "激活由评估流程控制（已禁用手动切换）",
   "message.createcmpor.stress_output.activated": "应力输出方块已激活",
   "message.createcmpor.stress_output.deactivated": "应力输出方块已停用",
-  "message.createcmpor.stress_output.auto_only": "激活由评估流程控制（已禁用手动切换）"
+  "message.createcmpor.stress_output.auto_only": "激活由评估流程控制（已禁用手动切换）",
+  "createcmpor.tooltip.factory.title": "平行工厂",
+  "createcmpor.tooltip.factory.mode_rate": "模式：RATE（稳定速率）",
+  "createcmpor.tooltip.factory.mode_replay": "模式：REPLAY（录制回放）",
+  "createcmpor.tooltip.factory.io_in_item": "输入：%1$s ×%2$s/秒",
+  "createcmpor.tooltip.factory.io_in_fluid": "输入：%1$s ×%2$s mB/秒",
+  "createcmpor.tooltip.factory.io_out_item": "输出：%1$s ×%2$s/秒",
+  "createcmpor.tooltip.factory.io_out_fluid": "输出：%1$s ×%2$s mB/秒",
+  "createcmpor.tooltip.factory.stress": "应力：输入 %1$s SU / 输出 %2$s SU",
+  "message.createcmpor.factory.installed": "评估完成，工厂已固化，副本清理中。",
+  "message.createcmpor.factory.ready": "工厂已就绪，房间锁已释放。",
+  "message.createcmpor.factory.revert_hint": "手持平行评估启动棒右键可还原为原机器。",
+  "message.createcmpor.factory.revert_disabled": "工厂还原功能已被禁用。",
+  "message.createcmpor.factory.revert_unavailable": "该工厂缺少还原数据，无法还原。",
+  "message.createcmpor.factory.reverted": "工厂已还原为原机器。",
+  "message.createcmpor.factory.revert_failed": "工厂还原失败，请检查服务端日志。"
 }

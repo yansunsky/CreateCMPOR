@@ -125,6 +125,13 @@ public class ModBlocks {
                 (be, side) -> be.getFluidHandler());
         event.registerBlockEntity(Capabilities.EnergyStorage.BLOCK, ModBlockEntities.OUTPUT.get(),
                 (be, side) -> be.getEnergyHandler());
+
+        event.registerBlockEntity(Capabilities.ItemHandler.BLOCK, ModBlockEntities.FACTORY.get(),
+                (be, side) -> be.getItemHandler());
+        event.registerBlockEntity(Capabilities.FluidHandler.BLOCK, ModBlockEntities.FACTORY.get(),
+                (be, side) -> be.getFluidHandler());
+        event.registerBlockEntity(Capabilities.EnergyStorage.BLOCK, ModBlockEntities.FACTORY.get(),
+                (be, side) -> be.hasEnergyIo() ? be.getEnergyHandler() : null);
     }
 
     public static void registerStressValues() {
