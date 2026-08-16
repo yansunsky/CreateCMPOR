@@ -611,6 +611,9 @@ public final class EvaluationCloneManager {
                 EvaluationManager.deliverPendingLaunchers(owner, data);
                 owner.displayClientMessage(
                         Component.translatable("message.createcmpor.factory.ready"), false);
+                // 一次性聊天提醒：启动棒可还原工厂（空手右键提示已移除）
+                owner.displayClientMessage(
+                        Component.translatable("message.createcmpor.factory.revert_hint"), false);
             }
             CreateCMPOR.LOGGER.info("评估会话 {} 固化收尾完成：副本已清理，工厂就绪", session.id());
             return;

@@ -127,11 +127,21 @@ public class ModBlocks {
                 (be, side) -> be.getEnergyHandler());
 
         event.registerBlockEntity(Capabilities.ItemHandler.BLOCK, ModBlockEntities.FACTORY.get(),
-                (be, side) -> be.getItemHandler());
+                (be, side) -> isFactoryIoFace(be, side) ? be.getItemHandler() : null);
         event.registerBlockEntity(Capabilities.FluidHandler.BLOCK, ModBlockEntities.FACTORY.get(),
-                (be, side) -> be.getFluidHandler());
+                (be, side) -> isFactoryIoFace(be, side) ? be.getFluidHandler() : null);
         event.registerBlockEntity(Capabilities.EnergyStorage.BLOCK, ModBlockEntities.FACTORY.get(),
-                (be, side) -> be.hasEnergyIo() ? be.getEnergyHandler() : null);
+                (be, side) -> isFactoryIoFace(be, side) && be.hasEnergyIo() ? be.getEnergyHandler() : null);
+    }
+
+    /** 开口面（应力接口）不提供物品/流体/能量 IO；其余面正常。 */
+    private static boolean isFactoryIoFace(com.createcmpor.block.FactoryBlockEntity be,
+                                           net.minecraft.core.Direction side) {
+        if (side == null) {
+            return true;
+        }
+        return !be.getBlockState()
+                .getValue(com.createcmpor.block.FactoryBlock.SHAFT_BY_FACE.get(side));
     }
 
     public static void registerStressValues() {
