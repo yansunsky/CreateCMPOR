@@ -45,10 +45,15 @@ public class FactoryBlockEntity extends RoomCodeBlockEntity
         implements IHaveGoggleInformation {
 
     private static final int BUFFER_SECONDS = 20;
+    /** 产物暂存仓容量：物品 4 组。 */
+    private static final long ITEM_OUTPUT_BUFFER = 256;
+    /** 产物暂存仓容量：流体 4 桶。 */
+    private static final long FLUID_OUTPUT_BUFFER = 4000;
 
     private static final class Container {
         long capacity;
         long amount;
+        double fraction;
 
         Container(long capacity) {
             this.capacity = capacity;
@@ -66,6 +71,16 @@ public class FactoryBlockEntity extends RoomCodeBlockEntity
     private long inputEnergyAmount;
     private long outputEnergyCapacity;
     private long outputEnergyAmount;
+    private double inputEnergyFraction;
+    private double outputEnergyFraction;
+
+    // RATE 连续流速率（每 tick），持久化
+    private final Map<ResourceLocation, Double> inputItemTickRates = new LinkedHashMap<>();
+    private final Map<ResourceLocation, Double> outputItemTickRates = new LinkedHashMap<>();
+    private final Map<ResourceLocation, Double> inputFluidTickRates = new LinkedHashMap<>();
+    private final Map<ResourceLocation, Double> outputFluidTickRates = new LinkedHashMap<>();
+    private double inputEnergyTickRate;
+    private double outputEnergyTickRate;
 
     private final Map<ResourceLocation, int[]> inputItemPatterns = new LinkedHashMap<>();
     private final Map<ResourceLocation, int[]> outputItemPatterns = new LinkedHashMap<>();
@@ -93,7 +108,7 @@ public class FactoryBlockEntity extends RoomCodeBlockEntity
 
     // ===== 评估结果安装（固化时调用一次） =====
 
-    /** RATE 模式：每秒速率 → 容器容量（每秒速率 × 20 秒缓冲）。 */
+    /** RATE 模式：输入容量 = 每秒速率 × 20 秒缓冲；输出 = 大容量暂存仓（连续产出积累）。 */
     public void installRates(Map<EvaluationTrace.FlowKey, Double> inputRates,
                              Map<EvaluationTrace.FlowKey, Double> outputRates,
                              double inputEnergyRate, double outputEnergyRate) {
@@ -114,20 +129,41 @@ public class FactoryBlockEntity extends RoomCodeBlockEntity
             }
         }
         for (Map.Entry<EvaluationTrace.FlowKey, Double> entry : outputRates.entrySet()) {
-            long capacity = capacityFromTickRate(entry.getValue());
-            if (capacity <= 0) {
+            if (entry.getValue() <= 0) {
                 continue;
             }
+            long buffer = "item".equals(entry.getKey().kind()) ? ITEM_OUTPUT_BUFFER : FLUID_OUTPUT_BUFFER;
             if ("item".equals(entry.getKey().kind())) {
-                outputItems.put(entry.getKey().id(), new Container(capacity));
+                outputItems.put(entry.getKey().id(), new Container(buffer));
             } else {
-                outputFluids.put(entry.getKey().id(), new Container(capacity));
+                outputFluids.put(entry.getKey().id(), new Container(buffer));
             }
         }
         inputEnergyCapacity = capacityFromTickRate(inputEnergyRate);
-        outputEnergyCapacity = capacityFromTickRate(outputEnergyRate);
+        outputEnergyCapacity = outputEnergyRate > 0
+                ? Math.max(4000, capacityFromTickRate(outputEnergyRate)) : 0;
         inputEnergyAmount = 0;
         outputEnergyAmount = 0;
+        inputItemTickRates.clear();
+        outputItemTickRates.clear();
+        inputFluidTickRates.clear();
+        outputFluidTickRates.clear();
+        inputRates.forEach((key, rate) -> {
+            if ("item".equals(key.kind())) {
+                inputItemTickRates.put(key.id(), rate);
+            } else {
+                inputFluidTickRates.put(key.id(), rate);
+            }
+        });
+        outputRates.forEach((key, rate) -> {
+            if ("item".equals(key.kind())) {
+                outputItemTickRates.put(key.id(), rate);
+            } else {
+                outputFluidTickRates.put(key.id(), rate);
+            }
+        });
+        inputEnergyTickRate = inputEnergyRate;
+        outputEnergyTickRate = outputEnergyRate;
         installed = true;
         setChanged();
     }
@@ -171,11 +207,11 @@ public class FactoryBlockEntity extends RoomCodeBlockEntity
         inputItemPatterns.forEach((id, pattern) -> inputItems.put(id,
                 new Container(maxInt(pattern) * BUFFER_SECONDS)));
         outputItemPatterns.forEach((id, pattern) -> outputItems.put(id,
-                new Container(maxInt(pattern) * BUFFER_SECONDS)));
+                new Container(Math.max(ITEM_OUTPUT_BUFFER, maxInt(pattern) * BUFFER_SECONDS))));
         inputFluidPatterns.forEach((id, pattern) -> inputFluids.put(id,
                 new Container(maxInt(pattern) * BUFFER_SECONDS)));
         outputFluidPatterns.forEach((id, pattern) -> outputFluids.put(id,
-                new Container(maxInt(pattern) * BUFFER_SECONDS)));
+                new Container(Math.max(FLUID_OUTPUT_BUFFER, maxInt(pattern) * BUFFER_SECONDS))));
         inputEnergyCapacity = maxInt(inputEnergyPattern) * BUFFER_SECONDS;
         outputEnergyCapacity = maxInt(outputEnergyPattern) * BUFFER_SECONDS;
         inputEnergyAmount = 0;
@@ -241,64 +277,114 @@ public class FactoryBlockEntity extends RoomCodeBlockEntity
 
     public static void tick(ServerLevel level, BlockPos pos, BlockState state, FactoryBlockEntity entity) {
         entity.tickCount++;
-        if (entity.tickCount < 20) {
-            return;
+        if (entity.tickCount >= 20) {
+            entity.tickCount = 0;
         }
-        entity.tickCount = 0;
         if (!entity.installed) {
             return;
         }
         if (entity.replayMode) {
-            entity.tickReplay();
+            if (entity.tickCount == 0) {
+                entity.tickReplay();
+            }
         } else {
-            entity.tickRate();
+            entity.tickRateContinuous();
         }
     }
 
-    private void tickRate() {
-        if (isReady()) {
-            operate();
-            lastSuccess = true;
-        } else {
+    /** RATE 连续流：每 tick 按速率累计，输入不足即卡住；产物持续流入大容量暂存仓。 */
+    private void tickRateContinuous() {
+        if (!inputsSatisfied()) {
             lastSuccess = false;
+            return;
         }
+        for (Map.Entry<ResourceLocation, Container> entry : inputItems.entrySet()) {
+            Double rate = inputItemTickRates.get(entry.getKey());
+            if (rate == null) {
+                continue;
+            }
+            Container container = entry.getValue();
+            container.fraction += rate;
+            long whole = (long) container.fraction;
+            if (whole > 0) {
+                container.fraction -= whole;
+                container.amount = Math.max(0, container.amount - whole);
+            }
+        }
+        for (Map.Entry<ResourceLocation, Container> entry : inputFluids.entrySet()) {
+            Double rate = inputFluidTickRates.get(entry.getKey());
+            if (rate == null) {
+                continue;
+            }
+            Container container = entry.getValue();
+            container.fraction += rate;
+            long whole = (long) container.fraction;
+            if (whole > 0) {
+                container.fraction -= whole;
+                container.amount = Math.max(0, container.amount - whole);
+            }
+        }
+        if (inputEnergyCapacity > 0) {
+            inputEnergyFraction += inputEnergyTickRate;
+            long whole = (long) inputEnergyFraction;
+            if (whole > 0) {
+                inputEnergyFraction -= whole;
+                inputEnergyAmount = Math.max(0, inputEnergyAmount - whole);
+            }
+        }
+
+        for (Map.Entry<ResourceLocation, Container> entry : outputItems.entrySet()) {
+            Double rate = outputItemTickRates.get(entry.getKey());
+            if (rate == null) {
+                continue;
+            }
+            Container container = entry.getValue();
+            container.fraction += rate;
+            long whole = (long) container.fraction;
+            if (whole > 0) {
+                container.fraction -= whole;
+                container.amount = Math.min(container.capacity, container.amount + whole);
+            }
+        }
+        for (Map.Entry<ResourceLocation, Container> entry : outputFluids.entrySet()) {
+            Double rate = outputFluidTickRates.get(entry.getKey());
+            if (rate == null) {
+                continue;
+            }
+            Container container = entry.getValue();
+            container.fraction += rate;
+            long whole = (long) container.fraction;
+            if (whole > 0) {
+                container.fraction -= whole;
+                container.amount = Math.min(container.capacity, container.amount + whole);
+            }
+        }
+        if (outputEnergyCapacity > 0) {
+            outputEnergyFraction += outputEnergyTickRate;
+            long whole = (long) outputEnergyFraction;
+            if (whole > 0) {
+                outputEnergyFraction -= whole;
+                outputEnergyAmount = Math.min(outputEnergyCapacity, outputEnergyAmount + whole);
+            }
+        }
+        lastSuccess = true;
     }
 
-    private boolean isReady() {
-        for (Container container : inputItems.values()) {
-            if (container.amount < container.capacity) {
+    /** 连续流输入检查：每类输入至少持有 1 个单位才允许本 tick 推进。 */
+    private boolean inputsSatisfied() {
+        for (Map.Entry<ResourceLocation, Container> entry : inputItems.entrySet()) {
+            Double rate = inputItemTickRates.get(entry.getKey());
+            if (rate != null && rate > 0 && entry.getValue().amount < 1) {
                 return false;
             }
         }
-        for (Container container : inputFluids.values()) {
-            if (container.amount < container.capacity) {
+        for (Map.Entry<ResourceLocation, Container> entry : inputFluids.entrySet()) {
+            Double rate = inputFluidTickRates.get(entry.getKey());
+            if (rate != null && rate > 0 && entry.getValue().amount < 1) {
                 return false;
             }
         }
-        for (Container container : outputItems.values()) {
-            if (container.amount > 0) {
-                return false;
-            }
-        }
-        for (Container container : outputFluids.values()) {
-            if (container.amount > 0) {
-                return false;
-            }
-        }
-        if (inputEnergyCapacity > 0 && inputEnergyAmount < inputEnergyCapacity) {
-            return false;
-        }
-        return outputEnergyAmount <= 0;
-    }
-
-    private void operate() {
-        inputItems.values().forEach(container -> container.amount = 0);
-        inputFluids.values().forEach(container -> container.amount = 0);
-        outputItems.values().forEach(container -> container.amount = container.capacity);
-        outputFluids.values().forEach(container -> container.amount = container.capacity);
-        inputEnergyAmount = 0;
-        outputEnergyAmount = outputEnergyCapacity;
-        setChanged();
+        return inputEnergyCapacity <= 0 || inputEnergyTickRate <= 0 || inputEnergyAmount >= 1;
     }
 
     private void tickReplay() {
@@ -385,15 +471,11 @@ public class FactoryBlockEntity extends RoomCodeBlockEntity
     }
 
     private void retryAfterExternalChange() {
-        if (!lastSuccess && installed) {
-            if (replayMode) {
-                if (replayIsReady(replayCurrentSecond)) {
-                    replayApply(replayCurrentSecond);
-                    replayCurrentSecond = (replayCurrentSecond + 1) % patternLength;
-                    lastSuccess = true;
-                }
-            } else if (isReady()) {
-                operate();
+        // RATE 连续流每 tick 自恢复；仅 REPLAY 需要外部变化后立即重试当前秒。
+        if (!lastSuccess && installed && replayMode) {
+            if (replayIsReady(replayCurrentSecond)) {
+                replayApply(replayCurrentSecond);
+                replayCurrentSecond = (replayCurrentSecond + 1) % patternLength;
                 lastSuccess = true;
             }
         }
@@ -676,25 +758,29 @@ public class FactoryBlockEntity extends RoomCodeBlockEntity
 
     private void appendIoLines(List<Component> tooltip) {
         if (!replayMode) {
-            inputItems.forEach((id, container) -> tooltip.add(Component.translatable(
-                    "createcmpor.tooltip.factory.io_in_item", id.toString(),
-                    container.capacity / (double) BUFFER_SECONDS)));
-            inputFluids.forEach((id, container) -> tooltip.add(Component.translatable(
-                    "createcmpor.tooltip.factory.io_in_fluid", id.toString(),
-                    container.capacity / (double) BUFFER_SECONDS)));
-            outputItems.forEach((id, container) -> tooltip.add(Component.translatable(
-                    "createcmpor.tooltip.factory.io_out_item", id.toString(),
-                    container.capacity / (double) BUFFER_SECONDS)));
-            outputFluids.forEach((id, container) -> tooltip.add(Component.translatable(
-                    "createcmpor.tooltip.factory.io_out_fluid", id.toString(),
-                    container.capacity / (double) BUFFER_SECONDS)));
+            inputItems.forEach((id, container) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
+                    .translate("tooltip.factory.io_in_item", id.toString(),
+                            container.capacity / (double) BUFFER_SECONDS)
+                    .forGoggles(tooltip, 1));
+            inputFluids.forEach((id, container) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
+                    .translate("tooltip.factory.io_in_fluid", id.toString(),
+                            container.capacity / (double) BUFFER_SECONDS)
+                    .forGoggles(tooltip, 1));
+            outputItems.forEach((id, container) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
+                    .translate("tooltip.factory.io_out_item", id.toString(),
+                            container.capacity / (double) BUFFER_SECONDS)
+                    .forGoggles(tooltip, 1));
+            outputFluids.forEach((id, container) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
+                    .translate("tooltip.factory.io_out_fluid", id.toString(),
+                            container.capacity / (double) BUFFER_SECONDS)
+                    .forGoggles(tooltip, 1));
         } else {
-            inputItemPatterns.forEach((id, pattern) -> tooltip.add(Component.translatable(
-                    "createcmpor.tooltip.factory.io_in_item", id.toString(),
-                    average(pattern))));
-            outputItemPatterns.forEach((id, pattern) -> tooltip.add(Component.translatable(
-                    "createcmpor.tooltip.factory.io_out_item", id.toString(),
-                    average(pattern))));
+            inputItemPatterns.forEach((id, pattern) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
+                    .translate("tooltip.factory.io_in_item", id.toString(), average(pattern))
+                    .forGoggles(tooltip, 1));
+            outputItemPatterns.forEach((id, pattern) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
+                    .translate("tooltip.factory.io_out_item", id.toString(), average(pattern))
+                    .forGoggles(tooltip, 1));
         }
     }
 
@@ -736,6 +822,12 @@ public class FactoryBlockEntity extends RoomCodeBlockEntity
                 ? tag.getCompound("restore_state") : null;
         restoreMachineNbt = tag.contains("restore_machine", Tag.TAG_COMPOUND)
                 ? tag.getCompound("restore_machine") : null;
+        loadRateMap(tag, "input_item_rates", inputItemTickRates);
+        loadRateMap(tag, "output_item_rates", outputItemTickRates);
+        loadRateMap(tag, "input_fluid_rates", inputFluidTickRates);
+        loadRateMap(tag, "output_fluid_rates", outputFluidTickRates);
+        inputEnergyTickRate = tag.getDouble("input_energy_rate");
+        outputEnergyTickRate = tag.getDouble("output_energy_rate");
     }
 
     @Override
@@ -765,6 +857,33 @@ public class FactoryBlockEntity extends RoomCodeBlockEntity
         if (restoreMachineNbt != null) {
             tag.put("restore_machine", restoreMachineNbt.copy());
         }
+        saveRateMap(tag, "input_item_rates", inputItemTickRates);
+        saveRateMap(tag, "output_item_rates", outputItemTickRates);
+        saveRateMap(tag, "input_fluid_rates", inputFluidTickRates);
+        saveRateMap(tag, "output_fluid_rates", outputFluidTickRates);
+        tag.putDouble("input_energy_rate", inputEnergyTickRate);
+        tag.putDouble("output_energy_rate", outputEnergyTickRate);
+    }
+
+    private static void loadRateMap(CompoundTag tag, String key,
+                                    Map<ResourceLocation, Double> output) {
+        output.clear();
+        if (!tag.contains(key, Tag.TAG_COMPOUND)) {
+            return;
+        }
+        CompoundTag map = tag.getCompound(key);
+        for (String idKey : map.getAllKeys()) {
+            output.put(ResourceLocation.parse(idKey), map.getDouble(idKey));
+        }
+    }
+
+    private static void saveRateMap(CompoundTag tag, String key,
+                                    Map<ResourceLocation, Double> map) {
+        CompoundTag mapTag = new CompoundTag();
+        for (Map.Entry<ResourceLocation, Double> entry : map.entrySet()) {
+            mapTag.putDouble(entry.getKey().toString(), entry.getValue());
+        }
+        tag.put(key, mapTag);
     }
 
     private static void loadContainerMap(CompoundTag tag, String key,

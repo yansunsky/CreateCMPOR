@@ -39,15 +39,17 @@ final class EvaluationTicketManager {
 
     private static void addAtDistance(ServerLevel target, EvaluationManifest manifest, int distance) {
         for (EvaluationManifest.ChunkRecord chunk : manifest.chunks()) {
+            // forceTicks=true：无玩家维度上实体/方块也必须真正 tick（否则评估期副本不运行，
+            // PLAYER ticket 才驱动——P6 测试的产出正是玩家进入副本时产生的）
             target.getChunkSource().addRegionTicket(EVALUATION_TICKET, chunk.chunkPos(),
-                    distance, manifest.sessionId(), false);
+                    distance, manifest.sessionId(), true);
         }
     }
 
     private static void removeAtDistance(ServerLevel target, EvaluationManifest manifest, int distance) {
         for (EvaluationManifest.ChunkRecord chunk : manifest.chunks()) {
             target.getChunkSource().removeRegionTicket(EVALUATION_TICKET, chunk.chunkPos(),
-                    distance, manifest.sessionId(), false);
+                    distance, manifest.sessionId(), true);
         }
     }
 
@@ -57,6 +59,22 @@ final class EvaluationTicketManager {
 
     static boolean allEntityTickingReady(ServerLevel target, EvaluationManifest manifest) {
         return allReadyAt(target, manifest, FullChunkStatus.ENTITY_TICKING);
+    }
+
+    /**
+     * 用 vanilla forced chunk 保持无玩家维度的实体持续 tick：
+     * ServerLevel.tick 的实体门控为 players 非空 || hasForcedChunks || emptyTime&lt;300，
+     * eval_world 没有玩家，必须通过 setChunkForced（写入 "chunks" SavedData，
+     * FORCED ticket 等级 = ENTITY_TICKING）模拟"有玩家加载"。
+     */
+    static void setChunksForced(ServerLevel target, EvaluationManifest manifest, boolean add) {
+        for (EvaluationManifest.ChunkRecord chunk : manifest.chunks()) {
+            target.setChunkForced(chunk.chunkPos().x, chunk.chunkPos().z, add);
+        }
+        if (add) {
+            CreateCMPOR.LOGGER.info("评估会话 {} 已强制加载 {} 个副本区块（模拟玩家 tick）",
+                    manifest.sessionId(), manifest.chunks().size());
+        }
     }
 
     private static boolean allReadyAt(ServerLevel target, EvaluationManifest manifest,
