@@ -397,6 +397,8 @@ public final class EvaluationCloneManager {
         // 主动在主线程把房间 chunk 加载到 FULL：依赖后台 worldgen 调度在空闲维度上很慢，
         // getChunk(requireChunk=true) 会就地驱动 worldgen 直到 chunk 可加载。
         loadChunksToFull(server, session, target, manifest);
+        // 无玩家维度实体不 tick（ServerLevel emptyTime 门控），forced chunk 模拟玩家加载。
+        EvaluationTicketManager.setChunksForced(target, manifest, true);
         // 铁路：加载后自动建图 + train 复制注册（车厢实体首次 tick 前完成）
         if (!manifest.railwayRecords().isEmpty()) {
             EvaluationRailwayTransfer.setup(target, session, manifest);
@@ -543,6 +545,7 @@ public final class EvaluationCloneManager {
         RuntimeState runtime = runtime(server, session);
         if (!runtime.ticketsRemoved) {
             EvaluationTicketManager.remove(target, manifest);
+            EvaluationTicketManager.setChunksForced(target, manifest, false);
             manifest.setTicketsAdded(false);
             manifest.setTargetReady(false);
             runtime.ticketsRemoved = true;
