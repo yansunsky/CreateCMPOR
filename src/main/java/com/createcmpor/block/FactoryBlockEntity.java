@@ -850,55 +850,85 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
     private void appendIoLines(List<Component> tooltip) {
         if (!replayMode) {
             inputItems.forEach((id, container) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
-                    .translate("tooltip.factory.io_in_item", id.toString(),
+                    .translate("tooltip.factory.io_in_item", itemDisplayName(id),
                             container.capacity / (double) BUFFER_SECONDS)
+                    .style(ChatFormatting.AQUA)
                     .forGoggles(tooltip, 1));
             inputFluids.forEach((id, container) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
-                    .translate("tooltip.factory.io_in_fluid", id.toString(),
+                    .translate("tooltip.factory.io_in_fluid", fluidDisplayName(id),
                             container.capacity / (double) BUFFER_SECONDS)
+                    .style(ChatFormatting.AQUA)
                     .forGoggles(tooltip, 1));
             outputItems.forEach((id, container) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
-                    .translate("tooltip.factory.io_out_item", id.toString(),
+                    .translate("tooltip.factory.io_out_item", itemDisplayName(id),
                             container.capacity / (double) BUFFER_SECONDS)
+                    .style(ChatFormatting.AQUA)
                     .forGoggles(tooltip, 1));
             outputFluids.forEach((id, container) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
-                    .translate("tooltip.factory.io_out_fluid", id.toString(),
+                    .translate("tooltip.factory.io_out_fluid", fluidDisplayName(id),
                             container.capacity / (double) BUFFER_SECONDS)
+                    .style(ChatFormatting.AQUA)
                     .forGoggles(tooltip, 1));
             if (inputEnergyCapacity > 0) {
                 net.createmod.catnip.lang.Lang.builder("createcmpor")
                         .translate("tooltip.factory.io_in_energy", inputEnergyTickRate)
+                        .style(ChatFormatting.AQUA)
                         .forGoggles(tooltip, 1);
             }
             if (outputEnergyCapacity > 0) {
                 net.createmod.catnip.lang.Lang.builder("createcmpor")
                         .translate("tooltip.factory.io_out_energy", outputEnergyTickRate)
+                        .style(ChatFormatting.AQUA)
                         .forGoggles(tooltip, 1);
             }
         } else {
             inputItemPatterns.forEach((id, pattern) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
-                    .translate("tooltip.factory.io_in_item", id.toString(), average(pattern))
+                    .translate("tooltip.factory.io_in_item", itemDisplayName(id), average(pattern))
+                    .style(ChatFormatting.AQUA)
                     .forGoggles(tooltip, 1));
             inputFluidPatterns.forEach((id, pattern) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
-                    .translate("tooltip.factory.io_in_fluid", id.toString(), average(pattern))
+                    .translate("tooltip.factory.io_in_fluid", fluidDisplayName(id), average(pattern))
+                    .style(ChatFormatting.AQUA)
                     .forGoggles(tooltip, 1));
             outputItemPatterns.forEach((id, pattern) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
-                    .translate("tooltip.factory.io_out_item", id.toString(), average(pattern))
+                    .translate("tooltip.factory.io_out_item", itemDisplayName(id), average(pattern))
+                    .style(ChatFormatting.AQUA)
                     .forGoggles(tooltip, 1));
             outputFluidPatterns.forEach((id, pattern) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
-                    .translate("tooltip.factory.io_out_fluid", id.toString(), average(pattern))
+                    .translate("tooltip.factory.io_out_fluid", fluidDisplayName(id), average(pattern))
+                    .style(ChatFormatting.AQUA)
                     .forGoggles(tooltip, 1));
             if (inputEnergyPattern.length > 0) {
                 net.createmod.catnip.lang.Lang.builder("createcmpor")
                         .translate("tooltip.factory.io_in_energy", average(inputEnergyPattern))
+                        .style(ChatFormatting.AQUA)
                         .forGoggles(tooltip, 1);
             }
             if (outputEnergyPattern.length > 0) {
                 net.createmod.catnip.lang.Lang.builder("createcmpor")
                         .translate("tooltip.factory.io_out_energy", average(outputEnergyPattern))
+                        .style(ChatFormatting.AQUA)
                         .forGoggles(tooltip, 1);
             }
         }
+    }
+
+    /** 物品显示名：本地化名称（找不到时回退为 id）。 */
+    private static Object itemDisplayName(ResourceLocation id) {
+        net.minecraft.world.item.Item item = BuiltInRegistries.ITEM.get(id);
+        if (item == null || item == BuiltInRegistries.ITEM.get(net.minecraft.resources.ResourceLocation.withDefaultNamespace("air"))) {
+            return id.toString();
+        }
+        return item.getDescription();
+    }
+
+    /** 流体显示名：本地化名称（找不到时回退为 id）。 */
+    private static Object fluidDisplayName(ResourceLocation id) {
+        net.minecraft.world.level.material.Fluid fluid = BuiltInRegistries.FLUID.get(id);
+        if (fluid == null) {
+            return id.toString();
+        }
+        return fluid.getFluidType().getDescription();
     }
 
     private static double average(int[] pattern) {

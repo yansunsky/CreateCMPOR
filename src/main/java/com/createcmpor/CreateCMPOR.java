@@ -57,6 +57,7 @@ public class CreateCMPOR {
         ModBlockEntities.register(modEventBus);
         ModCreativeTabs.register(modEventBus);
         com.createcmpor.stress.ModAttachments.register(modEventBus);
+        com.createcmpor.legacy.LegacyCompat.register(modEventBus);
 
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(ModBlocks::registerCapabilities);
