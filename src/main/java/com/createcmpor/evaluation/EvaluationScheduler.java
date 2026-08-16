@@ -161,6 +161,13 @@ final class EvaluationScheduler {
                                      EvaluationSession session, ServerLevel target, State state) {
         int seconds = Config.EVALUATE_SECONDS.get();
         if (target.getGameTime() - state.phaseStartTick < seconds * 20L) {
+            // 诊断：每 5 秒打印一次采样摘要（排查流体/FE 不记录）
+            long elapsed = target.getGameTime() - state.phaseStartTick;
+            if (elapsed > 0 && elapsed % 100 == 0) {
+                CreateCMPOR.LOGGER.info("评估会话 {} 采样诊断 [{}s/{}s]：{}",
+                        session.id(), elapsed / 20, seconds,
+                        EvaluationTrace.Hub.INSTANCE.stats(session.roomCode()));
+            }
             session.tickState();
             data.changed();
             return;
@@ -220,6 +227,9 @@ final class EvaluationScheduler {
                 // 副本 BE 必须绑定房间码，否则 isActive() 恒为 false、能力全部拒绝。
                 if (target.getBlockEntity(pos) instanceof BaseIOBlockEntity entity) {
                     entity.setRoomCode(roomCode);
+                    // 诊断：打印 IO 方块详情（白名单是否完整复制）
+                    CreateCMPOR.LOGGER.info("评估会话 IO 激活 {} {} 白名单: {}",
+                            block == ModBlocks.INPUT.get() ? "输入" : "输出", pos, entity.describeIoFilter());
                 }
                 count[0]++;
             } else if (block == ModBlocks.STRESS_INPUT.get()) {

@@ -1,0 +1,14 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "ABA",
+    "BCB",
+    "ABA"
+  ],
+  "key": {
+    "A": { "item": "create:andesite_casing" },
+    "B": { "item": "minecraft:barrel" },
+    "C": { "item": "create:shaft" }
+  },
+  "result": { "id": "createcmpor:stress_extension", "count": 1 }
+}
