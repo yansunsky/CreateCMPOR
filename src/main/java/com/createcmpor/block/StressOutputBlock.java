@@ -46,9 +46,11 @@ public class StressOutputBlock extends DirectionalKineticBlock implements IBE<St
         builder.add(ACTIVE);
     }
 
+    /** 双面接入：FACING 及其对称面都能接传动轴并传递应力（对穿轴，像应力表）。 */
     @Override
     public boolean hasShaftTowards(LevelReader world, BlockPos pos, BlockState state, Direction face) {
-        return face == state.getValue(FACING);
+        Direction facing = state.getValue(FACING);
+        return face == facing || face == facing.getOpposite();
     }
 
     @Override

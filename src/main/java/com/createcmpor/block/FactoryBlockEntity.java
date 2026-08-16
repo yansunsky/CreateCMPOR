@@ -7,6 +7,7 @@ import com.createcmpor.init.ModBlockEntities;
 import com.createcmpor.stress.FactoryStressAccess;
 import com.createcmpor.stress.StressProfile;
 import com.simibubi.create.api.equipment.goggles.IHaveGoggleInformation;
+import com.simibubi.create.content.kinetics.base.GeneratingKineticBlockEntity;
 import com.simibubi.create.content.kinetics.base.IRotate.StressImpact;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 import com.simibubi.create.foundation.utility.CreateLang;
@@ -43,8 +44,12 @@ import java.util.Objects;
 
 /**
  * Phase 7 平行工厂方块实体：真实库存容器 + RATE/REPLAY 兑换 + 还原镜像 + 护目镜 tooltip。
+ *
+ * <p>继承 {@link GeneratingKineticBlockEntity}：输出型工厂作为 Create 应力源，需要
+ * {@code updateGeneratedRotation()}（applyNewSpeed）来建立自身转速——RotationPropagator
+ * 传播速度依赖源的 speed 字段，而该字段只有 Generating 的 applyNewSpeed 会设置。
  */
-public class FactoryBlockEntity extends KineticBlockEntity
+public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         implements IHaveGoggleInformation {
 
     private static final int BUFFER_SECONDS = 20;
@@ -257,6 +262,10 @@ public class FactoryBlockEntity extends KineticBlockEntity
         restoreMachineState = NbtUtils.writeBlockState(originalState);
         restoreMachineNbt = originalNbt.copy();
         FactoryStressAccess.set(this, stressProfile);
+        // 输出型：立即应用生成转速（建立/恢复源网络）
+        if (level != null && !level.isClientSide && stressProfile.isProvide()) {
+            updateGeneratedRotation();
+        }
         // 档案安装后应力数据变化：若工厂已接入网络，立即上报（容量 + 消耗）
         if (level != null && !level.isClientSide && hasNetwork()) {
             com.simibubi.create.content.kinetics.KineticNetwork network = getOrCreateNetwork();
@@ -304,6 +313,12 @@ public class FactoryBlockEntity extends KineticBlockEntity
         super.tick();
         if (level == null || level.isClientSide || !installed) {
             return;
+        }
+        // 输出型工厂：作为应力源主动维持生成转速。
+        // 源的速度只能由 updateGeneratedRotation（applyNewSpeed）建立；任何状态变化
+        // （放置/固化/开口/重启）后这里都会自愈：理论速度与生成速度不一致时重新应用。
+        if (FactoryStressAccess.get(this).isProvide() && getTheoreticalSpeed() != getGeneratedSpeed()) {
+            updateGeneratedRotation();
         }
         // 输入型工厂：必须接入 Create 应力网络并获得实际转速才工作
         // （Create 应力网络语义：无转速 = 无动能；断开应力源 / 网络超载时 getSpeed 归 0 → 暂停兑换）
@@ -782,34 +797,10 @@ public class FactoryBlockEntity extends KineticBlockEntity
 
     @Override
     public boolean addToGoggleTooltip(List<Component> tooltip, boolean isPlayerSneaking) {
-        boolean added = false;
-        // Create 风格应力数据（对齐机械动力原版显示）：
-        // - 输入型：super 的 Impact 行（calculateStressApplied 非 0 时显示 stressImpact 行）
-        // - 输出型：capacityProvided 容量行（复刻 GeneratingKineticBlockEntity 的显示逻辑）
-        added |= super.addToGoggleTooltip(tooltip, isPlayerSneaking);
-        if (StressImpact.isEnabled()) {
-            float stressBase = calculateAddedStressCapacity();
-            if (!Mth.equal(stressBase, 0)) {
-                CreateLang.translate("gui.goggles.generator_stats")
-                        .forGoggles(tooltip);
-                CreateLang.translate("tooltip.capacityProvided")
-                        .style(ChatFormatting.GRAY)
-                        .forGoggles(tooltip);
-                float speed = getTheoreticalSpeed();
-                if (speed != getGeneratedSpeed() && speed != 0) {
-                    stressBase *= getGeneratedSpeed() / speed;
-                }
-                float stressTotal = Math.abs(stressBase * speed);
-                CreateLang.number(stressTotal)
-                        .translate("generic.unit.stress")
-                        .style(ChatFormatting.AQUA)
-                        .space()
-                        .add(CreateLang.translate("gui.goggles.at_current_speed")
-                                .style(ChatFormatting.DARK_GRAY))
-                        .forGoggles(tooltip, 1);
-                added = true;
-            }
-        }
+        // Create 风格应力数据由父类 GeneratingKineticBlockEntity 提供：
+        // - 输入型：KineticBlockEntity 的 Impact 行（calculateStressApplied 非 0 时显示）
+        // - 输出型：GeneratingKineticBlockEntity 的 generator_stats + capacityProvided 容量行
+        super.addToGoggleTooltip(tooltip, isPlayerSneaking);
         net.createmod.catnip.lang.Lang.builder("createcmpor")
                 .translate("tooltip.factory.title").forGoggles(tooltip, 1);
         net.createmod.catnip.lang.Lang.builder("createcmpor")
