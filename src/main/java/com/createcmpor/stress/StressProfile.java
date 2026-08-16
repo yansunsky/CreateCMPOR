@@ -30,6 +30,23 @@ public record StressProfile(float inputSU, float inputRPM, float outputSU, float
             Codec.FLOAT.fieldOf("output_rpm").forGetter(StressProfile::outputRPM)
     ).apply(instance, StressProfile::new));
 
+    /** 网络同步用 StreamCodec（attachment sync / NeoForge 要求）。 */
+    public static final net.minecraft.network.codec.StreamCodec<net.minecraft.network.RegistryFriendlyByteBuf, StressProfile> STREAM_CODEC =
+            new net.minecraft.network.codec.StreamCodec<>() {
+                @Override
+                public StressProfile decode(net.minecraft.network.RegistryFriendlyByteBuf buf) {
+                    return new StressProfile(buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readFloat());
+                }
+
+                @Override
+                public void encode(net.minecraft.network.RegistryFriendlyByteBuf buf, StressProfile profile) {
+                    buf.writeFloat(profile.inputSU());
+                    buf.writeFloat(profile.inputRPM());
+                    buf.writeFloat(profile.outputSU());
+                    buf.writeFloat(profile.outputRPM());
+                }
+            };
+
     /** 是否无应力交互。 */
     public boolean isEmpty() {
         return inputSU == 0f && outputSU == 0f;

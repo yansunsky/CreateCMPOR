@@ -7,7 +7,10 @@ import com.createcmpor.init.ModBlockEntities;
 import com.createcmpor.stress.FactoryStressAccess;
 import com.createcmpor.stress.StressProfile;
 import com.simibubi.create.api.equipment.goggles.IHaveGoggleInformation;
+import com.simibubi.create.content.kinetics.base.IRotate.StressImpact;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
+import com.simibubi.create.foundation.utility.CreateLang;
+import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.HolderLookup;
@@ -19,6 +22,7 @@ import net.minecraft.nbt.Tag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.util.Mth;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
@@ -253,6 +257,16 @@ public class FactoryBlockEntity extends KineticBlockEntity
         restoreMachineState = NbtUtils.writeBlockState(originalState);
         restoreMachineNbt = originalNbt.copy();
         FactoryStressAccess.set(this, stressProfile);
+        // 档案安装后应力数据变化：若工厂已接入网络，立即上报（容量 + 消耗）
+        if (level != null && !level.isClientSide && hasNetwork()) {
+            com.simibubi.create.content.kinetics.KineticNetwork network = getOrCreateNetwork();
+            network.updateCapacityFor(this, calculateAddedStressCapacity());
+            network.updateStressFor(this, calculateStressApplied());
+        }
+        // 同步客户端（attachment sync：护目镜 Impact/Capacity 行依赖客户端档案）
+        if (level != null && !level.isClientSide) {
+            sendData();
+        }
         setChanged();
     }
 
@@ -291,7 +305,13 @@ public class FactoryBlockEntity extends KineticBlockEntity
         if (level == null || level.isClientSide || !installed) {
             return;
         }
-        // 应力暂停：输入型工厂（需要外部应力）在网络过载时完全暂停兑换。
+        // 输入型工厂：必须接入 Create 应力网络并获得实际转速才工作
+        // （Create 应力网络语义：无转速 = 无动能；断开应力源 / 网络超载时 getSpeed 归 0 → 暂停兑换）
+        if (stressInputRequired() && Math.abs(getSpeed()) == 0) {
+            lastSuccess = false;
+            return;
+        }
+        // 应力暂停：输入型工厂（需要外部应力）在网络过载时完全暂停兑换（双保险，超载通常已使 getSpeed 归 0）。
         if (stressInputRequired() && isOverStressed()) {
             lastSuccess = false;
             return;
@@ -762,19 +782,40 @@ public class FactoryBlockEntity extends KineticBlockEntity
 
     @Override
     public boolean addToGoggleTooltip(List<Component> tooltip, boolean isPlayerSneaking) {
-        // Catnip LangBuilder 与 Create 同款：自动拼接 createcmpor 翻译域 + 缩进
+        boolean added = false;
+        // Create 风格应力数据（对齐机械动力原版显示）：
+        // - 输入型：super 的 Impact 行（calculateStressApplied 非 0 时显示 stressImpact 行）
+        // - 输出型：capacityProvided 容量行（复刻 GeneratingKineticBlockEntity 的显示逻辑）
+        added |= super.addToGoggleTooltip(tooltip, isPlayerSneaking);
+        if (StressImpact.isEnabled()) {
+            float stressBase = calculateAddedStressCapacity();
+            if (!Mth.equal(stressBase, 0)) {
+                CreateLang.translate("gui.goggles.generator_stats")
+                        .forGoggles(tooltip);
+                CreateLang.translate("tooltip.capacityProvided")
+                        .style(ChatFormatting.GRAY)
+                        .forGoggles(tooltip);
+                float speed = getTheoreticalSpeed();
+                if (speed != getGeneratedSpeed() && speed != 0) {
+                    stressBase *= getGeneratedSpeed() / speed;
+                }
+                float stressTotal = Math.abs(stressBase * speed);
+                CreateLang.number(stressTotal)
+                        .translate("generic.unit.stress")
+                        .style(ChatFormatting.AQUA)
+                        .space()
+                        .add(CreateLang.translate("gui.goggles.at_current_speed")
+                                .style(ChatFormatting.DARK_GRAY))
+                        .forGoggles(tooltip, 1);
+                added = true;
+            }
+        }
         net.createmod.catnip.lang.Lang.builder("createcmpor")
                 .translate("tooltip.factory.title").forGoggles(tooltip, 1);
         net.createmod.catnip.lang.Lang.builder("createcmpor")
                 .translate(replayMode ? "tooltip.factory.mode_replay" : "tooltip.factory.mode_rate")
                 .forGoggles(tooltip, 1);
         appendIoLines(tooltip);
-        StressProfile profile = FactoryStressAccess.get(this);
-        if (!profile.isEmpty()) {
-            net.createmod.catnip.lang.Lang.builder("createcmpor")
-                    .translate("tooltip.factory.stress", profile.inputSU(), profile.outputSU())
-                    .forGoggles(tooltip, 1);
-        }
         return true;
     }
 
@@ -979,15 +1020,16 @@ public class FactoryBlockEntity extends KineticBlockEntity
         return getBlockState().getBlock();
     }
 
-    /** 输出型工厂（outputSU>0）作为应力源：返回档案转速沿任意开口面方向。 */
+    /** 输出型工厂（outputSU>0）作为应力源：生成转速 = 空间内应力输出方块的转速（评估时网络采样）。 */
     @Override
     public float getGeneratedSpeed() {
         StressProfile profile = FactoryStressAccess.get(this);
         if (!profile.isProvide()) {
             return 0;
         }
-        float speed = profile.outputRPM() > 0 ? profile.outputRPM() : 32;
-        return convertToDirection(speed, firstOpenFace());
+        // 默认转速 = 评估时空间内应力输出方块的转速（outputRPM 来自 KineticNetwork 采样），
+        // 不再使用固定 32 RPM 兜底：评估时空间无动力则 outputRPM=0 → 工厂不输出。
+        return convertToDirection(profile.outputRPM(), firstOpenFace());
     }
 
     /** 返回任一开口面方向（无开口时默认 up，仅用于转速方向推导）。 */
@@ -1005,27 +1047,51 @@ public class FactoryBlockEntity extends KineticBlockEntity
     @Override
     public float calculateAddedStressCapacity() {
         StressProfile profile = FactoryStressAccess.get(this);
-        if (!profile.isProvide() || !Config.ENABLE_STRESS_OUTPUT.get()) {
-            return 0;
+        float capacity = 0;
+        if (profile.isProvide() && Config.ENABLE_STRESS_OUTPUT.get()) {
+            float speed = Math.abs(getTheoreticalSpeed());
+            if (speed != 0) {
+                capacity = profile.outputSU() * (1.0f - Config.STRESS_LOSS_FACTOR.get().floatValue()) / speed;
+            }
         }
-        float speed = Math.abs(getTheoreticalSpeed());
-        if (speed == 0) {
-            return 0;
-        }
-        return profile.outputSU() * (1.0f - Config.STRESS_LOSS_FACTOR.get().floatValue()) / speed;
+        this.lastCapacityProvided = capacity;
+        return capacity;
     }
 
     /** 输入型工厂向网络申报应力消耗。 */
     @Override
     public float calculateStressApplied() {
         StressProfile profile = FactoryStressAccess.get(this);
-        if (!profile.isConsume()) {
-            return 0;
+        float impact = 0;
+        if (profile.isConsume()) {
+            float speed = Math.abs(getTheoreticalSpeed());
+            if (speed != 0) {
+                impact = profile.inputSU() / speed;
+            }
         }
-        float speed = Math.abs(getTheoreticalSpeed());
-        if (speed == 0) {
-            return 0;
+        this.lastStressApplied = impact;
+        return impact;
+    }
+
+    /**
+     * 转速变化后主动向网络重报应力数据。
+     *
+     * <p>原因：Create 的 {@code KineticNetwork.add()} 只在方块加入网络时调用一次
+     * {@code calculateStressApplied()} 存入 members——静态 impact（BlockStressValues）没问题，
+     * 但工厂的动态 impact（inputSU/|speed|）在被动接入时 add 发生在 speed 设置之前，
+     * speed=0 导致 members 存 0 且此后无人重算（{@code updateStressFor} 只有源方块会调）。
+     * 这里对齐 GeneratingKineticBlockEntity 的自报模式，在速度变化后重新上报。
+     */
+    @Override
+    public void onSpeedChanged(float previousSpeed) {
+        super.onSpeedChanged(previousSpeed);
+        if (level == null || level.isClientSide || !hasNetwork()) {
+            return;
         }
-        return profile.inputSU() / speed;
+        com.simibubi.create.content.kinetics.KineticNetwork network = getOrCreateNetwork();
+        if (isSource()) {
+            network.updateCapacityFor(this, calculateAddedStressCapacity());
+        }
+        network.updateStressFor(this, calculateStressApplied());
     }
 }
