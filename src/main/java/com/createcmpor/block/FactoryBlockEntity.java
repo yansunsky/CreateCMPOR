@@ -349,9 +349,9 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         return FactoryStressAccess.get(this).isConsume();
     }
 
-    /** RATE 连续流：每 tick 按速率累计，输入不足即卡住；产物持续流入大容量暂存仓。 */
+    /** RATE 连续流：每 tick 按速率累计，输入不足或输出满仓即卡住（背压，产物不丢弃）。 */
     private void tickRateContinuous() {
-        if (!inputsSatisfied()) {
+        if (!inputsSatisfied() || !outputsHaveSpace()) {
             lastSuccess = false;
             return;
         }
@@ -442,6 +442,21 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             }
         }
         return inputEnergyCapacity <= 0 || inputEnergyTickRate <= 0 || inputEnergyAmount >= 1;
+    }
+
+    /** 连续流输出空间检查：任一输出暂存仓满 → 暂停兑换（背压，不丢弃产物）。 */
+    private boolean outputsHaveSpace() {
+        for (Container container : outputItems.values()) {
+            if (container.amount >= container.capacity) {
+                return false;
+            }
+        }
+        for (Container container : outputFluids.values()) {
+            if (container.amount >= container.capacity) {
+                return false;
+            }
+        }
+        return outputEnergyCapacity <= 0 || outputEnergyAmount < outputEnergyCapacity;
     }
 
     private void tickReplay() {
@@ -664,21 +679,36 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
                     .map(BuiltInRegistries.FLUID::get).filter(Objects::nonNull).toList();
             if (tank < inputs.size()) {
                 Container container = inputFluids.get(BuiltInRegistries.FLUID.getKey(inputs.get(tank)));
-                return new FluidStack(inputs.get(tank), container == null ? 0 : (int) Math.min(container.amount, 1));
+                return new FluidStack(inputs.get(tank),
+                        container == null ? 0 : (int) Math.min(container.amount, Integer.MAX_VALUE));
             }
             int outputIndex = tank - inputs.size();
             List<Fluid> outputs = outputFluids.keySet().stream()
                     .map(BuiltInRegistries.FLUID::get).filter(Objects::nonNull).toList();
             if (outputIndex < outputs.size()) {
                 Container container = outputFluids.get(BuiltInRegistries.FLUID.getKey(outputs.get(outputIndex)));
-                return new FluidStack(outputs.get(outputIndex), container == null ? 0 : (int) Math.min(container.amount, 1));
+                return new FluidStack(outputs.get(outputIndex),
+                        container == null ? 0 : (int) Math.min(container.amount, Integer.MAX_VALUE));
             }
             return FluidStack.EMPTY;
         }
 
         @Override
         public int getTankCapacity(int tank) {
-            return Integer.MAX_VALUE;
+            List<Fluid> inputs = inputFluids.keySet().stream()
+                    .map(BuiltInRegistries.FLUID::get).filter(Objects::nonNull).toList();
+            if (tank < inputs.size()) {
+                Container container = inputFluids.get(BuiltInRegistries.FLUID.getKey(inputs.get(tank)));
+                return container == null ? 0 : (int) Math.min(container.capacity, Integer.MAX_VALUE);
+            }
+            int outputIndex = tank - inputs.size();
+            List<Fluid> outputs = outputFluids.keySet().stream()
+                    .map(BuiltInRegistries.FLUID::get).filter(Objects::nonNull).toList();
+            if (outputIndex < outputs.size()) {
+                Container container = outputFluids.get(BuiltInRegistries.FLUID.getKey(outputs.get(outputIndex)));
+                return container == null ? 0 : (int) Math.min(container.capacity, Integer.MAX_VALUE);
+            }
+            return 0;
         }
 
         @Override
@@ -801,6 +831,13 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         // - 输入型：KineticBlockEntity 的 Impact 行（calculateStressApplied 非 0 时显示）
         // - 输出型：GeneratingKineticBlockEntity 的 generator_stats + capacityProvided 容量行
         super.addToGoggleTooltip(tooltip, isPlayerSneaking);
+        // 自定义行：所需/提供的应力总量（SU），方便玩家直接看到需要消耗多少应力
+        StressProfile profile = FactoryStressAccess.get(this);
+        if (!profile.isEmpty()) {
+            net.createmod.catnip.lang.Lang.builder("createcmpor")
+                    .translate("tooltip.factory.stress", profile.inputSU(), profile.outputSU())
+                    .forGoggles(tooltip, 1);
+        }
         net.createmod.catnip.lang.Lang.builder("createcmpor")
                 .translate("tooltip.factory.title").forGoggles(tooltip, 1);
         net.createmod.catnip.lang.Lang.builder("createcmpor")
@@ -828,13 +865,39 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
                     .translate("tooltip.factory.io_out_fluid", id.toString(),
                             container.capacity / (double) BUFFER_SECONDS)
                     .forGoggles(tooltip, 1));
+            if (inputEnergyCapacity > 0) {
+                net.createmod.catnip.lang.Lang.builder("createcmpor")
+                        .translate("tooltip.factory.io_in_energy", inputEnergyTickRate)
+                        .forGoggles(tooltip, 1);
+            }
+            if (outputEnergyCapacity > 0) {
+                net.createmod.catnip.lang.Lang.builder("createcmpor")
+                        .translate("tooltip.factory.io_out_energy", outputEnergyTickRate)
+                        .forGoggles(tooltip, 1);
+            }
         } else {
             inputItemPatterns.forEach((id, pattern) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
                     .translate("tooltip.factory.io_in_item", id.toString(), average(pattern))
                     .forGoggles(tooltip, 1));
+            inputFluidPatterns.forEach((id, pattern) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
+                    .translate("tooltip.factory.io_in_fluid", id.toString(), average(pattern))
+                    .forGoggles(tooltip, 1));
             outputItemPatterns.forEach((id, pattern) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
                     .translate("tooltip.factory.io_out_item", id.toString(), average(pattern))
                     .forGoggles(tooltip, 1));
+            outputFluidPatterns.forEach((id, pattern) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
+                    .translate("tooltip.factory.io_out_fluid", id.toString(), average(pattern))
+                    .forGoggles(tooltip, 1));
+            if (inputEnergyPattern.length > 0) {
+                net.createmod.catnip.lang.Lang.builder("createcmpor")
+                        .translate("tooltip.factory.io_in_energy", average(inputEnergyPattern))
+                        .forGoggles(tooltip, 1);
+            }
+            if (outputEnergyPattern.length > 0) {
+                net.createmod.catnip.lang.Lang.builder("createcmpor")
+                        .translate("tooltip.factory.io_out_energy", average(outputEnergyPattern))
+                        .forGoggles(tooltip, 1);
+            }
         }
     }
 

@@ -78,6 +78,8 @@
   "createcmpor.tooltip.factory.io_in_fluid": "输入：%1$s ×%2$s mB/秒",
   "createcmpor.tooltip.factory.io_out_item": "输出：%1$s ×%2$s/秒",
   "createcmpor.tooltip.factory.io_out_fluid": "输出：%1$s ×%2$s mB/秒",
+  "createcmpor.tooltip.factory.io_in_energy": "输入：%1$s FE/秒",
+  "createcmpor.tooltip.factory.io_out_energy": "输出：%1$s FE/秒",
   "createcmpor.tooltip.factory.stress": "应力：输入 %1$s SU / 输出 %2$s SU",
   "message.createcmpor.factory.installed": "评估完成，工厂已固化，副本清理中。",
   "message.createcmpor.factory.ready": "工厂已就绪，房间锁已释放。",

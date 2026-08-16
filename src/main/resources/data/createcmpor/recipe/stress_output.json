@@ -1,0 +1,14 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    " B ",
+    "ACA",
+    " B "
+  ],
+  "key": {
+    "A": { "item": "create:speedometer" },
+    "B": { "item": "create:precision_mechanism" },
+    "C": { "item": "create:shaft" }
+  },
+  "result": { "id": "createcmpor:stress_output", "count": 1 }
+}

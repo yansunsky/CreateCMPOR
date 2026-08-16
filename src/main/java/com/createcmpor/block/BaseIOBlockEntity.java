@@ -86,6 +86,11 @@ public abstract class BaseIOBlockEntity extends RoomCodeBlockEntity {
         return getBlockState().getValue(BaseIOBlock.ACTIVE) && roomCode != null && !roomCode.isBlank();
     }
 
+    /** 诊断：IO 白名单摘要（评估激活日志用）。 */
+    public String describeIoFilter() {
+        return "items=" + items + " fluids=" + fluids;
+    }
+
     protected boolean checkAndDeactivate() {
         if (isActive()) {
             return true;

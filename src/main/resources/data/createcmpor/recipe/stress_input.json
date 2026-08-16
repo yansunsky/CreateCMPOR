@@ -1,0 +1,14 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "ABA",
+    "BCB",
+    "ABA"
+  ],
+  "key": {
+    "A": { "item": "create:precision_mechanism" },
+    "B": { "item": "create:electron_tube" },
+    "C": { "item": "create:shaft" }
+  },
+  "result": { "id": "createcmpor:stress_input", "count": 1 }
+}

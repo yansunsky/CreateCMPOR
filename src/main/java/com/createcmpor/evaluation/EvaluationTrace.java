@@ -87,6 +87,34 @@ public final class EvaluationTrace {
         int activeCount() {
             return traces.size();
         }
+
+        /** 诊断：返回某会话的采样摘要（物品/流体条目与能量累计）。 */
+        String stats(String roomCode) {
+            EvaluationTrace trace = traces.get(roomCode);
+            if (trace == null) {
+                return "无 trace";
+            }
+            long items = 0;
+            long fluids = 0;
+            int itemKeys = 0;
+            int fluidKeys = 0;
+            for (Map.Entry<FlowKey, Series> entry : trace.series.entrySet()) {
+                long total = EvaluationTrace.total(entry.getValue().input)
+                        + EvaluationTrace.total(entry.getValue().output);
+                if ("item".equals(entry.getKey().kind())) {
+                    itemKeys++;
+                    items += total;
+                } else {
+                    fluidKeys++;
+                    fluids += total;
+                }
+            }
+            long energyIn = trace.energy.input == null ? 0 : EvaluationTrace.total(trace.energy.input);
+            long energyOut = trace.energy.output == null ? 0 : EvaluationTrace.total(trace.energy.output);
+            return "物品条目=" + itemKeys + " 累计=" + items
+                    + "，流体条目=" + fluidKeys + " 累计=" + fluids
+                    + "，能量 in=" + energyIn + " out=" + energyOut;
+        }
     }
 
     private final int seconds;

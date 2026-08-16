@@ -78,6 +78,8 @@
   "createcmpor.tooltip.factory.io_in_fluid": "Input: %1$s x%2$s mB/s",
   "createcmpor.tooltip.factory.io_out_item": "Output: %1$s x%2$s/s",
   "createcmpor.tooltip.factory.io_out_fluid": "Output: %1$s x%2$s mB/s",
+  "createcmpor.tooltip.factory.io_in_energy": "Input: %1$s FE/s",
+  "createcmpor.tooltip.factory.io_out_energy": "Output: %1$s FE/s",
   "createcmpor.tooltip.factory.stress": "Stress: input %1$s SU / output %2$s SU",
   "message.createcmpor.factory.installed": "Evaluation finished. The factory was installed; the replica is being cleaned up.",
   "message.createcmpor.factory.ready": "The factory is ready and the room lock was released.",
