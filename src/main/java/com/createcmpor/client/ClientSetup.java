@@ -1,6 +1,7 @@
 package com.createcmpor.client;
 
 import com.createcmpor.CreateCMPOR;
+import com.createcmpor.block.FactoryBlockEntity;
 import com.createcmpor.block.StressExtensionBlockEntity;
 import com.createcmpor.block.StressInputBlockEntity;
 import com.createcmpor.block.StressOutputBlockEntity;
@@ -45,6 +46,7 @@ public class ClientSetup {
         event.registerBlockEntityRenderer(ModBlockEntities.STRESS_EXTENSION.get(), ShaftRenderer::new);
         event.registerBlockEntityRenderer(ModBlockEntities.STRESS_INPUT.get(), ShaftRenderer::new);
         event.registerBlockEntityRenderer(ModBlockEntities.STRESS_OUTPUT.get(), ShaftRenderer::new);
+        event.registerBlockEntityRenderer(ModBlockEntities.FACTORY.get(), FactoryRenderer::new);
         CreateCMPOR.LOGGER.debug("[CreateCMPOR] 已注册 ShaftRenderer BER 兜底");
     }
 
@@ -56,19 +58,22 @@ public class ClientSetup {
     private static void registerFlywheelVisuals() {
         SimpleBlockEntityVisualizer.<StressExtensionBlockEntity>builder(ModBlockEntities.STRESS_EXTENSION.get())
                 .factory(SingleAxisRotatingVisual::shaft)
-                .skipVanillaRender(be -> true)
+                .skipVanillaRender(be -> false)
                 .apply();
 
         SimpleBlockEntityVisualizer.<StressInputBlockEntity>builder(ModBlockEntities.STRESS_INPUT.get())
                 .factory(SingleAxisRotatingVisual::shaft)
-                .skipVanillaRender(be -> true)
+                .skipVanillaRender(be -> false)
                 .apply();
 
         SimpleBlockEntityVisualizer.<StressOutputBlockEntity>builder(ModBlockEntities.STRESS_OUTPUT.get())
                 .factory(SingleAxisRotatingVisual::shaft)
-                .skipVanillaRender(be -> true)
+                .skipVanillaRender(be -> false)
                 .apply();
 
-//        CreateCMPOR.LOGGER.info("[CreateCMPOR] 已注册 Flywheel visual（SingleAxisRotatingVisual::shaft）：stress_extension / stress_input / stress_output");
+        SimpleBlockEntityVisualizer.<FactoryBlockEntity>builder(ModBlockEntities.FACTORY.get())
+                .factory(FactoryVisual::factory)
+                .skipVanillaRender(be -> false)
+                .apply();
     }
 }

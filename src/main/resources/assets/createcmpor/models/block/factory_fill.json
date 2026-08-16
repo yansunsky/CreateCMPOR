@@ -1,0 +1,16 @@
+{
+  "parent": "block/block",
+  "textures": {
+    "casing": "createcmpor:block/andesite_casing",
+    "particle": "createcmpor:block/andesite_casing"
+  },
+  "elements": [
+    {
+      "from": [4, 4, 0.001],
+      "to": [12, 12, 0.001],
+      "faces": {
+        "north": {"uv": [0, 0, 16, 16], "texture": "#casing"}
+      }
+    }
+  ]
+}

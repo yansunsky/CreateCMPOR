@@ -7,25 +7,24 @@ import com.createcmpor.init.ModBlockEntities;
 import com.createcmpor.stress.FactoryStressAccess;
 import com.createcmpor.stress.StressProfile;
 import com.simibubi.create.api.equipment.goggles.IHaveGoggleInformation;
+import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.HolderLookup;
-import net.minecraft.core.component.DataComponentMap;
-import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtUtils;
-import net.minecraft.nbt.StringTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.component.CustomData;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BooleanProperty;
 import net.minecraft.world.level.material.Fluid;
 import net.neoforged.neoforge.energy.IEnergyStorage;
 import net.neoforged.neoforge.fluids.FluidStack;
@@ -41,7 +40,7 @@ import java.util.Objects;
 /**
  * Phase 7 平行工厂方块实体：真实库存容器 + RATE/REPLAY 兑换 + 还原镜像 + 护目镜 tooltip。
  */
-public class FactoryBlockEntity extends RoomCodeBlockEntity
+public class FactoryBlockEntity extends KineticBlockEntity
         implements IHaveGoggleInformation {
 
     private static final int BUFFER_SECONDS = 20;
@@ -49,6 +48,8 @@ public class FactoryBlockEntity extends RoomCodeBlockEntity
     private static final long ITEM_OUTPUT_BUFFER = 256;
     /** 产物暂存仓容量：流体 4 桶。 */
     private static final long FLUID_OUTPUT_BUFFER = 4000;
+
+    private String roomCode;
 
     private static final class Container {
         long capacity;
@@ -104,6 +105,15 @@ public class FactoryBlockEntity extends RoomCodeBlockEntity
 
     public FactoryBlockEntity(BlockPos pos, BlockState state) {
         super(ModBlockEntities.FACTORY.get(), pos, state);
+    }
+
+    public String getRoomCode() {
+        return roomCode;
+    }
+
+    public void setRoomCode(String roomCode) {
+        this.roomCode = roomCode;
+        setChanged();
     }
 
     // ===== 评估结果安装（固化时调用一次） =====
@@ -275,21 +285,33 @@ public class FactoryBlockEntity extends RoomCodeBlockEntity
 
     // ===== 兑换 tick =====
 
-    public static void tick(ServerLevel level, BlockPos pos, BlockState state, FactoryBlockEntity entity) {
-        entity.tickCount++;
-        if (entity.tickCount >= 20) {
-            entity.tickCount = 0;
-        }
-        if (!entity.installed) {
+    @Override
+    public void tick() {
+        super.tick();
+        if (level == null || level.isClientSide || !installed) {
             return;
         }
-        if (entity.replayMode) {
-            if (entity.tickCount == 0) {
-                entity.tickReplay();
+        // 应力暂停：输入型工厂（需要外部应力）在网络过载时完全暂停兑换。
+        if (stressInputRequired() && isOverStressed()) {
+            lastSuccess = false;
+            return;
+        }
+        tickCount++;
+        if (tickCount >= 20) {
+            tickCount = 0;
+        }
+        if (replayMode) {
+            if (tickCount == 0) {
+                tickReplay();
             }
         } else {
-            entity.tickRateContinuous();
+            tickRateContinuous();
         }
+    }
+
+    /** 工厂是否为输入型（需要外部应力驱动）。 */
+    private boolean stressInputRequired() {
+        return FactoryStressAccess.get(this).isConsume();
     }
 
     /** RATE 连续流：每 tick 按速率累计，输入不足即卡住；产物持续流入大容量暂存仓。 */
@@ -798,8 +820,9 @@ public class FactoryBlockEntity extends RoomCodeBlockEntity
     // ===== NBT =====
 
     @Override
-    protected void loadCommon(CompoundTag tag) {
-        super.loadCommon(tag);
+    protected void read(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
+        super.read(tag, registries, clientPacket);
+        roomCode = tag.getString("room_code");
         replayMode = tag.getBoolean("replay_mode");
         installed = tag.getBoolean("installed");
         loadContainerMap(tag, "input_items", inputItems);
@@ -831,8 +854,9 @@ public class FactoryBlockEntity extends RoomCodeBlockEntity
     }
 
     @Override
-    protected void saveCommon(CompoundTag tag) {
-        super.saveCommon(tag);
+    protected void write(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
+        super.write(tag, registries, clientPacket);
+        tag.putString("room_code", roomCode == null ? "" : roomCode);
         tag.putBoolean("replay_mode", replayMode);
         tag.putBoolean("installed", installed);
         saveContainerMap(tag, "input_items", inputItems);
@@ -934,33 +958,6 @@ public class FactoryBlockEntity extends RoomCodeBlockEntity
         tag.put(key, mapTag);
     }
 
-    @Override
-    protected void applyImplicitComponents(DataComponentInput componentInput) {
-        super.applyImplicitComponents(componentInput);
-        CustomData customData = componentInput.get(DataComponents.CUSTOM_DATA);
-        if (customData != null) {
-            loadCommon(customData.copyTag());
-        }
-    }
-
-    @Override
-    protected void collectImplicitComponents(DataComponentMap.Builder builder) {
-        super.collectImplicitComponents(builder);
-        CompoundTag tag = new CompoundTag();
-        saveCommon(tag);
-        builder.set(DataComponents.CUSTOM_DATA, CustomData.of(tag));
-    }
-
-    @Override
-    public CompoundTag getUpdateTag(HolderLookup.Provider registries) {
-        return saveWithoutMetadata(registries);
-    }
-
-    @Override
-    public net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket getUpdatePacket() {
-        return net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket.create(this);
-    }
-
     public boolean isInstalled() {
         return installed;
     }
@@ -972,5 +969,63 @@ public class FactoryBlockEntity extends RoomCodeBlockEntity
     /** 工厂是否配置了能量 IO（无能量 IO 时不注册 FE 能力，UI 不显示 FE 标识）。 */
     public boolean hasEnergyIo() {
         return inputEnergyCapacity > 0 || outputEnergyCapacity > 0;
+    }
+
+    // ===== Create 应力网络参与 =====
+
+    /** 应力自报：不走 BlockStressValues 注册表。 */
+    @Override
+    protected Block getStressConfigKey() {
+        return getBlockState().getBlock();
+    }
+
+    /** 输出型工厂（outputSU>0）作为应力源：返回档案转速沿任意开口面方向。 */
+    @Override
+    public float getGeneratedSpeed() {
+        StressProfile profile = FactoryStressAccess.get(this);
+        if (!profile.isProvide()) {
+            return 0;
+        }
+        float speed = profile.outputRPM() > 0 ? profile.outputRPM() : 32;
+        return convertToDirection(speed, firstOpenFace());
+    }
+
+    /** 返回任一开口面方向（无开口时默认 up，仅用于转速方向推导）。 */
+    private Direction firstOpenFace() {
+        BlockState state = getBlockState();
+        for (Map.Entry<Direction, BooleanProperty> entry : FactoryBlock.SHAFT_BY_FACE.entrySet()) {
+            if (state.getValue(entry.getValue())) {
+                return entry.getKey();
+            }
+        }
+        return Direction.UP;
+    }
+
+    /** 输出型工厂向网络提供应力容量（含损耗系数）。 */
+    @Override
+    public float calculateAddedStressCapacity() {
+        StressProfile profile = FactoryStressAccess.get(this);
+        if (!profile.isProvide() || !Config.ENABLE_STRESS_OUTPUT.get()) {
+            return 0;
+        }
+        float speed = Math.abs(getTheoreticalSpeed());
+        if (speed == 0) {
+            return 0;
+        }
+        return profile.outputSU() * (1.0f - Config.STRESS_LOSS_FACTOR.get().floatValue()) / speed;
+    }
+
+    /** 输入型工厂向网络申报应力消耗。 */
+    @Override
+    public float calculateStressApplied() {
+        StressProfile profile = FactoryStressAccess.get(this);
+        if (!profile.isConsume()) {
+            return 0;
+        }
+        float speed = Math.abs(getTheoreticalSpeed());
+        if (speed == 0) {
+            return 0;
+        }
+        return profile.inputSU() / speed;
     }
 }

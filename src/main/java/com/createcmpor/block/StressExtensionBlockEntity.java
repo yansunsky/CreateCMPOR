@@ -304,6 +304,15 @@ public class StressExtensionBlockEntity extends GeneratingKineticBlockEntity {
     }
 
     private void accumulateFactory(BlockPos factoryPos) {
+        // 面检查：仅当工厂某个开口面朝向本拓展方块时才接入链（六面开口）
+        BlockState factoryState = level.getBlockState(factoryPos);
+        Direction face = Direction.getNearest(
+                worldPosition.getX() - factoryPos.getX(),
+                worldPosition.getY() - factoryPos.getY(),
+                worldPosition.getZ() - factoryPos.getZ());
+        if (!factoryState.getValue(FactoryBlock.SHAFT_BY_FACE.get(face))) {
+            return;
+        }
         BlockEntity be = level.getBlockEntity(factoryPos);
         StressProfile profile = FactoryStressAccess.get(be);
         if (profile.isEmpty())

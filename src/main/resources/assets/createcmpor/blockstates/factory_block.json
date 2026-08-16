@@ -1,7 +1,55 @@
 {
-  "variants": {
-    "": {
-      "model": "createcmpor:block/factory_block"
+  "multipart": [
+    {
+      "apply": { "model": "createcmpor:block/factory_casing" }
+    },
+    {
+      "when": { "shaft_north": "true" },
+      "apply": { "model": "createcmpor:block/factory_panel" }
+    },
+    {
+      "when": { "shaft_south": "true" },
+      "apply": { "model": "createcmpor:block/factory_panel", "y": 180 }
+    },
+    {
+      "when": { "shaft_east": "true" },
+      "apply": { "model": "createcmpor:block/factory_panel", "y": 90 }
+    },
+    {
+      "when": { "shaft_west": "true" },
+      "apply": { "model": "createcmpor:block/factory_panel", "y": 270 }
+    },
+    {
+      "when": { "shaft_up": "true" },
+      "apply": { "model": "createcmpor:block/factory_panel", "x": 270 }
+    },
+    {
+      "when": { "shaft_down": "true" },
+      "apply": { "model": "createcmpor:block/factory_panel", "x": 90 }
+    },
+    {
+      "when": { "shaft_north": "false" },
+      "apply": { "model": "createcmpor:block/factory_fill" }
+    },
+    {
+      "when": { "shaft_south": "false" },
+      "apply": { "model": "createcmpor:block/factory_fill", "y": 180 }
+    },
+    {
+      "when": { "shaft_east": "false" },
+      "apply": { "model": "createcmpor:block/factory_fill", "y": 90 }
+    },
+    {
+      "when": { "shaft_west": "false" },
+      "apply": { "model": "createcmpor:block/factory_fill", "y": 270 }
+    },
+    {
+      "when": { "shaft_up": "false" },
+      "apply": { "model": "createcmpor:block/factory_fill", "x": 270 }
+    },
+    {
+      "when": { "shaft_down": "false" },
+      "apply": { "model": "createcmpor:block/factory_fill", "x": 90 }
     }
-  }
+  ]
 }
