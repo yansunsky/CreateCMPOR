@@ -328,20 +328,7 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         }
         // 输入型工厂：必须接入 Create 应力网络并获得实际转速才工作
         // （Create 应力网络语义：无转速 = 无动能；断开应力源 / 网络超载时 getSpeed 归 0 → 暂停兑换）
-        // 诊断：每 5 秒打印应力关键状态（排查"不接应力源仍工作"回归）
-        if (level.getGameTime() % 100 == 0) {
-            StressProfile diagProfile = FactoryStressAccess.get(this);
-            CreateCMPOR.LOGGER.info("[工厂应力诊断] {} inputSU={} outputSU={} consume={} provide={} "
-                            + "speed={} theo={} genSpeed={} hasSource={} overStressed={} hasNetwork={} isSource={}",
-                    worldPosition, diagProfile.inputSU(), diagProfile.outputSU(),
-                    diagProfile.isConsume(), diagProfile.isProvide(),
-                    getSpeed(), getTheoreticalSpeed(), getGeneratedSpeed(),
-                    hasSource(), isOverStressed(), hasNetwork(), isSource());
-        }
         if (stressInputRequired() && Math.abs(getSpeed()) == 0) {
-            if (level.getGameTime() % 100 == 0) {
-                CreateCMPOR.LOGGER.info("[工厂应力暂停] {} 无转速，暂停兑换", worldPosition);
-            }
             lastSuccess = false;
             return;
         }
@@ -488,9 +475,6 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             replayApply(replayCurrentSecond);
             replayCurrentSecond = (replayCurrentSecond + 1) % patternLength;
             lastSuccess = true;
-            if (replayCurrentSecond % 10 == 0) {
-                CreateCMPOR.LOGGER.info("[回放推进] {} second={}", worldPosition, replayCurrentSecond);
-            }
         } else {
             lastSuccess = false;
         }
@@ -501,7 +485,6 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             Container container = Objects.requireNonNull(inputItems.get(entry.getKey()));
             int need = entry.getValue()[second % entry.getValue().length];
             if (container.amount < need) {
-                logReplayBlocked(second, "物品输入 " + entry.getKey() + " amount=" + container.amount + " need=" + need);
                 return false;
             }
         }
@@ -509,7 +492,6 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             Container container = Objects.requireNonNull(inputFluids.get(entry.getKey()));
             int need = entry.getValue()[second % entry.getValue().length];
             if (container.amount < need) {
-                logReplayBlocked(second, "流体输入 " + entry.getKey() + " amount=" + container.amount + " need=" + need);
                 return false;
             }
         }
@@ -517,8 +499,6 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             Container container = Objects.requireNonNull(outputItems.get(entry.getKey()));
             int produce = entry.getValue()[second % entry.getValue().length];
             if (container.amount + produce > container.capacity) {
-                logReplayBlocked(second, "物品输出满仓 " + entry.getKey() + " amount=" + container.amount
-                        + " produce=" + produce + " capacity=" + container.capacity);
                 return false;
             }
         }
@@ -526,33 +506,22 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             Container container = Objects.requireNonNull(outputFluids.get(entry.getKey()));
             int produce = entry.getValue()[second % entry.getValue().length];
             if (container.amount + produce > container.capacity) {
-                logReplayBlocked(second, "流体输出满仓 " + entry.getKey() + " amount=" + container.amount
-                        + " produce=" + produce + " capacity=" + container.capacity);
                 return false;
             }
         }
         if (inputEnergyPattern.length > 0) {
             int consume = inputEnergyPattern[second % inputEnergyPattern.length];
             if (inputEnergyAmount < consume) {
-                logReplayBlocked(second, "FE 输入不足 amount=" + inputEnergyAmount + " need=" + consume);
                 return false;
             }
         }
         if (outputEnergyPattern.length > 0) {
             int produce = outputEnergyPattern[second % outputEnergyPattern.length];
             if (outputEnergyAmount + produce > outputEnergyCapacity) {
-                logReplayBlocked(second, "FE 输出满仓 amount=" + outputEnergyAmount
-                        + " produce=" + produce + " capacity=" + outputEnergyCapacity);
                 return false;
             }
         }
         return true;
-    }
-
-    private void logReplayBlocked(int second, String reason) {
-        if (level != null && level.getGameTime() % 100 == 0) {
-            CreateCMPOR.LOGGER.info("[回放阻塞] {} second={} {}", worldPosition, second, reason);
-        }
     }
 
     private void replayApply(int second) {

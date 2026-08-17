@@ -138,6 +138,20 @@ final class EvaluationAudit {
             }
         }
 
+        // 掉落物也是房间库存的一部分：纳入 S0/S1/S2 快照。
+        // 防止"向漏斗丢大量掉落物 → 漏斗传输进输出方块"的作弊：
+        // 掉落物进入漏斗/输出方块后被扫描记录，三扫描/净平衡会把它当作
+        // 库存消耗抵消掉凭空记录的产出流量。
+        for (net.minecraft.world.entity.item.ItemEntity entity
+                : level.getEntitiesOfClass(net.minecraft.world.entity.item.ItemEntity.class, bounds)) {
+            if (entity.getItem().isEmpty()) {
+                continue;
+            }
+            ResourceLocation id = net.minecraft.core.registries.BuiltInRegistries.ITEM
+                    .getKey(entity.getItem().getItem());
+            items.merge(id, (long) entity.getItem().getCount(), Long::sum);
+        }
+
         if (items.isEmpty() && fluids.isEmpty() && energy == 0) {
             return InventorySnapshot.empty();
         }

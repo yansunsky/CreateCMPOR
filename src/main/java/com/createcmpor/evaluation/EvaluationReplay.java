@@ -82,8 +82,7 @@ final class EvaluationReplay {
             long produced = EvaluationTrace.total(outPattern);
             EvaluationTrace.Series series = trace.series().get(key);
             long ioInput = series == null ? 0L : series.inputTotal;
-            long floorCount = "item".equals(key.kind())
-                    ? trace.floorItems.getOrDefault(key, 0L) : 0L;
+            // 掉落物已纳入 S0/S1/S2 快照（EvaluationAudit.scan），不再使用单独的 floor 快照
             long s0Count = "item".equals(key.kind())
                     ? s0.items().getOrDefault(key.id(), 0L) : s0.fluids().getOrDefault(key.id(), 0L);
             long s1Count = "item".equals(key.kind())
@@ -91,9 +90,9 @@ final class EvaluationReplay {
 
             long consumed;
             if (s0Count == 0) {
-                consumed = ioInput + floorCount;
+                consumed = ioInput;
             } else {
-                consumed = Math.max(0, (s0Count + ioInput + floorCount) - s1Count);
+                consumed = Math.max(0, (s0Count + ioInput) - s1Count);
             }
             long net = produced - consumed;
 
