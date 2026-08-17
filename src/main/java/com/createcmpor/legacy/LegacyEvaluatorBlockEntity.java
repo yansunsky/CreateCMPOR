@@ -14,30 +14,25 @@ import net.minecraft.world.level.block.state.BlockState;
 
 /**
  * ⚠️ 临时兼容代码（TEMPORARY）
- * 仅用于旧版 CompactMachinesPOR 存档过渡：检测到旧工厂方块后自动还原为空间机器。
- * 待旧存档迁移完成（或确认无需兼容）后整个 legacy 包应被移除，勿在此基础上扩展业务逻辑。
+ * 旧版 CompactMachinesPOR 评估方块兼容实体（id: compactmachinespor:evaluator_block）。
  *
- * <p>旧版 CompactMachinesPOR 工厂方块的兼容实体（id: compactmachinespor:factory_block）。
+ * <p>旧存档中评估中断/失败残留的评估方块（id 未知会整体消失）。
+ * 本实体加载旧 NBT 的 {@code room_code} 后，在首次 tick 时把方块还原为
+ * Compact Machines 绑定机器方块（提取房间号填充），房间内容由 CM 自身数据决定。</p>
  *
- * <p>目的：旧 mod 卸载后，旧存档中的工厂方块因 id 未知会数据丢失。
- * 本实体注册同 id，加载旧 NBT（{@code room_code} / {@code original_attachments}），
- * 并在首次 tick 时把方块还原为 Compact Machines 的绑定机器方块（提取房间号填充）。
- *
- * <p>旧 NBT 布局（compactmachinespor FactoryBlockEntity）：
+ * <p>旧 NBT 布局（compactmachinespor EvaluatorBlockEntity）：
  * <ul>
- *     <li>顶层 {@code room_code}：房间号（RoomCodeBlockEntity 写入）</li>
- *     <li>顶层 {@code original_attachments}：固化时拷贝的原机器附件
- *         （如 machine_color），用于还原机器外观</li>
+ *     <li>顶层 {@code room_code}：房间号</li>
  * </ul>
+ * 旧版同时把数据写入 CustomData 组件（双写），此处读取均做兜底。
  */
-public class LegacyFactoryBlockEntity extends BlockEntity {
+public class LegacyEvaluatorBlockEntity extends BlockEntity {
 
     private String roomCode;
-    private CompoundTag originalAttachments;
     private boolean restored;
 
-    public LegacyFactoryBlockEntity(BlockPos pos, BlockState state) {
-        super(LegacyCompat.LEGACY_BE_TYPE, pos, state);
+    public LegacyEvaluatorBlockEntity(BlockPos pos, BlockState state) {
+        super(LegacyCompat.LEGACY_EVALUATOR_BE_TYPE, pos, state);
     }
 
     /** 服务端 tick：首次 tick 自动还原为空间机器方块。 */
@@ -47,20 +42,15 @@ public class LegacyFactoryBlockEntity extends BlockEntity {
         }
         restored = true;
         if (level instanceof net.minecraft.server.level.ServerLevel serverLevel) {
-            LegacyCompat.restoreAsBoundMachine(serverLevel, worldPosition, roomCode,
-                    originalAttachments);
+            LegacyCompat.restoreAsBoundMachine(serverLevel, worldPosition, roomCode, null);
         }
     }
 
     @Override
     protected void loadAdditional(CompoundTag tag, HolderLookup.Provider registries) {
         super.loadAdditional(tag, registries);
-        this.roomCode = tag.contains("room_code", Tag.TAG_STRING)
-                ? tag.getString("room_code") : null;
-        // 旧版 FactoryBlockEntity 把 original_attachments 写在 NBT 顶层（saveCommon）；
-        // 同时保留 CustomData 组件读取兜底（部分版本写入组件）。
-        if (tag.contains("original_attachments", Tag.TAG_COMPOUND)) {
-            this.originalAttachments = tag.getCompound("original_attachments");
+        if (tag.contains("room_code", Tag.TAG_STRING)) {
+            this.roomCode = tag.getString("room_code");
         }
     }
 
@@ -81,23 +71,15 @@ public class LegacyFactoryBlockEntity extends BlockEntity {
             if (tag.contains("room_code", Tag.TAG_STRING)) {
                 this.roomCode = tag.getString("room_code");
             }
-            if (tag.contains("original_attachments", Tag.TAG_COMPOUND)) {
-                this.originalAttachments = tag.getCompound("original_attachments");
-            }
         }
     }
 
     @Override
     protected void collectImplicitComponents(DataComponentMap.Builder builder) {
         super.collectImplicitComponents(builder);
-        CompoundTag tag = new CompoundTag();
         if (roomCode != null) {
+            CompoundTag tag = new CompoundTag();
             tag.putString("room_code", roomCode);
-        }
-        if (originalAttachments != null) {
-            tag.put("original_attachments", originalAttachments.copy());
-        }
-        if (!tag.isEmpty()) {
             builder.set(DataComponents.CUSTOM_DATA, CustomData.of(tag));
         }
     }
@@ -110,10 +92,5 @@ public class LegacyFactoryBlockEntity extends BlockEntity {
     @Override
     public CompoundTag getUpdateTag(HolderLookup.Provider registries) {
         return saveWithoutMetadata(registries);
-    }
-
-    /** 供外部读取（调试用）。 */
-    public String getLegacyRoomCode() {
-        return roomCode;
     }
 }
