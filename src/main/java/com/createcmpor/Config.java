@@ -112,9 +112,19 @@ public class Config {
                 .comment("催化剂保留清单：这些物品即使量小也保留为输入（不按中间产物删除）。")
                 .defineListAllowEmpty("catalystItems", List.of(), value -> value instanceof String);
         DEDUP_BLOCKS = builder
-                .comment("库存扫描需要去重的方块 ID（多方块容器防重复计数）。")
+                .comment(
+                        "库存扫描需要去重的方块 ID（多视图容器防重复计数）。",
+                        "Storage Drawers 压缩抽屉会由代码自动识别，此列表可补充其他模组方块。")
                 .defineListAllowEmpty("dedupBlocks",
-                        List.of("storagedrawers:compacting_drawers_3", "storagedrawers:compacting_drawers_2"),
+                        List.of(
+                                "storagedrawers:compacting_drawers_2",
+                                "storagedrawers:compacting_drawers_3",
+                                "storagedrawers:compacting_half_drawers_2",
+                                "storagedrawers:compacting_half_drawers_3",
+                                "storagedrawers:framed_compacting_drawers_2",
+                                "storagedrawers:framed_compacting_drawers_3",
+                                "storagedrawers:framed_compacting_half_drawers_2",
+                                "storagedrawers:framed_compacting_half_drawers_3"),
                         value -> value instanceof String);
         ENERGY_STABILITY_RELAXATION = builder
                 .comment("能量条目的稳定性容差放宽倍数（能量网络波动大，避免误判为不稳定）。")
