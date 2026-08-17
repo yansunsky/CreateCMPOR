@@ -49,6 +49,8 @@ public final class EvaluationSession {
     private String rollbackMessageKey;
     private EvaluationVerdict.Result evaluationResult;
     private boolean factoryInstalled;
+    /** 目标冲突取消标记：为 true 时 CLEANING 阶段会强制清理目标区域（即使未写入）。 */
+    private boolean cleanTargetOnCancel;
 
     public EvaluationSession(UUID id, UUID owner, GlobalPos machinePos, String roomCode,
                              BlockState originalState, CompoundTag originalBlockEntityNbt) {
@@ -187,6 +189,7 @@ public final class EvaluationSession {
         }
         tag.putString("rollback_message_key", rollbackMessageKey);
         tag.putBoolean("factory_installed", factoryInstalled);
+        tag.putBoolean("clean_target_on_cancel", cleanTargetOnCancel);
         return tag;
     }
 
@@ -213,7 +216,7 @@ public final class EvaluationSession {
         if (rollbackMessageKey.isBlank()) {
             rollbackMessageKey = "message.createcmpor.evaluation.runtime_failed";
         }
-        return new EvaluationSession(
+        EvaluationSession session = new EvaluationSession(
                 tag.getUUID("id"),
                 tag.getUUID("owner"),
                 GlobalPos.of(dimension, machinePos),
@@ -228,5 +231,22 @@ public final class EvaluationSession {
                 manifest,
                 rollbackMessageKey,
                 tag.getBoolean("factory_installed"));
+        session.cleanTargetOnCancel = tag.getBoolean("clean_target_on_cancel");
+        return session;
+    }
+
+    /** 目标冲突取消后标记：CLEANING 阶段将强制清理目标区域（eval_world 无法进入，残留必是评估残留）。 */
+    public void markCleanTargetOnCancel() {
+        this.cleanTargetOnCancel = true;
+    }
+
+    /** 清理完成后清除标记。 */
+    public void clearCleanTargetOnCancel() {
+        this.cleanTargetOnCancel = false;
+    }
+
+    /** 是否需要在 CLEANING 阶段强制清理目标区域。 */
+    public boolean cleanTargetOnCancel() {
+        return cleanTargetOnCancel;
     }
 }

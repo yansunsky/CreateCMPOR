@@ -314,6 +314,12 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         if (level == null || level.isClientSide || !installed) {
             return;
         }
+        // 自愈：输入型工厂失去源/网络后，Create 不会自动重连被动方块
+        // （无 onPlace/邻居变化事件重置 updateSpeed）——标记 updateSpeed=true，
+        // 下一次 super.tick 的 attachKinetics 会重新发现邻居（如马达）并恢复传播。
+        if (stressInputRequired() && !hasSource() && !hasNetwork()) {
+            updateSpeed = true;
+        }
         // 输出型工厂：作为应力源主动维持生成转速。
         // 源的速度只能由 updateGeneratedRotation（applyNewSpeed）建立；任何状态变化
         // （放置/固化/开口/重启）后这里都会自愈：理论速度与生成速度不一致时重新应用。
@@ -322,7 +328,20 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         }
         // 输入型工厂：必须接入 Create 应力网络并获得实际转速才工作
         // （Create 应力网络语义：无转速 = 无动能；断开应力源 / 网络超载时 getSpeed 归 0 → 暂停兑换）
+        // 诊断：每 5 秒打印应力关键状态（排查"不接应力源仍工作"回归）
+        if (level.getGameTime() % 100 == 0) {
+            StressProfile diagProfile = FactoryStressAccess.get(this);
+            CreateCMPOR.LOGGER.info("[工厂应力诊断] {} inputSU={} outputSU={} consume={} provide={} "
+                            + "speed={} theo={} genSpeed={} hasSource={} overStressed={} hasNetwork={} isSource={}",
+                    worldPosition, diagProfile.inputSU(), diagProfile.outputSU(),
+                    diagProfile.isConsume(), diagProfile.isProvide(),
+                    getSpeed(), getTheoreticalSpeed(), getGeneratedSpeed(),
+                    hasSource(), isOverStressed(), hasNetwork(), isSource());
+        }
         if (stressInputRequired() && Math.abs(getSpeed()) == 0) {
+            if (level.getGameTime() % 100 == 0) {
+                CreateCMPOR.LOGGER.info("[工厂应力暂停] {} 无转速，暂停兑换", worldPosition);
+            }
             lastSuccess = false;
             return;
         }
@@ -469,6 +488,9 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             replayApply(replayCurrentSecond);
             replayCurrentSecond = (replayCurrentSecond + 1) % patternLength;
             lastSuccess = true;
+            if (replayCurrentSecond % 10 == 0) {
+                CreateCMPOR.LOGGER.info("[回放推进] {} second={}", worldPosition, replayCurrentSecond);
+            }
         } else {
             lastSuccess = false;
         }
@@ -477,13 +499,17 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
     private boolean replayIsReady(int second) {
         for (Map.Entry<ResourceLocation, int[]> entry : inputItemPatterns.entrySet()) {
             Container container = Objects.requireNonNull(inputItems.get(entry.getKey()));
-            if (container.amount < entry.getValue()[second % entry.getValue().length]) {
+            int need = entry.getValue()[second % entry.getValue().length];
+            if (container.amount < need) {
+                logReplayBlocked(second, "物品输入 " + entry.getKey() + " amount=" + container.amount + " need=" + need);
                 return false;
             }
         }
         for (Map.Entry<ResourceLocation, int[]> entry : inputFluidPatterns.entrySet()) {
             Container container = Objects.requireNonNull(inputFluids.get(entry.getKey()));
-            if (container.amount < entry.getValue()[second % entry.getValue().length]) {
+            int need = entry.getValue()[second % entry.getValue().length];
+            if (container.amount < need) {
+                logReplayBlocked(second, "流体输入 " + entry.getKey() + " amount=" + container.amount + " need=" + need);
                 return false;
             }
         }
@@ -491,6 +517,8 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             Container container = Objects.requireNonNull(outputItems.get(entry.getKey()));
             int produce = entry.getValue()[second % entry.getValue().length];
             if (container.amount + produce > container.capacity) {
+                logReplayBlocked(second, "物品输出满仓 " + entry.getKey() + " amount=" + container.amount
+                        + " produce=" + produce + " capacity=" + container.capacity);
                 return false;
             }
         }
@@ -498,22 +526,33 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             Container container = Objects.requireNonNull(outputFluids.get(entry.getKey()));
             int produce = entry.getValue()[second % entry.getValue().length];
             if (container.amount + produce > container.capacity) {
+                logReplayBlocked(second, "流体输出满仓 " + entry.getKey() + " amount=" + container.amount
+                        + " produce=" + produce + " capacity=" + container.capacity);
                 return false;
             }
         }
         if (inputEnergyPattern.length > 0) {
             int consume = inputEnergyPattern[second % inputEnergyPattern.length];
             if (inputEnergyAmount < consume) {
+                logReplayBlocked(second, "FE 输入不足 amount=" + inputEnergyAmount + " need=" + consume);
                 return false;
             }
         }
         if (outputEnergyPattern.length > 0) {
             int produce = outputEnergyPattern[second % outputEnergyPattern.length];
             if (outputEnergyAmount + produce > outputEnergyCapacity) {
+                logReplayBlocked(second, "FE 输出满仓 amount=" + outputEnergyAmount
+                        + " produce=" + produce + " capacity=" + outputEnergyCapacity);
                 return false;
             }
         }
         return true;
+    }
+
+    private void logReplayBlocked(int second, String reason) {
+        if (level != null && level.getGameTime() % 100 == 0) {
+            CreateCMPOR.LOGGER.info("[回放阻塞] {} second={} {}", worldPosition, second, reason);
+        }
     }
 
     private void replayApply(int second) {
@@ -540,17 +579,6 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             outputEnergyAmount += outputEnergyPattern[second % outputEnergyPattern.length];
         }
         setChanged();
-    }
-
-    private void retryAfterExternalChange() {
-        // RATE 连续流每 tick 自恢复；仅 REPLAY 需要外部变化后立即重试当前秒。
-        if (!lastSuccess && installed && replayMode) {
-            if (replayIsReady(replayCurrentSecond)) {
-                replayApply(replayCurrentSecond);
-                replayCurrentSecond = (replayCurrentSecond + 1) % patternLength;
-                lastSuccess = true;
-            }
-        }
     }
 
     // ===== 能力 =====
@@ -627,7 +655,6 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             int accepted = (int) Math.min(space, stack.getCount());
             if (!simulate) {
                 container.amount += accepted;
-                retryAfterExternalChange();
                 setChanged();
             }
             return accepted >= stack.getCount() ? ItemStack.EMPTY
@@ -648,7 +675,6 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             long available = Math.min(container.amount, amount);
             if (!simulate) {
                 container.amount -= available;
-                retryAfterExternalChange();
                 setChanged();
             }
             return available <= 0 ? ItemStack.EMPTY
@@ -731,7 +757,6 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
                 int accepted = (int) Math.min(space, resource.getAmount());
                 if (action.execute()) {
                     entry.getValue().amount += accepted;
-                    retryAfterExternalChange();
                     setChanged();
                 }
                 return accepted;
@@ -748,7 +773,6 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
                 int drained = (int) Math.min(entry.getValue().amount, resource.getAmount());
                 if (action.execute()) {
                     entry.getValue().amount -= drained;
-                    retryAfterExternalChange();
                     setChanged();
                 }
                 return new FluidStack(resource.getFluid(), drained);
@@ -766,7 +790,6 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
                 int drained = (int) Math.min(entry.getValue().amount, maxDrain);
                 if (action.execute()) {
                     entry.getValue().amount -= drained;
-                    retryAfterExternalChange();
                     setChanged();
                 }
                 return new FluidStack(fluid, drained);
@@ -782,7 +805,6 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             int accepted = (int) Math.min(space, maxReceive);
             if (!simulate) {
                 inputEnergyAmount += accepted;
-                retryAfterExternalChange();
                 setChanged();
             }
             return accepted;
@@ -793,7 +815,6 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             long available = Math.min(outputEnergyAmount, maxExtract);
             if (!simulate) {
                 outputEnergyAmount -= available;
-                retryAfterExternalChange();
                 setChanged();
             }
             return (int) available;

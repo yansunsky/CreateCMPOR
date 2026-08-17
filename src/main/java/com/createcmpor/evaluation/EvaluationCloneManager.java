@@ -75,6 +75,8 @@ public final class EvaluationCloneManager {
             requestCleanup(server, data, session, exception.messageKey());
         } catch (TargetConflictException exception) {
             CreateCMPOR.LOGGER.warn("评估会话 {} 目标冲突：{}", session.id(), exception.getMessage());
+            // 目标冲突取消：标记强制清理目标区域（eval_world 无法进入，残留必是评估残留）
+            session.markCleanTargetOnCancel();
             requestCleanup(server, data, session, "message.createcmpor.evaluation.target_conflict");
         } catch (CompletionException exception) {
             Throwable cause = exception.getCause() == null ? exception : exception.getCause();
@@ -84,6 +86,8 @@ public final class EvaluationCloneManager {
             }
             if (cause instanceof TargetConflictException conflict) {
                 CreateCMPOR.LOGGER.warn("评估会话 {} 目标冲突：{}", session.id(), conflict.getMessage());
+                // 目标冲突取消：标记强制清理目标区域（eval_world 无法进入，残留必是评估残留）
+                session.markCleanTargetOnCancel();
                 requestCleanup(server, data, session, "message.createcmpor.evaluation.target_conflict");
                 return;
             }
@@ -561,7 +565,7 @@ public final class EvaluationCloneManager {
             runtime.railwayCleaned = true;
             syncCriticalState(server, data);
         }
-        if (manifest.targetWriteIntent()) {
+        if (manifest.targetWriteIntent() || session.cleanTargetOnCancel()) {
             List<ChunkPos> chunks = chunkPositions(manifest);
             if (!EvaluationStorageBridge.areChunksIdle(target, chunks)) {
                 session.tickState();
@@ -589,6 +593,7 @@ public final class EvaluationCloneManager {
                 return;
             }
             manifest.setTargetWriteIntent(false);
+            session.clearCleanTargetOnCancel();
             for (EvaluationManifest.ChunkRecord chunk : manifest.chunks()) {
                 chunk.setPublishStatus(EvaluationManifest.PublishStatus.CLEANED);
             }
