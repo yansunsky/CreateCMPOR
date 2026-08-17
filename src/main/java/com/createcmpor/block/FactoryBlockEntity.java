@@ -870,35 +870,38 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
 
     private void appendIoLines(List<Component> tooltip) {
         if (!replayMode) {
+            // 速率显示统一为"每秒"（tickRate 是每 tick 值 × 20）。
+            // 注意：不能用容器容量换算（输出仓容量是固定暂存仓 256/4000，与速率无关；
+            // 输入容量虽然是 rate×400，换算结果碰巧一致，但不直观且能量无容量可换算）。
             inputItems.forEach((id, container) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
                     .translate("tooltip.factory.io_in_item", itemDisplayName(id),
-                            container.capacity / (double) BUFFER_SECONDS)
+                            ratePerSecond(inputItemTickRates.get(id)))
                     .style(ChatFormatting.AQUA)
                     .forGoggles(tooltip, 1));
             inputFluids.forEach((id, container) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
                     .translate("tooltip.factory.io_in_fluid", fluidDisplayName(id),
-                            container.capacity / (double) BUFFER_SECONDS)
+                            ratePerSecond(inputFluidTickRates.get(id)))
                     .style(ChatFormatting.AQUA)
                     .forGoggles(tooltip, 1));
             outputItems.forEach((id, container) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
                     .translate("tooltip.factory.io_out_item", itemDisplayName(id),
-                            container.capacity / (double) BUFFER_SECONDS)
+                            ratePerSecond(outputItemTickRates.get(id)))
                     .style(ChatFormatting.AQUA)
                     .forGoggles(tooltip, 1));
             outputFluids.forEach((id, container) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
                     .translate("tooltip.factory.io_out_fluid", fluidDisplayName(id),
-                            container.capacity / (double) BUFFER_SECONDS)
+                            ratePerSecond(outputFluidTickRates.get(id)))
                     .style(ChatFormatting.AQUA)
                     .forGoggles(tooltip, 1));
             if (inputEnergyCapacity > 0) {
                 net.createmod.catnip.lang.Lang.builder("createcmpor")
-                        .translate("tooltip.factory.io_in_energy", inputEnergyTickRate)
+                        .translate("tooltip.factory.io_in_energy", inputEnergyTickRate * 20.0)
                         .style(ChatFormatting.AQUA)
                         .forGoggles(tooltip, 1);
             }
             if (outputEnergyCapacity > 0) {
                 net.createmod.catnip.lang.Lang.builder("createcmpor")
-                        .translate("tooltip.factory.io_out_energy", outputEnergyTickRate)
+                        .translate("tooltip.factory.io_out_energy", outputEnergyTickRate * 20.0)
                         .style(ChatFormatting.AQUA)
                         .forGoggles(tooltip, 1);
             }
@@ -932,6 +935,11 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
                         .forGoggles(tooltip, 1);
             }
         }
+    }
+
+    /** 速率显示换算：每 tick 值 → 每秒（tickRate × 20）。 */
+    private static double ratePerSecond(Double tickRate) {
+        return tickRate == null ? 0.0 : tickRate * 20.0;
     }
 
     /** 物品显示名：本地化名称（找不到时回退为 id）。 */
