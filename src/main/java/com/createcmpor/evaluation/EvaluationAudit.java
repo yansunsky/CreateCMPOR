@@ -2,6 +2,8 @@ package com.createcmpor.evaluation;
 
 import com.createcmpor.Config;
 import com.createcmpor.CreateCMPOR;
+import com.createcmpor.compat.inventory.Ae2BlockContents;
+import com.createcmpor.compat.inventory.ContainerItemExpander;
 import com.createcmpor.init.ModBlocks;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -50,6 +52,7 @@ final class EvaluationAudit {
         Map<ResourceLocation, Long> items = new HashMap<>();
         Map<ResourceLocation, Long> fluids = new HashMap<>();
         long energy = 0;
+        var registries = level.registryAccess();
 
         Set<IItemHandler> seenItemHandlers = Collections.newSetFromMap(new IdentityHashMap<>());
         Set<IFluidHandler> seenFluidHandlers = Collections.newSetFromMap(new IdentityHashMap<>());
@@ -79,35 +82,40 @@ final class EvaluationAudit {
                     ResourceLocation blockId = net.minecraft.core.registries.BuiltInRegistries.BLOCK
                             .getKey(state.getBlock());
 
-                    for (Direction direction : Direction.values()) {
-                        IItemHandler itemHandler = level.getCapability(
-                                Capabilities.ItemHandler.BLOCK, pos, direction);
-                        if (itemHandler != null && seenItemHandlers.add(itemHandler)) {
-                            if (dedupBlockIds.contains(blockId)) {
-                                ItemStack lastStack = ItemStack.EMPTY;
-                                for (int slot = 0; slot < itemHandler.getSlots(); slot++) {
-                                    ItemStack stack = itemHandler.getStackInSlot(slot);
-                                    if (!stack.isEmpty()) {
-                                        lastStack = stack;
+                    boolean itemHandlerScanned = false;
+                    if (!isStorageDrawersController(blockId)) {
+                        for (Direction direction : Direction.values()) {
+                            IItemHandler itemHandler = level.getCapability(
+                                    Capabilities.ItemHandler.BLOCK, pos, direction);
+                            if (itemHandler != null && seenItemHandlers.add(itemHandler)) {
+                                if (dedupBlockIds.contains(blockId) || isStorageDrawersCompacting(blockId)) {
+                                    ItemStack lastStack = ItemStack.EMPTY;
+                                    for (int slot = 0; slot < itemHandler.getSlots(); slot++) {
+                                        ItemStack stack = itemHandler.getStackInSlot(slot);
+                                        if (!stack.isEmpty()) {
+                                            lastStack = stack;
+                                        }
+                                    }
+                                    if (!lastStack.isEmpty()) {
+                                        ContainerItemExpander.addToSnapshot(
+                                                lastStack, lastStack.getCount(), registries, items);
+                                    }
+                                } else {
+                                    for (int slot = 0; slot < itemHandler.getSlots(); slot++) {
+                                        ItemStack stack = itemHandler.getStackInSlot(slot);
+                                        if (!stack.isEmpty()) {
+                                            ContainerItemExpander.addToSnapshot(
+                                                    stack, stack.getCount(), registries, items);
+                                        }
                                     }
                                 }
-                                if (!lastStack.isEmpty()) {
-                                    ResourceLocation id = net.minecraft.core.registries.BuiltInRegistries.ITEM
-                                            .getKey(lastStack.getItem());
-                                    items.merge(id, (long) lastStack.getCount(), Long::sum);
-                                }
-                            } else {
-                                for (int slot = 0; slot < itemHandler.getSlots(); slot++) {
-                                    ItemStack stack = itemHandler.getStackInSlot(slot);
-                                    if (!stack.isEmpty()) {
-                                        ResourceLocation id = net.minecraft.core.registries.BuiltInRegistries.ITEM
-                                                .getKey(stack.getItem());
-                                        items.merge(id, (long) stack.getCount(), Long::sum);
-                                    }
-                                }
+                                itemHandlerScanned = true;
+                                break;
                             }
-                            break;
                         }
+                    }
+                    if (!itemHandlerScanned) {
+                        Ae2BlockContents.addToSnapshot(level, pos, blockId, registries, items);
                     }
 
                     for (Direction direction : Direction.values()) {
@@ -147,15 +155,39 @@ final class EvaluationAudit {
             if (entity.getItem().isEmpty()) {
                 continue;
             }
-            ResourceLocation id = net.minecraft.core.registries.BuiltInRegistries.ITEM
-                    .getKey(entity.getItem().getItem());
-            items.merge(id, (long) entity.getItem().getCount(), Long::sum);
+            ContainerItemExpander.addToSnapshot(
+                    entity.getItem(), entity.getItem().getCount(), registries, items);
         }
 
         if (items.isEmpty() && fluids.isEmpty() && energy == 0) {
             return InventorySnapshot.empty();
         }
         return new InventorySnapshot(items, fluids, energy);
+    }
+
+    /**
+     * Storage Drawers 压缩抽屉的 handler 槽是同一 pooled count 的换算视图；
+     * 最后一个非空槽是最小单位总量。自动识别所有普通/半高/框架变体，
+     * 避免旧配置文件缺少新变体时重复计数。
+     */
+    private static boolean isStorageDrawersCompacting(ResourceLocation blockId) {
+        if (!"storagedrawers".equals(blockId.getNamespace())) {
+            return false;
+        }
+        String path = blockId.getPath();
+        return path.contains("compacting")
+                && (path.endsWith("_2") || path.endsWith("_3"));
+    }
+
+    /** Controller 暴露整个抽屉网络的聚合 handler；实际抽屉会单独扫描，故这里跳过以防整网双计。 */
+    private static boolean isStorageDrawersController(ResourceLocation blockId) {
+        if (!"storagedrawers".equals(blockId.getNamespace())) {
+            return false;
+        }
+        return switch (blockId.getPath()) {
+            case "controller", "controller_io", "framed_controller", "framed_controller_io" -> true;
+            default -> false;
+        };
     }
 
     /** 审计修正（RATE 模式）：realProduction = S1 - S0 + O - I。 */

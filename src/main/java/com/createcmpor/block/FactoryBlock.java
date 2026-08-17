@@ -1,6 +1,7 @@
 package com.createcmpor.block;
 
 import com.createcmpor.Config;
+import com.createcmpor.compat.cm.CreateNbtSanitizer;
 import com.createcmpor.init.ModBlockEntities;
 import com.createcmpor.init.ModItems;
 import com.simibubi.create.content.equipment.wrench.IWrenchable;
@@ -9,12 +10,14 @@ import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 import com.simibubi.create.content.kinetics.simpleRelays.ICogWheel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.ItemInteractionResult;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.item.context.UseOnContext;
@@ -30,6 +33,8 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.StateDefinition;
 import net.minecraft.world.level.block.state.properties.BooleanProperty;
 import net.minecraft.world.phys.BlockHitResult;
+import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.level.BlockEvent;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.EnumMap;
@@ -109,6 +114,62 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
             }
         }
         return result.setValue(SHAFT_BY_FACE.get(face), true);
+    }
+
+    /**
+     * 潜行 + 扳手：拆除工厂，掉落携带完整 BE NBT 的物品（便于迁移重建）。
+     *
+     * <p>复刻 {@link IWrenchable#onSneakWrenched} 默认流程（BreakEvent → 掉落 → 移除 → 音效），
+     * 但掉落物改为携带完整方块实体数据（经 {@link CreateNbtSanitizer} 清理 Create 网络缓存字段）。</p>
+     */
+    @Override
+    public InteractionResult onSneakWrenched(BlockState state, UseOnContext context) {
+        Level level = context.getLevel();
+        if (level.isClientSide) {
+            return InteractionResult.SUCCESS;
+        }
+        BlockPos pos = context.getClickedPos();
+        Player player = context.getPlayer();
+        if (!(level instanceof ServerLevel serverLevel)) {
+            return InteractionResult.SUCCESS;
+        }
+        BlockEvent.BreakEvent breakEvent = new BlockEvent.BreakEvent(level, pos, state, player);
+        NeoForge.EVENT_BUS.post(breakEvent);
+        if (breakEvent.isCanceled()) {
+            return InteractionResult.SUCCESS;
+        }
+        dropFactoryWithData(serverLevel, pos, level.getBlockEntity(pos));
+        state.spawnAfterBreak(serverLevel, pos, context.getItemInHand(), false);
+        level.destroyBlock(pos, false);
+        IWrenchable.playRemoveSound(level, pos);
+        return InteractionResult.SUCCESS;
+    }
+
+    /**
+     * 玩家挖掘：掉落携带完整 BE NBT 的工厂方块（便于迁移重建）。
+     * 无条件掉落（同泥土/沙子），不检查工具。
+     *
+     * <p>不调用 super：掉落完全由本方法控制；loot table 仅用于爆炸等非玩家破坏路径。</p>
+     */
+    @Override
+    public void playerDestroy(Level level, Player player, BlockPos pos, BlockState state,
+                              @Nullable BlockEntity blockEntity, ItemStack tool) {
+        if (!(level instanceof ServerLevel serverLevel)) {
+            return;
+        }
+        dropFactoryWithData(serverLevel, pos, blockEntity);
+    }
+
+    /** 掉落携带完整 BE NBT 的工厂方块物品；BE 数据经 CreateNbtSanitizer 清理 Create 网络缓存字段。 */
+    private static void dropFactoryWithData(ServerLevel level, BlockPos pos,
+                                            @Nullable BlockEntity blockEntity) {
+        ItemStack drop = new ItemStack(com.createcmpor.init.ModBlocks.FACTORY.get());
+        if (blockEntity != null) {
+            CompoundTag tag = CreateNbtSanitizer.sanitizeBlockEntityTag(
+                    blockEntity.saveWithFullMetadata(level.registryAccess()));
+            BlockItem.setBlockEntityData(drop, blockEntity.getType(), tag);
+        }
+        Block.popResource(level, pos, drop);
     }
 
     /** 接口轴状态变化会改变动力学等价性（网络需重建）。 */

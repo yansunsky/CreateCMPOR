@@ -30,6 +30,7 @@ public class ModBlocks {
                             .mapColor(MapColor.PODZOL)
                             .strength(2.0f)
                             .sound(SoundType.WOOD)
+                            .requiresCorrectToolForDrops()
                             .noOcclusion()));
 
     public static final DeferredBlock<FactoryBlock> FACTORY =
@@ -44,13 +45,15 @@ public class ModBlocks {
             BLOCKS.register("input_block", () -> new InputBlock(
                     BlockBehaviour.Properties.of()
                             .mapColor(MapColor.COLOR_BLACK)
-                            .strength(3.0f, 6.0f)));
+                            .strength(3.0f, 6.0f)
+                            .requiresCorrectToolForDrops()));
 
     public static final DeferredBlock<OutputBlock> OUTPUT =
             BLOCKS.register("output_block", () -> new OutputBlock(
                     BlockBehaviour.Properties.of()
                             .mapColor(MapColor.COLOR_BLACK)
-                            .strength(3.0f, 6.0f)));
+                            .strength(3.0f, 6.0f)
+                            .requiresCorrectToolForDrops()));
 
     public static final DeferredBlock<EvaluatorBlock> EVALUATOR =
             BLOCKS.register("evaluator_block", () -> new EvaluatorBlock(
@@ -66,6 +69,7 @@ public class ModBlocks {
                             .mapColor(MapColor.TERRACOTTA_CYAN)
                             .strength(2.0f)
                             .sound(SoundType.METAL)
+                            .requiresCorrectToolForDrops()
                             .noOcclusion()));
 
     public static final DeferredBlock<StressOutputBlock> STRESS_OUTPUT =
@@ -74,6 +78,7 @@ public class ModBlocks {
                             .mapColor(MapColor.TERRACOTTA_BLUE)
                             .strength(2.0f)
                             .sound(SoundType.METAL)
+                            .requiresCorrectToolForDrops()
                             .noOcclusion()));
 
     public static void register(IEventBus modEventBus) {
