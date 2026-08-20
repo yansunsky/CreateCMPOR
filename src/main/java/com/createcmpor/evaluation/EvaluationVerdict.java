@@ -4,7 +4,6 @@ import com.createcmpor.Config;
 import com.createcmpor.stress.StressProfile;
 import net.minecraft.resources.ResourceLocation;
 
-import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -41,26 +40,14 @@ final class EvaluationVerdict {
                          StressProfile stressProfile) {
         String mode = Config.EVALUATION_MODE.get().isEmpty()
                 ? "AUTO" : Config.EVALUATION_MODE.get().getFirst();
-        // 输入速率：每个有输入流量的条目拟合稳定消耗速率（工厂消耗原料需要）
-        Map<EvaluationTrace.FlowKey, Double> inputRates = new HashMap<>();
-        Map<EvaluationTrace.FlowKey, Double> outputRates = new HashMap<>();
-        for (Map.Entry<EvaluationTrace.FlowKey, EvaluationTrace.Series> entry : trace.series().entrySet()) {
-            if (EvaluationTrace.total(entry.getValue().input) > 0) {
-                inputRates.put(entry.getKey(),
-                        EvaluationRateEvaluator.evaluateStableRate(entry.getValue().input));
-            }
-            if (EvaluationTrace.total(entry.getValue().output) > 0) {
-                outputRates.put(entry.getKey(),
-                        EvaluationRateEvaluator.evaluateStableRate(entry.getValue().output));
-            }
-        }
+        // 能量速率：trace 自统计（RATE 输入沿用；输出经 auditEnergyRate 用三扫描修正）
         double inputEnergyRate = trace.energy().input == null ? 0
                 : EvaluationRateEvaluator.evaluateStableRate(trace.energy().input);
         double outputEnergyRate = trace.energy().output == null ? 0
                 : EvaluationRateEvaluator.evaluateStableRate(trace.energy().output);
 
         if ("FORCE_RATE".equals(mode)) {
-            return rateResult(trace, s0, s1, inputRates, outputRates,
+            return rateResult(trace, s0, s1, baseline,
                     inputEnergyRate, outputEnergyRate, stressProfile);
         }
 
@@ -83,7 +70,7 @@ final class EvaluationVerdict {
         }
 
         if (!replayNeeded) {
-            return rateResult(trace, s0, s1, inputRates, outputRates,
+            return rateResult(trace, s0, s1, baseline,
                     inputEnergyRate, outputEnergyRate, stressProfile);
         }
 
@@ -100,15 +87,16 @@ final class EvaluationVerdict {
     private static Result rateResult(EvaluationTrace trace,
                                      EvaluationAudit.InventorySnapshot s0,
                                      EvaluationAudit.InventorySnapshot s1,
-                                     Map<EvaluationTrace.FlowKey, Double> inputRates,
-                                     Map<EvaluationTrace.FlowKey, Double> outputRates,
+                                     EvaluationAudit.InventorySnapshot baseline,
                                      double inputEnergyRate, double outputEnergyRate,
                                      StressProfile stressProfile) {
-        Map<EvaluationTrace.FlowKey, Double> audited = EvaluationAudit.auditRates(
-                s0, s1, trace, outputRates);
+        // 基线 = S1（预热结束）；无预热时回退 S0
+        EvaluationAudit.InventorySnapshot base = baseline != null ? baseline : s0;
+        EvaluationAudit.RateAudit audited = EvaluationAudit.auditRates(
+                base, s1, trace, trace.seconds());
         double auditedEnergy = EvaluationAudit.auditEnergyRate(
-                s0, s1, trace.energy(), outputEnergyRate, trace.seconds());
-        return new Result(VERDICT_RATE, null, inputRates, audited,
+                base, s1, trace.energy(), outputEnergyRate, trace.seconds());
+        return new Result(VERDICT_RATE, null, audited.inputs(), audited.outputs(),
                 Map.of(), Map.of(), inputEnergyRate, auditedEnergy,
                 null, null, stressProfile, "RATE：稳定速率拟合");
     }
