@@ -103,5 +103,18 @@
   "createcmpor.ponder.output_block.header": "输出方块",
   "createcmpor.ponder.output_block.text_1": "输出方块是房内物品与流体送出房间的出口。",
   "createcmpor.ponder.output_block.text_2": "用物品或流体容器右键设置白名单，评估时自动激活。",
-  "createcmpor.ponder.output_block.text_3": "激活后房内白名单产物经物流送到输出方块送出。"
+  "createcmpor.ponder.output_block.text_3": "激活后房内白名单产物经物流送到输出方块送出。",
+  "createcmpor.ponder.factory_machine.header": "平行房间评估：起点",
+  "createcmpor.ponder.factory_machine.text_1": "Compact Machines 的房间机器是评估的起点。",
+  "createcmpor.ponder.factory_machine.text_2": "手持评估启动棒右键机器，即可开始评估房间。",
+  "createcmpor.ponder.factory_evaluator_start.header": "冻结与评估",
+  "createcmpor.ponder.factory_evaluator_start.text_1": "机器变为评估方块：房间被冻结，内容克隆到评估世界。",
+  "createcmpor.ponder.factory_solidified.header": "工厂固化",
+  "createcmpor.ponder.factory_solidified.text_1": "评估完成：评估方块固化为平行工厂。",
+  "createcmpor.ponder.factory_running.header": "工厂运转",
+  "createcmpor.ponder.factory_running.text_1": "工厂持续复刻产线：通过漏斗等通道输入原料、输出产物。",
+  "createcmpor.ponder.factory_running.text_2": "用扳手右键工厂任意一面，可打开传动轴面，接入机械应力。",
+  "createcmpor.ponder.factory_reverted.header": "还原房间机器",
+  "createcmpor.ponder.factory_reverted.text_1": "手持启动棒右键工厂，即可还原为原来的 Compact Machines 机器。",
+  "createcmpor.ponder.factory_reverted.text_2": "还原后房间恢复原状，可再次进入或重新评估。"
 }
