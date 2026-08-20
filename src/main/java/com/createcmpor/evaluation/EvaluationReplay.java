@@ -10,7 +10,12 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Phase 6 录制回放净平衡（迁移自原 CMPOR Core 的 netBalance 系列 + 催化剂增强）。
+ * Phase 6 录制回放净平衡（统一用户定义的三扫描公式）。
+ *
+ * <p>三扫描语义：S1（预热结束）为基线、S2（评估结束、IO 已停）为终态；
+ * 对每个物品/流体 key：{@code net = (S2 - S1) + IO输出 - IO输入}。
+ * net &gt; 0 → 净产物；net &lt; 0 → 净原料；net = 0/噪声 → 双向移除。
+ * S0 仅在无预热时作为回退基线（由调用方传入）。</p>
  */
 final class EvaluationReplay {
     record ReplayResult(Map<EvaluationTrace.FlowKey, int[]> replayIn,
@@ -33,70 +38,48 @@ final class EvaluationReplay {
         int[] energyIn = trace.energy().input == null ? new int[recordLength] : trace.energy().input.clone();
         int[] energyOut = trace.energy().output == null ? new int[recordLength] : trace.energy().output.clone();
 
+        // 基线 = S1（预热结束）；无预热时回退 S0
         EvaluationAudit.InventorySnapshot base = baseline != null ? baseline
                 : (s0 != null ? s0 : EvaluationAudit.InventorySnapshot.empty());
         EvaluationAudit.InventorySnapshot end = s1 != null ? s1 : EvaluationAudit.InventorySnapshot.empty();
 
-        distributeMachineConsumption(trace, base, end, in, recordLength);
         netBalance(trace, base, end, in, out, recordLength);
         energyNetBalance(trace, base, end, energyIn, energyOut, recordLength);
         applyLossAndFilter(in, out, energyOut, recordLength);
         return new ReplayResult(in, out, energyIn, energyOut);
     }
 
-    private static void distributeMachineConsumption(EvaluationTrace trace,
-                                                     EvaluationAudit.InventorySnapshot s0,
-                                                     EvaluationAudit.InventorySnapshot s1,
-                                                     Map<EvaluationTrace.FlowKey, int[]> in,
-                                                     int recordLength) {
-        Set<ResourceLocation> catalysts = catalystSet();
-        for (Map.Entry<ResourceLocation, Long> entry : s0.items().entrySet()) {
-            ResourceLocation id = entry.getKey();
-            EvaluationTrace.FlowKey key = EvaluationTrace.FlowKey.item(id);
-            EvaluationTrace.Series series = trace.series().get(key);
-            if (series != null && EvaluationTrace.total(series.output) > 0) {
-                continue; // 产出物在净平衡处理
-            }
-            long s1Count = s1.items().getOrDefault(id, 0L);
-            long ioInput = series == null ? 0L : series.inputTotal;
-            long machineConsumed = (entry.getValue() - s1Count) - ioInput;
-            if (machineConsumed <= 0) {
-                continue;
-            }
-            int[] pattern = in.computeIfAbsent(key, ignored -> new int[recordLength]);
-            distribute(pattern, machineConsumed, recordLength);
-            CreateCMPOR.LOGGER.info("回放-容器直接消耗: {} 消耗 {}（催化剂={}）",
-                    id, machineConsumed, catalysts.contains(id));
-        }
-    }
-
+    /**
+     * 物品/流体净平衡：对基线库存、终态库存、IO 流量三处出现的每个 key 统一应用
+     * {@code net = (S2 - S1) + O - I}。容器直接消耗、掉落物积累、IO 纯过路全部由同一公式覆盖。
+     */
     private static void netBalance(EvaluationTrace trace,
-                                   EvaluationAudit.InventorySnapshot s0,
-                                   EvaluationAudit.InventorySnapshot s1,
+                                   EvaluationAudit.InventorySnapshot base,
+                                   EvaluationAudit.InventorySnapshot end,
                                    Map<EvaluationTrace.FlowKey, int[]> in,
                                    Map<EvaluationTrace.FlowKey, int[]> out,
                                    int recordLength) {
-        for (Map.Entry<EvaluationTrace.FlowKey, int[]> entry : new HashSet<>(out.entrySet())) {
-            EvaluationTrace.FlowKey key = entry.getKey();
-            int[] outPattern = entry.getValue();
-            long produced = EvaluationTrace.total(outPattern);
+        Set<EvaluationTrace.FlowKey> keys = new HashSet<>(trace.series().keySet());
+        base.items().keySet().forEach(id -> keys.add(EvaluationTrace.FlowKey.item(id)));
+        base.fluids().keySet().forEach(id -> keys.add(EvaluationTrace.FlowKey.fluid(id)));
+        end.items().keySet().forEach(id -> keys.add(EvaluationTrace.FlowKey.item(id)));
+        end.fluids().keySet().forEach(id -> keys.add(EvaluationTrace.FlowKey.fluid(id)));
+
+        for (EvaluationTrace.FlowKey key : keys) {
             EvaluationTrace.Series series = trace.series().get(key);
-            long ioInput = series == null ? 0L : series.inputTotal;
-            // 掉落物已纳入 S0/S1/S2 快照（EvaluationAudit.scan），不再使用单独的 floor 快照
-            long s0Count = "item".equals(key.kind())
-                    ? s0.items().getOrDefault(key.id(), 0L) : s0.fluids().getOrDefault(key.id(), 0L);
-            long s1Count = "item".equals(key.kind())
-                    ? s1.items().getOrDefault(key.id(), 0L) : s1.fluids().getOrDefault(key.id(), 0L);
+            long ioOut = series == null ? 0L : series.outputTotal;
+            long ioIn = series == null ? 0L : series.inputTotal;
+            boolean item = "item".equals(key.kind());
+            long baseCount = item
+                    ? base.items().getOrDefault(key.id(), 0L)
+                    : base.fluids().getOrDefault(key.id(), 0L);
+            long endCount = item
+                    ? end.items().getOrDefault(key.id(), 0L)
+                    : end.fluids().getOrDefault(key.id(), 0L);
+            long net = (endCount - baseCount) + ioOut - ioIn;
 
-            long consumed;
-            if (s0Count == 0) {
-                consumed = ioInput;
-            } else {
-                consumed = Math.max(0, (s0Count + ioInput) - s1Count);
-            }
-            long net = produced - consumed;
-
-            long maxIo = Math.max(produced, consumed);
+            long consumedEstimate = Math.max(0, (baseCount - endCount) + ioIn);
+            long maxIo = Math.max(ioOut, consumedEstimate);
             long dynThreshold = Math.max((long) (recordLength * Config.INTERMEDIATE_RATIO.get()),
                     (long) (maxIo * Config.IO_ERROR_RATIO.get()));
             if (Math.abs(net) < dynThreshold) {
@@ -113,6 +96,7 @@ final class EvaluationReplay {
             }
             if (net > 0) {
                 in.remove(key);
+                int[] outPattern = out.computeIfAbsent(key, ignored -> new int[recordLength]);
                 distribute(outPattern, net, recordLength);
                 CreateCMPOR.LOGGER.info("回放-净产物: {} net={}", key.id(), net);
             } else {
@@ -125,15 +109,16 @@ final class EvaluationReplay {
     }
 
     private static void energyNetBalance(EvaluationTrace trace,
-                                         EvaluationAudit.InventorySnapshot s0,
-                                         EvaluationAudit.InventorySnapshot s1,
+                                         EvaluationAudit.InventorySnapshot base,
+                                         EvaluationAudit.InventorySnapshot end,
                                          int[] energyIn, int[] energyOut, int recordLength) {
         long ioIn = trace.energy().inputTotal;
         long ioOut = trace.energy().outputTotal;
-        long consumed = ioIn + Math.max(0, s0.energy() - s1.energy());
-        long net = ioOut - consumed;
+        // 统一三扫描公式：net = (S2-S1) + IO输出 - IO输入
+        long net = (end.energy() - base.energy()) + ioOut - ioIn;
 
-        long maxIo = Math.max(ioOut, consumed);
+        long consumedEstimate = Math.max(0, (base.energy() - end.energy()) + ioIn);
+        long maxIo = Math.max(ioOut, consumedEstimate);
         long dynThreshold = Math.max((long) (recordLength * Config.INTERMEDIATE_RATIO.get()),
                 (long) (maxIo * Config.IO_ERROR_RATIO.get()));
         if (Math.abs(net) < dynThreshold || net == 0) {

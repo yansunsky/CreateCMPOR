@@ -190,67 +190,53 @@ final class EvaluationAudit {
         };
     }
 
-    /** 审计修正（RATE 模式）：realProduction = S1 - S0 + O - I。 */
-    static Map<EvaluationTrace.FlowKey, Double> auditRates(
-            InventorySnapshot s0, InventorySnapshot s1, EvaluationTrace trace,
-            Map<EvaluationTrace.FlowKey, Double> rates) {
-        if (s0 == null || s1 == null) {
-            return rates;
-        }
-        Map<EvaluationTrace.FlowKey, Double> adjusted = new HashMap<>(rates);
-
-        for (Map.Entry<EvaluationTrace.FlowKey, Double> entry : adjusted.entrySet()) {
-            EvaluationTrace.FlowKey key = entry.getKey();
-            if (!"item".equals(key.kind())) {
-                continue;
-            }
-            long s0Count = s0.items().getOrDefault(key.id(), 0L);
-            long s1Count = s1.items().getOrDefault(key.id(), 0L);
-            EvaluationTrace.Series series = trace.series().get(key);
-            long totalO = series == null ? 0L : series.outputTotal;
-            long totalI = series == null ? 0L : series.inputTotal;
-            long realTotal = s1Count - s0Count + totalO - totalI;
-
-            if (realTotal <= 0) {
-                entry.setValue(0.0);
-            } else if (totalO > 0) {
-                entry.setValue(entry.getValue() * ((double) realTotal / totalO));
-            }
-        }
-
-        // 能量（单独键，不在此 Map）
-        // 消耗物归入输入：S0 独有且 realTotal<0 的条目
-        for (Map.Entry<ResourceLocation, Long> s0Entry : s0.items().entrySet()) {
-            ResourceLocation id = s0Entry.getKey();
-            long s1Count = s1.items().getOrDefault(id, 0L);
-            EvaluationTrace.FlowKey key = EvaluationTrace.FlowKey.item(id);
-            EvaluationTrace.Series series = trace.series().get(key);
-            long totalO = series == null ? 0L : series.outputTotal;
-            long totalI = series == null ? 0L : series.inputTotal;
-            long realTotal = s1Count - s0Entry.getValue() + totalO - totalI;
-
-            if (realTotal < 0 && !adjusted.containsKey(key)) {
-                double rate = EvaluationRateEvaluator.evaluateStableRate(
-                        series == null ? new int[1] : series.input);
-                if (rate <= 0) {
-                    long elapsed = Math.max(1, (long) trace.seconds() * 20);
-                    rate = (double) (-realTotal) / elapsed;
-                }
-                if (rate > 0) {
-                    adjusted.put(key, rate);
-                }
-            }
-        }
-        return adjusted;
+    /** RATE 审计结果：净消耗速率（net<0）与净产出速率（net>0）。 */
+    record RateAudit(Map<EvaluationTrace.FlowKey, Double> inputs,
+                     Map<EvaluationTrace.FlowKey, Double> outputs) {
     }
 
-    static double auditEnergyRate(InventorySnapshot s0, InventorySnapshot s1,
+    /**
+     * RATE 统一三扫描净平衡：对每个 key 计算 {@code net = (S2 - S1) + IO输出 - IO输入}。
+     * net &gt; 0 → 产出速率 = net/评估时长；net &lt; 0 → 消耗速率 = -net/评估时长；net = 0 → 无。
+     * 容器/掉落物/传送带变化由扫描（baseline=S1、end=S2）给出；IO 方块数据取 trace 自统计。
+     */
+    static RateAudit auditRates(InventorySnapshot baseline, InventorySnapshot end,
+                                EvaluationTrace trace, int seconds) {
+        long elapsedTicks = Math.max(1, (long) seconds * 20);
+        Map<EvaluationTrace.FlowKey, Double> inputs = new HashMap<>();
+        Map<EvaluationTrace.FlowKey, Double> outputs = new HashMap<>();
+        Set<EvaluationTrace.FlowKey> keys = new HashSet<>(trace.series().keySet());
+        baseline.items().keySet().forEach(id -> keys.add(EvaluationTrace.FlowKey.item(id)));
+        baseline.fluids().keySet().forEach(id -> keys.add(EvaluationTrace.FlowKey.fluid(id)));
+        end.items().keySet().forEach(id -> keys.add(EvaluationTrace.FlowKey.item(id)));
+        end.fluids().keySet().forEach(id -> keys.add(EvaluationTrace.FlowKey.fluid(id)));
+
+        for (EvaluationTrace.FlowKey key : keys) {
+            boolean item = "item".equals(key.kind());
+            long baseCount = item ? baseline.items().getOrDefault(key.id(), 0L)
+                    : baseline.fluids().getOrDefault(key.id(), 0L);
+            long endCount = item ? end.items().getOrDefault(key.id(), 0L)
+                    : end.fluids().getOrDefault(key.id(), 0L);
+            EvaluationTrace.Series series = trace.series().get(key);
+            long ioOut = series == null ? 0L : series.outputTotal;
+            long ioIn = series == null ? 0L : series.inputTotal;
+            long net = (endCount - baseCount) + ioOut - ioIn;
+            if (net > 0) {
+                outputs.put(key, (double) net / elapsedTicks);
+            } else if (net < 0) {
+                inputs.put(key, (double) (-net) / elapsedTicks);
+            }
+        }
+        return new RateAudit(inputs, outputs);
+    }
+
+    static double auditEnergyRate(InventorySnapshot baseline, InventorySnapshot end,
                                   EvaluationTrace.EnergySeries energy, double recordedRate,
                                   int seconds) {
-        if (s0 == null || s1 == null) {
+        if (baseline == null || end == null) {
             return recordedRate;
         }
-        long realEnergy = s1.energy() - s0.energy()
+        long realEnergy = end.energy() - baseline.energy()
                 + energy.outputTotal - energy.inputTotal;
         if (realEnergy <= 0) {
             return 0;

@@ -6,14 +6,12 @@ import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.IntArrayTag;
 import net.minecraft.nbt.ListTag;
-import net.minecraft.nbt.NbtUtils;
 import net.minecraft.nbt.Tag;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.ai.village.poi.PoiTypes;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
@@ -119,10 +117,10 @@ final class EvaluationStorageBridge {
         validateChunkTag(source, records.pos(), chunk);
         inspectLegacyEntities(records.pos(), chunk);
         ListTag entities = inspectEntityRecord(records.pos(), records.entities());
-        inspectPoiRecord(records.pos(), records.poi());
+        Optional<CompoundTag> poi = inspectPoiRecord(records.pos(), records.poi());
         inspectBlockPalette(source, records.pos(), chunk);
         return new SourceChunk(records.pos(), chunk.copy(), CanonicalNbtHasher.sha256(chunk),
-                chunk.getInt("DataVersion"), entities.copy());
+                chunk.getInt("DataVersion"), entities.copy(), poi);
     }
 
     static CompletableFuture<Void> deleteRecords(ServerLevel level, List<ChunkPos> chunks) {
@@ -199,9 +197,13 @@ final class EvaluationStorageBridge {
         return tag.getList("Entities", Tag.TAG_COMPOUND).copy();
     }
 
-    private static void inspectPoiRecord(ChunkPos pos, Optional<CompoundTag> raw) {
+    /**
+     * 解析并校验源 POI 记录（Phase 4 起允许 POI 复制参与评估）。
+     * 返回规范化副本（含 Position 与 Sections），供发布窗口写入目标 POI 存储。
+     */
+    private static Optional<CompoundTag> inspectPoiRecord(ChunkPos pos, Optional<CompoundTag> raw) {
         if (raw.isEmpty()) {
-            return;
+            return Optional.empty();
         }
         CompoundTag tag = raw.get();
         if (!tag.contains("Sections", Tag.TAG_COMPOUND)) {
@@ -216,10 +218,16 @@ final class EvaluationStorageBridge {
             if (!section.contains("Records", Tag.TAG_LIST)) {
                 throw new IllegalStateException("源 POI records 格式无效：" + pos);
             }
-            if (!section.getList("Records", Tag.TAG_COMPOUND).isEmpty()) {
-                throw new UnsupportedContentException("message.createcmpor.evaluation.poi_unsupported");
+            ListTag records = section.getList("Records", Tag.TAG_COMPOUND);
+            for (int i = 0; i < records.size(); i++) {
+                CompoundTag poiRecord = records.getCompound(i);
+                // BlockPos.CODEC = Codec.INT_STREAM → NBT 编码为 IntArrayTag（[I;x,y,z]），非 LongTag
+                if (!poiRecord.contains("pos", Tag.TAG_INT_ARRAY) || !poiRecord.contains("type", Tag.TAG_STRING)) {
+                    throw new IllegalStateException("源 POI 记录条目格式无效：" + pos);
+                }
             }
         }
+        return Optional.of(tag.copy());
     }
 
     private static void inspectBlockPalette(ServerLevel source, ChunkPos pos, CompoundTag chunk) {
@@ -247,9 +255,6 @@ final class EvaluationStorageBridge {
                 if (blockId == null || blockLookup.get(ResourceKey.create(Registries.BLOCK, blockId)).isEmpty()) {
                     throw new IllegalStateException("源区块 palette 包含未知方块：" + pos);
                 }
-                if (PoiTypes.hasPoi(NbtUtils.readBlockState(blockLookup, stateTag))) {
-                    throw new UnsupportedContentException("message.createcmpor.evaluation.poi_unsupported");
-                }
                 if (Config.SUSPICIOUS_BLOCKS.get().contains(blockId.toString())) {
                     throw new UnsupportedContentException("message.createcmpor.evaluation.block_blacklisted");
                 }
@@ -269,6 +274,16 @@ final class EvaluationStorageBridge {
         entityStorage(target).write(pos, record).join();
     }
 
+    /** 把源 POI 记录原样写入目标 POI 存储（必须在目标 chunk 未加载的发布窗口内调用）。 */
+    static void writePoi(ServerLevel target, ChunkPos pos, CompoundTag poi) {
+        CompoundTag record = poi.copy();
+        if (!record.contains("Position", Tag.TAG_INT_ARRAY)) {
+            record.put("Position", new IntArrayTag(new int[]{pos.x, pos.z}));
+        }
+        net.minecraft.nbt.NbtUtils.addCurrentDataVersion(record);
+        poiStorage(target).write(pos, record).join();
+    }
+
     record SourceRecords(ChunkPos pos, Optional<CompoundTag> chunk,
                          Optional<CompoundTag> entities, Optional<CompoundTag> poi) {
     }
@@ -280,7 +295,8 @@ final class EvaluationStorageBridge {
         }
     }
 
-    record SourceChunk(ChunkPos pos, CompoundTag tag, String hash, int dataVersion, ListTag entities) {
+    record SourceChunk(ChunkPos pos, CompoundTag tag, String hash, int dataVersion, ListTag entities,
+                       Optional<CompoundTag> poi) {
     }
 
     static final class UnsupportedContentException extends RuntimeException {

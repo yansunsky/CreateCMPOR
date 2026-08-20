@@ -221,6 +221,7 @@ public final class EvaluationCloneManager {
         record.setSourceStatus(EvaluationManifest.SourceStatus.HASHED);
         record.setStagingStatus(EvaluationManifest.StagingStatus.WRITTEN);
         runtime.sourceEntities.put(sourceChunk.pos(), sourceChunk.entities().copy());
+        sourceChunk.poi().ifPresent(poi -> runtime.sourcePoi.put(sourceChunk.pos(), poi.copy()));
         data.changed();
         notifyCloneProgress(server, session, manifest);
         runtime.clearOperation();
@@ -463,6 +464,11 @@ public final class EvaluationCloneManager {
             entities.forEach(entityList::add);
             EvaluationStorageBridge.writeEntities(target, runtime.chunk, entityList);
         }
+        // 同窗口写入源 POI 记录（目标 chunk 未加载，POI 存储无缓存）
+        CompoundTag poi = runtime.sourcePoi.get(runtime.chunk);
+        if (poi != null) {
+            EvaluationStorageBridge.writePoi(target, runtime.chunk, poi);
+        }
         record.setPublishStatus(EvaluationManifest.PublishStatus.WRITTEN);
         data.changed();
         notifyCloneProgress(server, session, requireManifest(session));
@@ -484,9 +490,18 @@ public final class EvaluationCloneManager {
         EvaluationStorageBridge.StoredRecords records = runtime.storedFuture.join();
         CompoundTag tag = records.chunk().orElseThrow(() ->
                 new IllegalStateException("目标区块回读缺失：" + runtime.chunk));
-        // POI 我们从不写入：意外出现即失败。
+        // POI：本会话写入过则校验内容一致；未写入则必须为空（POI 复制参与评估后允许写入）。
+        CompoundTag expectedPoi = runtime.sourcePoi.get(runtime.chunk);
         if (records.poi().isPresent()) {
-            throw new IllegalStateException("目标区块意外生成 POI 记录：" + runtime.chunk);
+            if (expectedPoi == null) {
+                throw new IllegalStateException("目标区块意外生成 POI 记录：" + runtime.chunk);
+            }
+            if (!records.poi().get().getCompound("Sections")
+                    .equals(expectedPoi.getCompound("Sections"))) {
+                throw new IllegalStateException("目标区块 POI 记录与写入不一致：" + runtime.chunk);
+            }
+        } else if (expectedPoi != null) {
+            throw new IllegalStateException("目标区块 POI 记录回读缺失：" + runtime.chunk);
         }
         // 实体：本会话写入过则校验内容一致；未写入则必须为空（Phase 5 起实体允许复制）。
         List<CompoundTag> expectedEntities = runtime.rewrittenEntities.get(runtime.chunk);
@@ -788,6 +803,7 @@ public final class EvaluationCloneManager {
     private static final class RuntimeState {
         private final ChunkStorage staging;
         private final Map<ChunkPos, ListTag> sourceEntities = new LinkedHashMap<>();
+        private final Map<ChunkPos, CompoundTag> sourcePoi = new LinkedHashMap<>();
         private Map<ChunkPos, List<CompoundTag>> rewrittenEntities = Map.of();
         private Operation operation = Operation.NONE;
         private ChunkPos chunk;
