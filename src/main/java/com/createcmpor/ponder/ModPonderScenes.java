@@ -41,5 +41,23 @@ public final class ModPonderScenes {
                 .addStoryBoard("input_block/input_block", InputBlockScenes::inputBlockBasics);
         helper.forComponents(outputBlock)
                 .addStoryBoard("output_block/output_block", OutputBlockScenes::outputBlockBasics);
+
+        // 工厂方块：完整生命周期（注册顺序即流程顺序，Ponder 内可上/下切换）
+        ResourceLocation factoryBlock = ResourceLocation.fromNamespaceAndPath(
+                CreateCMPOR.MOD_ID, "factory_block");
+        ResourceLocation launcherStick = ResourceLocation.fromNamespaceAndPath(
+                CreateCMPOR.MOD_ID, "launcher_stick");
+        helper.forComponents(factoryBlock)
+                .addStoryBoard("factory_block/machine1", FactoryScenes::machine)
+                .addStoryBoard("factory_block/machine2", FactoryScenes::evaluatorStart)
+                .addStoryBoard("factory_block/machine4", FactoryScenes::solidified)
+                .addStoryBoard("factory_block/machine5", FactoryScenes::running)
+                .addStoryBoard("factory_block/machine6", FactoryScenes::reverted);
+        helper.forComponents(launcherStick)
+                .addStoryBoard("factory_block/machine1", FactoryScenes::machine)
+                .addStoryBoard("factory_block/machine2", FactoryScenes::evaluatorStart)
+                .addStoryBoard("factory_block/machine4", FactoryScenes::solidified)
+                .addStoryBoard("factory_block/machine5", FactoryScenes::running)
+                .addStoryBoard("factory_block/machine6", FactoryScenes::reverted);
     }
 }

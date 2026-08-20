@@ -103,5 +103,18 @@
   "createcmpor.ponder.output_block.header": "Output Block",
   "createcmpor.ponder.output_block.text_1": "The Output block is where items and fluids leave the room to the outside.",
   "createcmpor.ponder.output_block.text_2": "Right-click with an item or bucket to set the whitelist; it activates during evaluation.",
-  "createcmpor.ponder.output_block.text_3": "Once activated, whitelisted products from inside flow down to the Output block and leave the room."
+  "createcmpor.ponder.output_block.text_3": "Once activated, whitelisted products from inside flow down to the Output block and leave the room.",
+  "createcmpor.ponder.factory_machine.header": "Parallel Room Evaluation: Start",
+  "createcmpor.ponder.factory_machine.text_1": "A Compact Machines room machine is the starting point of evaluation.",
+  "createcmpor.ponder.factory_machine.text_2": "Right-click the machine with the evaluation launcher to start evaluating the room.",
+  "createcmpor.ponder.factory_evaluator_start.header": "Freezing & Evaluation",
+  "createcmpor.ponder.factory_evaluator_start.text_1": "The machine becomes an evaluator block: the room is frozen and cloned into the evaluation world.",
+  "createcmpor.ponder.factory_solidified.header": "Factory Solidified",
+  "createcmpor.ponder.factory_solidified.text_1": "Evaluation complete: the evaluator block solidifies into a parallel factory.",
+  "createcmpor.ponder.factory_running.header": "Factory Running",
+  "createcmpor.ponder.factory_running.text_1": "The factory keeps reproducing the production line, taking inputs and outputs through funnels.",
+  "createcmpor.ponder.factory_running.text_2": "Use a Wrench to right-click any face of the factory to open a shaft face for mechanical stress.",
+  "createcmpor.ponder.factory_reverted.header": "Restore the Room Machine",
+  "createcmpor.ponder.factory_reverted.text_1": "Right-click the factory with the evaluation launcher to restore the original Compact Machines machine.",
+  "createcmpor.ponder.factory_reverted.text_2": "After restoration the room is back to normal and can be entered or evaluated again."
 }
