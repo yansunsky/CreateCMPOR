@@ -34,6 +34,10 @@ final class EvaluationAudit {
         static InventorySnapshot empty() {
             return new InventorySnapshot(Map.of(), Map.of(), 0L);
         }
+
+        boolean isEmpty() {
+            return items.isEmpty() && fluids.isEmpty() && energy == 0;
+        }
     }
 
     private static final double EPSILON = 1.0E-5;
@@ -196,15 +200,40 @@ final class EvaluationAudit {
     }
 
     /**
-     * RATE 统一三扫描净平衡：对每个 key 计算 {@code net = (S2 - S1) + IO输出 - IO输入}。
-     * net &gt; 0 → 产出速率 = net/评估时长；net &lt; 0 → 消耗速率 = -net/评估时长；net = 0 → 无。
-     * 容器/掉落物/传送带变化由扫描（baseline=S1、end=S2）给出；IO 方块数据取 trace 自统计。
+     * RATE 三扫描防刷净平衡（用户定义规则）：
+     * <ul>
+     *   <li>S0 全空（物品+流体+能量）→ 简化路径：只用 IO trace 的输入/输出。</li>
+     *   <li>产物 = 输出方块实际 trace 收集到的种类（outputTotal&gt;0）且 {@code net=(S2-S1)+O-I > 0}。</li>
+     *   <li>中间产物（非输出种类、S0 无、S1 有）→ 完全忽略（即使被消耗）。</li>
+     *   <li>消耗 = 非中间产物且 {@code net < 0}（含输出种类减少、初始库存消耗）。</li>
+     * </ul>
      */
-    static RateAudit auditRates(InventorySnapshot baseline, InventorySnapshot end,
+    static RateAudit auditRates(InventorySnapshot s0, InventorySnapshot baseline, InventorySnapshot end,
                                 EvaluationTrace trace, int seconds) {
         long elapsedTicks = Math.max(1, (long) seconds * 20);
         Map<EvaluationTrace.FlowKey, Double> inputs = new HashMap<>();
         Map<EvaluationTrace.FlowKey, Double> outputs = new HashMap<>();
+
+        // S0 全空 → 简化路径：只用 IO trace（输入方块/输出方块自统计）
+        if (s0 == null || s0.isEmpty()) {
+            for (Map.Entry<EvaluationTrace.FlowKey, EvaluationTrace.Series> entry : trace.series().entrySet()) {
+                if (entry.getValue().inputTotal > 0) {
+                    inputs.put(entry.getKey(), (double) entry.getValue().inputTotal / elapsedTicks);
+                }
+                if (entry.getValue().outputTotal > 0) {
+                    outputs.put(entry.getKey(), (double) entry.getValue().outputTotal / elapsedTicks);
+                }
+            }
+            return new RateAudit(inputs, outputs);
+        }
+
+        Set<EvaluationTrace.FlowKey> outputTypes = new HashSet<>();
+        trace.series().forEach((key, series) -> {
+            if (series.outputTotal > 0) {
+                outputTypes.add(key);
+            }
+        });
+
         Set<EvaluationTrace.FlowKey> keys = new HashSet<>(trace.series().keySet());
         baseline.items().keySet().forEach(id -> keys.add(EvaluationTrace.FlowKey.item(id)));
         baseline.fluids().keySet().forEach(id -> keys.add(EvaluationTrace.FlowKey.fluid(id)));
@@ -217,11 +246,21 @@ final class EvaluationAudit {
                     : baseline.fluids().getOrDefault(key.id(), 0L);
             long endCount = item ? end.items().getOrDefault(key.id(), 0L)
                     : end.fluids().getOrDefault(key.id(), 0L);
+            long s0Count = item ? s0.items().getOrDefault(key.id(), 0L)
+                    : s0.fluids().getOrDefault(key.id(), 0L);
             EvaluationTrace.Series series = trace.series().get(key);
             long ioOut = series == null ? 0L : series.outputTotal;
             long ioIn = series == null ? 0L : series.inputTotal;
             long net = (endCount - baseCount) + ioOut - ioIn;
-            if (net > 0) {
+
+            boolean isOutputType = outputTypes.contains(key);
+            // 中间产物：非输出种类、S0 无、S1 有、且无 IO 输入流量（从 IO 外部输入的原料不算中间产物）
+            boolean intermediate = !isOutputType && ioIn == 0 && s0Count == 0 && baseCount > 0;
+            if (intermediate) {
+                CreateCMPOR.LOGGER.info("审计-中间产物忽略: {}", key.id());
+                continue;
+            }
+            if (isOutputType && net > 0) {
                 outputs.put(key, (double) net / elapsedTicks);
             } else if (net < 0) {
                 inputs.put(key, (double) (-net) / elapsedTicks);

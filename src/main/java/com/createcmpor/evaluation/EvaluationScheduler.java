@@ -104,10 +104,11 @@ final class EvaluationScheduler {
         }
         RoomInstance room = requireRoom(server, session);
         AABB bounds = room.boundaries().outerBounds();
-        int ioCount = activateIoBlocks(target, bounds, session.roomCode());
-        CreateCMPOR.LOGGER.info("评估会话 {} 已激活 {} 个 IO 方块", session.id(), ioCount);
+        // S0 初次扫描必须在 IO 激活前：代表房间"未开工"的初始态（防刷兜底基准，过滤中间产物用）
         state.s0 = EvaluationAudit.scan(target, bounds);
         EvaluationAudit.logInventory("S0", state.s0);
+        int ioCount = activateIoBlocks(target, bounds, session.roomCode());
+        CreateCMPOR.LOGGER.info("评估会话 {} 已激活 {} 个 IO 方块", session.id(), ioCount);
 
         Map<EvaluationTrace.FlowKey, Long> floor = new HashMap<>();
         for (ItemEntity itemEntity : target.getEntitiesOfClass(ItemEntity.class, bounds)) {

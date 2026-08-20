@@ -93,7 +93,7 @@ final class EvaluationVerdict {
         // 基线 = S1（预热结束）；无预热时回退 S0
         EvaluationAudit.InventorySnapshot base = baseline != null ? baseline : s0;
         EvaluationAudit.RateAudit audited = EvaluationAudit.auditRates(
-                base, s1, trace, trace.seconds());
+                s0, base, s1, trace, trace.seconds());
         double auditedEnergy = EvaluationAudit.auditEnergyRate(
                 base, s1, trace.energy(), outputEnergyRate, trace.seconds());
         return new Result(VERDICT_RATE, null, audited.inputs(), audited.outputs(),
