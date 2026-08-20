@@ -29,6 +29,20 @@ final class EvaluationReplay {
     static ReplayResult build(EvaluationTrace trace, EvaluationAudit.InventorySnapshot s0,
                               EvaluationAudit.InventorySnapshot s1,
                               EvaluationAudit.InventorySnapshot baseline, int recordLength) {
+        // S0 全空 → 简化路径：只用 IO trace（输入/输出 pattern 原样保留）
+        if (s0 == null || s0.isEmpty()) {
+            Map<EvaluationTrace.FlowKey, int[]> in = new HashMap<>();
+            Map<EvaluationTrace.FlowKey, int[]> out = new HashMap<>();
+            trace.series().forEach((key, series) -> {
+                in.put(key, series.input.clone());
+                out.put(key, series.output.clone());
+            });
+            int[] energyIn = trace.energy().input == null ? new int[recordLength] : trace.energy().input.clone();
+            int[] energyOut = trace.energy().output == null ? new int[recordLength] : trace.energy().output.clone();
+            applyLossAndFilter(in, out, energyOut, recordLength);
+            return new ReplayResult(in, out, energyIn, energyOut);
+        }
+
         Map<EvaluationTrace.FlowKey, int[]> in = new HashMap<>();
         Map<EvaluationTrace.FlowKey, int[]> out = new HashMap<>();
         trace.series().forEach((key, series) -> {
@@ -43,22 +57,34 @@ final class EvaluationReplay {
                 : (s0 != null ? s0 : EvaluationAudit.InventorySnapshot.empty());
         EvaluationAudit.InventorySnapshot end = s1 != null ? s1 : EvaluationAudit.InventorySnapshot.empty();
 
-        netBalance(trace, base, end, in, out, recordLength);
+        netBalance(trace, s0, base, end, in, out, recordLength);
         energyNetBalance(trace, base, end, energyIn, energyOut, recordLength);
         applyLossAndFilter(in, out, energyOut, recordLength);
         return new ReplayResult(in, out, energyIn, energyOut);
     }
 
     /**
-     * 物品/流体净平衡：对基线库存、终态库存、IO 流量三处出现的每个 key 统一应用
-     * {@code net = (S2 - S1) + O - I}。容器直接消耗、掉落物积累、IO 纯过路全部由同一公式覆盖。
+     * 物品/流体净平衡（三扫描防刷规则）：
+     * <ul>
+     *   <li>产物 = 输出方块实际 trace 收集到的种类（outputTotal&gt;0）且 {@code net=(S2-S1)+O-I > 0}。</li>
+     *   <li>中间产物（非输出种类、S0 无、S1 有）→ 完全忽略（即使被消耗）。</li>
+     *   <li>消耗 = 非中间产物且 {@code net < 0}（含输出种类减少、初始库存消耗）。</li>
+     * </ul>
      */
     private static void netBalance(EvaluationTrace trace,
+                                   EvaluationAudit.InventorySnapshot s0,
                                    EvaluationAudit.InventorySnapshot base,
                                    EvaluationAudit.InventorySnapshot end,
                                    Map<EvaluationTrace.FlowKey, int[]> in,
                                    Map<EvaluationTrace.FlowKey, int[]> out,
                                    int recordLength) {
+        Set<EvaluationTrace.FlowKey> outputTypes = new HashSet<>();
+        trace.series().forEach((key, series) -> {
+            if (series.outputTotal > 0) {
+                outputTypes.add(key);
+            }
+        });
+
         Set<EvaluationTrace.FlowKey> keys = new HashSet<>(trace.series().keySet());
         base.items().keySet().forEach(id -> keys.add(EvaluationTrace.FlowKey.item(id)));
         base.fluids().keySet().forEach(id -> keys.add(EvaluationTrace.FlowKey.fluid(id)));
@@ -76,34 +102,33 @@ final class EvaluationReplay {
             long endCount = item
                     ? end.items().getOrDefault(key.id(), 0L)
                     : end.fluids().getOrDefault(key.id(), 0L);
+            long s0Count = s0 == null ? 0L : (item
+                    ? s0.items().getOrDefault(key.id(), 0L)
+                    : s0.fluids().getOrDefault(key.id(), 0L));
             long net = (endCount - baseCount) + ioOut - ioIn;
 
-            long consumedEstimate = Math.max(0, (baseCount - endCount) + ioIn);
-            long maxIo = Math.max(ioOut, consumedEstimate);
-            long dynThreshold = Math.max((long) (recordLength * Config.INTERMEDIATE_RATIO.get()),
-                    (long) (maxIo * Config.IO_ERROR_RATIO.get()));
-            if (Math.abs(net) < dynThreshold) {
+            boolean isOutputType = outputTypes.contains(key);
+            // 中间产物：非输出种类、S0 无、S1 有、且无 IO 输入流量（从 IO 外部输入的原料不算中间产物）
+            boolean intermediate = !isOutputType && ioIn == 0 && s0Count == 0 && baseCount > 0;
+            if (intermediate) {
                 in.remove(key);
                 out.remove(key);
-                CreateCMPOR.LOGGER.info("回放-噪声删除: {} net={} threshold={}", key.id(), net, dynThreshold);
+                CreateCMPOR.LOGGER.info("回放-中间产物忽略: {}", key.id());
                 continue;
             }
-            if (net == 0) {
-                in.remove(key);
-                out.remove(key);
-                CreateCMPOR.LOGGER.info("回放-纯过路删除: {}", key.id());
-                continue;
-            }
-            if (net > 0) {
+            if (isOutputType && net > 0) {
                 in.remove(key);
                 int[] outPattern = out.computeIfAbsent(key, ignored -> new int[recordLength]);
                 distribute(outPattern, net, recordLength);
                 CreateCMPOR.LOGGER.info("回放-净产物: {} net={}", key.id(), net);
-            } else {
+            } else if (net < 0) {
                 out.remove(key);
                 int[] inPattern = in.computeIfAbsent(key, ignored -> new int[recordLength]);
                 distribute(inPattern, -net, recordLength);
                 CreateCMPOR.LOGGER.info("回放-净原料: {} net={}", key.id(), net);
+            } else {
+                in.remove(key);
+                out.remove(key);
             }
         }
     }
