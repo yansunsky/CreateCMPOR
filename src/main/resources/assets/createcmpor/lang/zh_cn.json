@@ -87,5 +87,8 @@
   "message.createcmpor.factory.revert_disabled": "工厂还原功能已被禁用。",
   "message.createcmpor.factory.revert_unavailable": "该工厂缺少还原数据，无法还原。",
   "message.createcmpor.factory.reverted": "工厂已还原为原机器。",
-  "message.createcmpor.factory.revert_failed": "工厂还原失败，请检查服务端日志。"
+  "message.createcmpor.factory.revert_failed": "工厂还原失败，请检查服务端日志。",
+  "createcmpor.ponder.stress_input_basics.header": "应力输入方块",
+  "createcmpor.ponder.stress_input_basics.line1": "应力输入方块可将外部输入的机械应力引入房间内。",
+  "createcmpor.ponder.stress_input_basics.line2": "将传动杆连接至方块面，即可为连接的机械提供转速。"
 }

@@ -53,6 +53,9 @@ public class ClientSetup {
     @SubscribeEvent
     public static void onClientSetup(FMLClientSetupEvent event) {
         event.enqueueWork(ClientSetup::registerFlywheelVisuals);
+        // Ponder（Create 游戏内教程）：注册 CreateCMPOR 的场景插件
+        event.enqueueWork(() -> net.createmod.ponder.foundation.PonderIndex.addPlugin(
+                new com.createcmpor.ponder.CreateCMPORPonderPlugin()));
     }
 
     private static void registerFlywheelVisuals() {
