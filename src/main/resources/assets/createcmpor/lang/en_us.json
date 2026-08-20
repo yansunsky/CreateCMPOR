@@ -88,7 +88,20 @@
   "message.createcmpor.factory.revert_unavailable": "This factory has no restore data and cannot be reverted.",
   "message.createcmpor.factory.reverted": "The factory was reverted to the original machine.",
   "message.createcmpor.factory.revert_failed": "Factory revert failed; check the server log.",
-  "createcmpor.ponder.stress_input_basics.header": "Stress Input Block",
-  "createcmpor.ponder.stress_input_basics.line1": "The Stress Input block brings mechanical stress from outside into the room.",
-  "createcmpor.ponder.stress_input_basics.line2": "Attach a shaft to its face to provide rotation to connected machinery."
+  "createcmpor.ponder.stress_input.header": "Stress Input Block",
+  "createcmpor.ponder.stress_input.text_1": "The Stress Input block brings mechanical stress from outside into the room.",
+  "createcmpor.ponder.stress_input.text_2": "IO blocks are activated during evaluation to provide items or stress.",
+  "createcmpor.ponder.stress_input.text_3": "Once activated it acts as a stress source, providing rotation to connected machinery.",
+  "createcmpor.ponder.stress_output.header": "Stress Output Block",
+  "createcmpor.ponder.stress_output.text_1": "The Stress Output block is a passive observer of the connected stress network.",
+  "createcmpor.ponder.stress_output.text_2": "It records how much stress the network can supply for the factory's output.",
+  "createcmpor.ponder.stress_output.text_3": "Once activated it observes the network and records the stress that the factory can supply.",
+  "createcmpor.ponder.input_block.header": "Input Block",
+  "createcmpor.ponder.input_block.text_1": "The Input block is where items and fluids enter the room from outside.",
+  "createcmpor.ponder.input_block.text_2": "Right-click with an item or bucket to set the whitelist; it activates during evaluation.",
+  "createcmpor.ponder.input_block.text_3": "Once activated, whitelisted items flow down through the chute to the machines inside.",
+  "createcmpor.ponder.output_block.header": "Output Block",
+  "createcmpor.ponder.output_block.text_1": "The Output block is where items and fluids leave the room to the outside.",
+  "createcmpor.ponder.output_block.text_2": "Right-click with an item or bucket to set the whitelist; it activates during evaluation.",
+  "createcmpor.ponder.output_block.text_3": "Once activated, whitelisted products from inside flow down to the Output block and leave the room."
 }

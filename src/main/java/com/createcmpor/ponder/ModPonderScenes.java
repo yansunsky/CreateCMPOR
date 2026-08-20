@@ -25,8 +25,21 @@ public final class ModPonderScenes {
         // 组件用方块/物品的注册 id；Ponder 索引用 Item 的注册 id 匹配（PonderTooltipHandler 源码确认）
         ResourceLocation stressInput = ResourceLocation.fromNamespaceAndPath(
                 CreateCMPOR.MOD_ID, "stress_input");
+        ResourceLocation stressOutput = ResourceLocation.fromNamespaceAndPath(
+                CreateCMPOR.MOD_ID, "stress_output");
+        ResourceLocation inputBlock = ResourceLocation.fromNamespaceAndPath(
+                CreateCMPOR.MOD_ID, "input_block");
+        ResourceLocation outputBlock = ResourceLocation.fromNamespaceAndPath(
+                CreateCMPOR.MOD_ID, "output_block");
 
         helper.forComponents(stressInput)
                 .addStoryBoard("stress_input/stress_input", StressInputScenes::stressInputBasics);
+        helper.forComponents(stressOutput)
+                .addStoryBoard("stress_output/stress_output", StressOutputScenes::stressOutputBasics);
+
+        helper.forComponents(inputBlock)
+                .addStoryBoard("input_block/input_block", InputBlockScenes::inputBlockBasics);
+        helper.forComponents(outputBlock)
+                .addStoryBoard("output_block/output_block", OutputBlockScenes::outputBlockBasics);
     }
 }
