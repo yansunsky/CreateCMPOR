@@ -4,8 +4,8 @@ import com.createcmpor.CreateCMPOR;
 import com.createcmpor.block.EvaluatorBlockEntity;
 import com.createcmpor.block.FactoryBlockEntity;
 import com.createcmpor.block.InputBlockEntity;
+import com.createcmpor.block.IOExtensionBlockEntity;
 import com.createcmpor.block.OutputBlockEntity;
-import com.createcmpor.block.StressExtensionBlockEntity;
 import com.createcmpor.block.StressInputBlockEntity;
 import com.createcmpor.block.StressOutputBlockEntity;
 import net.minecraft.core.registries.Registries;
@@ -19,9 +19,9 @@ public class ModBlockEntities {
     public static final DeferredRegister<BlockEntityType<?>> BLOCK_ENTITIES =
             DeferredRegister.create(Registries.BLOCK_ENTITY_TYPE, CreateCMPOR.MOD_ID);
 
-    public static final DeferredHolder<BlockEntityType<?>, BlockEntityType<StressExtensionBlockEntity>> STRESS_EXTENSION =
-            BLOCK_ENTITIES.register("stress_extension", () -> BlockEntityType.Builder.of(
-                    StressExtensionBlockEntity::new, ModBlocks.STRESS_EXTENSION.get()).build(null));
+    public static final DeferredHolder<BlockEntityType<?>, BlockEntityType<IOExtensionBlockEntity>> IO_EXTENSION =
+            BLOCK_ENTITIES.register("io_extension", () -> BlockEntityType.Builder.of(
+                    IOExtensionBlockEntity::new, ModBlocks.IO_EXTENSION.get()).build(null));
 
     public static final DeferredHolder<BlockEntityType<?>, BlockEntityType<FactoryBlockEntity>> FACTORY =
             BLOCK_ENTITIES.register("factory_block", () -> BlockEntityType.Builder.of(

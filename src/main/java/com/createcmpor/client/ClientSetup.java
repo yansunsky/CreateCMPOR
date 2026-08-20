@@ -2,7 +2,7 @@ package com.createcmpor.client;
 
 import com.createcmpor.CreateCMPOR;
 import com.createcmpor.block.FactoryBlockEntity;
-import com.createcmpor.block.StressExtensionBlockEntity;
+import com.createcmpor.block.IOExtensionBlockEntity;
 import com.createcmpor.block.StressInputBlockEntity;
 import com.createcmpor.block.StressOutputBlockEntity;
 import com.createcmpor.init.ModBlockEntities;
@@ -43,7 +43,7 @@ public class ClientSetup {
 
     @SubscribeEvent
     public static void registerRenderers(EntityRenderersEvent.RegisterRenderers event) {
-        event.registerBlockEntityRenderer(ModBlockEntities.STRESS_EXTENSION.get(), ShaftRenderer::new);
+        event.registerBlockEntityRenderer(ModBlockEntities.IO_EXTENSION.get(), ShaftRenderer::new);
         event.registerBlockEntityRenderer(ModBlockEntities.STRESS_INPUT.get(), ShaftRenderer::new);
         event.registerBlockEntityRenderer(ModBlockEntities.STRESS_OUTPUT.get(), ShaftRenderer::new);
         event.registerBlockEntityRenderer(ModBlockEntities.FACTORY.get(), FactoryRenderer::new);
@@ -59,7 +59,7 @@ public class ClientSetup {
     }
 
     private static void registerFlywheelVisuals() {
-        SimpleBlockEntityVisualizer.<StressExtensionBlockEntity>builder(ModBlockEntities.STRESS_EXTENSION.get())
+        SimpleBlockEntityVisualizer.<IOExtensionBlockEntity>builder(ModBlockEntities.IO_EXTENSION.get())
                 .factory(SingleAxisRotatingVisual::shaft)
                 .skipVanillaRender(be -> false)
                 .apply();

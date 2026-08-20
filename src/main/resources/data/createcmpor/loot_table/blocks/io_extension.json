@@ -6,7 +6,7 @@
       "entries": [
         {
           "type": "minecraft:item",
-          "name": "createcmpor:stress_extension"
+          "name": "createcmpor:io_extension"
         }
       ],
       "conditions": [

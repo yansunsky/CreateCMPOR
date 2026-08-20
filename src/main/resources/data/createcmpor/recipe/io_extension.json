@@ -10,5 +10,5 @@
     "B": { "item": "minecraft:barrel" },
     "C": { "item": "create:shaft" }
   },
-  "result": { "id": "createcmpor:stress_extension", "count": 1 }
+  "result": { "id": "createcmpor:io_extension", "count": 1 }
 }

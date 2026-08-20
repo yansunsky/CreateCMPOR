@@ -13,8 +13,8 @@ public class ModItems {
     public static final DeferredRegister.Items ITEMS =
             DeferredRegister.createItems(CreateCMPOR.MOD_ID);
 
-    public static final DeferredItem<BlockItem> STRESS_EXTENSION =
-            ITEMS.registerSimpleBlockItem("stress_extension", ModBlocks.STRESS_EXTENSION);
+    public static final DeferredItem<BlockItem> IO_EXTENSION =
+            ITEMS.registerSimpleBlockItem("io_extension", ModBlocks.IO_EXTENSION);
 
     public static final DeferredItem<BlockItem> FACTORY =
             ITEMS.registerSimpleBlockItem("factory_block", ModBlocks.FACTORY);

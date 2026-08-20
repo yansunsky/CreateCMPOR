@@ -1,6 +1,6 @@
 {
   "itemGroup.createcmpor": "CreateCMPOR",
-  "block.createcmpor.stress_extension": "应力拓展方块",
+  "block.createcmpor.io_extension": "IO 拓展方块",
   "block.createcmpor.factory_block": "平行工厂方块",
   "block.createcmpor.input_block": "压缩空间输入方块",
   "block.createcmpor.output_block": "压缩空间输出方块",

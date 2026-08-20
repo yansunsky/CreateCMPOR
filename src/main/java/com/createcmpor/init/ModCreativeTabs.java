@@ -16,10 +16,10 @@ public class ModCreativeTabs {
     public static final DeferredHolder<CreativeModeTab, CreativeModeTab> MAIN = TABS.register("main",
             () -> CreativeModeTab.builder()
                     .title(Component.translatable("itemGroup.createcmpor"))
-                    .icon(() -> ModItems.STRESS_EXTENSION.get().getDefaultInstance())
+                    .icon(() -> ModItems.IO_EXTENSION.get().getDefaultInstance())
                     .displayItems((parameters, output) -> {
                         output.accept(ModItems.LAUNCHER_STICK.get());
-                        output.accept(ModItems.STRESS_EXTENSION.get());
+                        output.accept(ModItems.IO_EXTENSION.get());
                         output.accept(ModItems.FACTORY.get());
                         output.accept(ModItems.INPUT.get());
                         output.accept(ModItems.OUTPUT.get());
