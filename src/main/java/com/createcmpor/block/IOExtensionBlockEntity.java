@@ -99,8 +99,8 @@ public class IOExtensionBlockEntity extends KineticBlockEntity {
                     visited.add(np.asLong());
                     queue.add(np);
                 } else if (isFactoryState(ns)) {
-                    // 工厂该面必须是开口面（应力接口）
-                    if (!ns.getValue(FactoryBlock.SHAFT_BY_FACE.get(d)))
+                    // 工厂面向本方块的那一面（d 的反方向）必须是开口面（应力接口）
+                    if (!ns.getValue(FactoryBlock.SHAFT_BY_FACE.get(d.getOpposite())))
                         continue;
                     visited.add(np.asLong());
                     result.add(np);
@@ -148,7 +148,7 @@ public class IOExtensionBlockEntity extends KineticBlockEntity {
         if (isIoExtensionState(fs) && fs.getValue(IOExtensionBlock.AXIS) == axis) {
             visited.add(first.asLong());
             queue.add(first);
-        } else if (isFactoryState(fs) && fs.getValue(FactoryBlock.SHAFT_BY_FACE.get(startDir))) {
+        } else if (isFactoryState(fs) && fs.getValue(FactoryBlock.SHAFT_BY_FACE.get(startDir.getOpposite()))) {
             factories.add(first);
         }
 
@@ -166,7 +166,7 @@ public class IOExtensionBlockEntity extends KineticBlockEntity {
                 if (isIoExtensionState(ns) && ns.getValue(IOExtensionBlock.AXIS) == curAxis) {
                     visited.add(np.asLong());
                     queue.add(np);
-                } else if (isFactoryState(ns) && ns.getValue(FactoryBlock.SHAFT_BY_FACE.get(d))) {
+                } else if (isFactoryState(ns) && ns.getValue(FactoryBlock.SHAFT_BY_FACE.get(d.getOpposite()))) {
                     factories.add(np);
                 }
             }
