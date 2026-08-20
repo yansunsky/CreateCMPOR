@@ -88,7 +88,20 @@
   "message.createcmpor.factory.revert_unavailable": "该工厂缺少还原数据，无法还原。",
   "message.createcmpor.factory.reverted": "工厂已还原为原机器。",
   "message.createcmpor.factory.revert_failed": "工厂还原失败，请检查服务端日志。",
-  "createcmpor.ponder.stress_input_basics.header": "应力输入方块",
-  "createcmpor.ponder.stress_input_basics.line1": "应力输入方块可将外部输入的机械应力引入房间内。",
-  "createcmpor.ponder.stress_input_basics.line2": "将传动杆连接至方块面，即可为连接的机械提供转速。"
+  "createcmpor.ponder.stress_input.header": "应力输入方块",
+  "createcmpor.ponder.stress_input.text_1": "应力输入方块可将外部应力引入房间内。",
+  "createcmpor.ponder.stress_input.text_2": "应力输入方块会在评估时激活，提供应力。",
+  "createcmpor.ponder.stress_input.text_3": "激活后即作为应力源提供固定转速，驱动连接的机械元件。",
+  "createcmpor.ponder.stress_output.header": "应力输出方块",
+  "createcmpor.ponder.stress_output.text_1": "应力输出方块是连接应力网络的观察者。",
+  "createcmpor.ponder.stress_output.text_2": "它记录网络可提供的剩余应力，供工厂输出。",
+  "createcmpor.ponder.stress_output.text_3": "激活后观测应力网络，记录网络中的剩余应力。",
+  "createcmpor.ponder.input_block.header": "输入方块",
+  "createcmpor.ponder.input_block.text_1": "输入方块是外部物品与流体进入房间的入口。",
+  "createcmpor.ponder.input_block.text_2": "用物品或流体容器右键设置白名单，评估时自动激活。",
+  "createcmpor.ponder.input_block.text_3": "激活后白名单物品经物流送往房内机器。",
+  "createcmpor.ponder.output_block.header": "输出方块",
+  "createcmpor.ponder.output_block.text_1": "输出方块是房内物品与流体送出房间的出口。",
+  "createcmpor.ponder.output_block.text_2": "用物品或流体容器右键设置白名单，评估时自动激活。",
+  "createcmpor.ponder.output_block.text_3": "激活后房内白名单产物经物流送到输出方块送出。"
 }
