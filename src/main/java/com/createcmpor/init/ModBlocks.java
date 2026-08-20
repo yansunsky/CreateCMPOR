@@ -3,12 +3,15 @@ package com.createcmpor.init;
 import com.createcmpor.CreateCMPOR;
 import com.createcmpor.block.EvaluatorBlock;
 import com.createcmpor.block.FactoryBlock;
+import com.createcmpor.block.FactoryBlockEntity;
 import com.createcmpor.block.InputBlock;
+import com.createcmpor.block.IOExtensionBlock;
 import com.createcmpor.block.OutputBlock;
-import com.createcmpor.block.StressExtensionBlock;
 import com.createcmpor.block.StressInputBlock;
 import com.createcmpor.block.StressOutputBlock;
 import com.simibubi.create.api.stress.BlockStressValues;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.state.BlockBehaviour;
 import net.minecraft.world.level.material.MapColor;
@@ -24,8 +27,8 @@ public class ModBlocks {
     public static final DeferredRegister.Blocks BLOCKS =
             DeferredRegister.createBlocks(CreateCMPOR.MOD_ID);
 
-    public static final DeferredBlock<StressExtensionBlock> STRESS_EXTENSION =
-            BLOCKS.register("stress_extension", () -> new StressExtensionBlock(
+    public static final DeferredBlock<IOExtensionBlock> IO_EXTENSION =
+            BLOCKS.register("io_extension", () -> new IOExtensionBlock(
                     BlockBehaviour.Properties.of()
                             .mapColor(MapColor.PODZOL)
                             .strength(2.0f)
@@ -86,33 +89,36 @@ public class ModBlocks {
     }
 
     public static void registerCapabilities(RegisterCapabilitiesEvent event) {
-        event.registerBlockEntity(Capabilities.ItemHandler.BLOCK, ModBlockEntities.STRESS_EXTENSION.get(),
+        // IO 拓展方块：把链上触达的工厂方块的缓存（输入+输出）代理转发到自身 IO 面。
+        // 直接访问工厂 BE 的 handler（指向工厂自身缓存，无面过滤/应力档案门控），
+        // 保证「产物能从它出去、原料能从它进入」，且不会复制物品。
+        event.registerBlockEntity(Capabilities.ItemHandler.BLOCK, ModBlockEntities.IO_EXTENSION.get(),
                 (be, side) -> {
                     if (be.getLevel() == null || !be.isIoFace(side))
                         return null;
-                    for (var fp : be.getChainFactories()) {
-                        var h = be.getLevel().getCapability(Capabilities.ItemHandler.BLOCK, fp, side);
-                        if (h != null) return h;
+                    for (BlockPos fp : be.getReachableFactories()) {
+                        if (be.getLevel().getBlockEntity(fp) instanceof FactoryBlockEntity fbe)
+                            return fbe.getItemHandler();
                     }
                     return null;
                 });
-        event.registerBlockEntity(Capabilities.FluidHandler.BLOCK, ModBlockEntities.STRESS_EXTENSION.get(),
+        event.registerBlockEntity(Capabilities.FluidHandler.BLOCK, ModBlockEntities.IO_EXTENSION.get(),
                 (be, side) -> {
                     if (be.getLevel() == null || !be.isIoFace(side))
                         return null;
-                    for (var fp : be.getChainFactories()) {
-                        var h = be.getLevel().getCapability(Capabilities.FluidHandler.BLOCK, fp, side);
-                        if (h != null) return h;
+                    for (BlockPos fp : be.getReachableFactories()) {
+                        if (be.getLevel().getBlockEntity(fp) instanceof FactoryBlockEntity fbe)
+                            return fbe.getFluidHandler();
                     }
                     return null;
                 });
-        event.registerBlockEntity(Capabilities.EnergyStorage.BLOCK, ModBlockEntities.STRESS_EXTENSION.get(),
+        event.registerBlockEntity(Capabilities.EnergyStorage.BLOCK, ModBlockEntities.IO_EXTENSION.get(),
                 (be, side) -> {
                     if (be.getLevel() == null || !be.isIoFace(side))
                         return null;
-                    for (var fp : be.getChainFactories()) {
-                        var h = be.getLevel().getCapability(Capabilities.EnergyStorage.BLOCK, fp, side);
-                        if (h != null) return h;
+                    for (BlockPos fp : be.getReachableFactories()) {
+                        if (be.getLevel().getBlockEntity(fp) instanceof FactoryBlockEntity fbe && fbe.hasEnergyIo())
+                            return fbe.getEnergyHandler();
                     }
                     return null;
                 });
@@ -140,13 +146,12 @@ public class ModBlocks {
     }
 
     /** 开口面（应力接口）不提供物品/流体/能量 IO；其余面正常。 */
-    private static boolean isFactoryIoFace(com.createcmpor.block.FactoryBlockEntity be,
-                                           net.minecraft.core.Direction side) {
+    private static boolean isFactoryIoFace(FactoryBlockEntity be, Direction side) {
         if (side == null) {
             return true;
         }
         return !be.getBlockState()
-                .getValue(com.createcmpor.block.FactoryBlock.SHAFT_BY_FACE.get(side));
+                .getValue(FactoryBlock.SHAFT_BY_FACE.get(side));
     }
 
     public static void registerStressValues() {

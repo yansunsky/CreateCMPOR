@@ -1,6 +1,6 @@
 {
   "itemGroup.createcmpor": "CreateCMPOR",
-  "block.createcmpor.stress_extension": "Stress Extension Block",
+  "block.createcmpor.io_extension": "IO Extension Block",
   "block.createcmpor.factory_block": "Parallel Factory Block",
   "block.createcmpor.input_block": "Compact Machine Input",
   "block.createcmpor.output_block": "Compact Machine Output",

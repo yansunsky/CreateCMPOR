@@ -23,8 +23,8 @@ public class Config {
     /**
      * 开发期：是否允许空手右键手动激活/停用应力 IO 方块。
      * <ul>
-     *     <li>{@code true}（默认，开发期）：保留右键手动切换，便于测试人员激活。</li>
-     *     <li>{@code false}（生产）：仅由本模组评估流程自动激活，右键无效。</li>
+     *     <li>{@code true}（开发期）：保留右键手动切换，便于测试人员激活。</li>
+     *     <li>{@code false}（默认，生产）：仅由本模组评估流程自动激活，右键无效。</li>
      * </ul>
      */
     public static final ModConfigSpec.BooleanValue DEV_MANUAL_ACTIVATION;
@@ -64,8 +64,8 @@ public class Config {
         DEV_MANUAL_ACTIVATION = builder
                 .comment(
                         "开发期：是否允许空手右键手动激活/停用应力 IO 方块。",
-                        "true（默认，开发期）：保留右键手动切换，便于测试。",
-                        "false（生产）：仅由本模组评估流程自动激活，右键无效。")
+                        "true（开发期）：保留右键手动切换，便于测试。",
+                        "false（默认，生产）：仅由本模组评估流程自动激活，右键无效。")
                 .define("devManualActivation", false);
         STRESS_LOSS_FACTOR = builder
                 .comment(
