@@ -22,5 +22,8 @@ eclipse/
 libs/
 docs/
 
+# Mesa3D 软件渲染库（本地客户端测试用，不纳入版本控制）
+mesa/
+
 # 系统
 *.log
