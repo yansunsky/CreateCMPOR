@@ -30,6 +30,8 @@ public final class ModPonderScenes {
                 CreateCMPOR.MOD_ID, "input_block");
         ResourceLocation outputBlock = ResourceLocation.fromNamespaceAndPath(
                 CreateCMPOR.MOD_ID, "output_block");
+        ResourceLocation ioExtension = ResourceLocation.fromNamespaceAndPath(
+                CreateCMPOR.MOD_ID, "io_extension");
 
         helper.forComponents(stressInput)
                 .addStoryBoard("stress_input/stress_input", StressInputScenes::stressInputBasics);
@@ -40,6 +42,10 @@ public final class ModPonderScenes {
                 .addStoryBoard("input_block/input_block", InputBlockScenes::inputBlockBasics);
         helper.forComponents(outputBlock)
                 .addStoryBoard("output_block/output_block", OutputBlockScenes::outputBlockBasics);
+
+        // IO 拓展方块：6 面 IO → 扳手开接口（牺牲该面 IO）→ io_extension 拓展
+        helper.forComponents(ioExtension)
+                .addStoryBoard("io_extension/io_extension", IOExtensionScenes::ioExtensionBasics);
 
         // 工厂方块：完整生命周期（注册顺序即流程顺序，Ponder 内可上/下切换）
         ResourceLocation factoryBlock = ResourceLocation.fromNamespaceAndPath(
