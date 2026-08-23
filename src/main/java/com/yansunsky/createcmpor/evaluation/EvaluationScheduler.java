@@ -4,6 +4,7 @@ import com.yansunsky.createcmpor.Config;
 import com.yansunsky.createcmpor.CreateCMPOR;
 import com.yansunsky.createcmpor.block.BaseIOBlock;
 import com.yansunsky.createcmpor.block.BaseIOBlockEntity;
+import com.yansunsky.createcmpor.block.EvaluatorBlockEntity;
 import com.yansunsky.createcmpor.block.StressInputBlock;
 import com.yansunsky.createcmpor.block.StressInputBlockEntity;
 import com.yansunsky.createcmpor.block.StressOutputBlock;
@@ -14,6 +15,7 @@ import com.yansunsky.createcmpor.stress.StressProfile;
 import dev.compactmods.machines.api.CompactMachines;
 import dev.compactmods.machines.api.room.RoomInstance;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.GlobalPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
@@ -124,8 +126,10 @@ final class EvaluationScheduler {
         int warmupSeconds = Config.RECORD_START.get();
         if (warmupSeconds > 0) {
             state.phase = Phase.WARMING;
+            // 预热开始：一次性通知主世界评估方块（剩余 RECORD_START 秒）
+            notifyEvaluatorCountdown(server, session, EvaluatorBlockEntity.EvaluationStage.WARMING, warmupSeconds);
         } else {
-            beginSampling(target, session, state);
+            beginSampling(server, target, session, state);
         }
         notifyOwner(server, session, Component.translatable(
                 "message.createcmpor.evaluation.evaluation_started",
@@ -135,8 +139,11 @@ final class EvaluationScheduler {
     }
 
     /** 采样起点：trace 从此刻开始计时（预热期数据不混入）。 */
-    private static void beginSampling(ServerLevel target, EvaluationSession session, State state) {
+    private static void beginSampling(MinecraftServer server, ServerLevel target,
+                                      EvaluationSession session, State state) {
         int seconds = Config.EVALUATE_SECONDS.get();
+        // 通知主世界评估方块：进入采样阶段（剩余 EVALUATE_SECONDS 秒）
+        notifyEvaluatorCountdown(server, session, EvaluatorBlockEntity.EvaluationStage.SAMPLING, seconds);
         EvaluationTrace.Hub.INSTANCE.start(session.roomCode(), seconds, target.getGameTime());
         // trace 建立后再写入地板掉落物快照（此前 setFloorItems 找不到 trace 会被丢弃）
         EvaluationTrace.Hub.INSTANCE.setFloorItems(session.roomCode(), state.floorItems);
@@ -153,7 +160,7 @@ final class EvaluationScheduler {
         RoomInstance room = requireRoom(server, session);
         state.warmup = EvaluationAudit.scan(target, room.boundaries().outerBounds());
         EvaluationAudit.logInventory("S_warmup", state.warmup);
-        beginSampling(target, session, state);
+        beginSampling(server, target, session, state);
         notifyOwner(server, session, Component.translatable("message.createcmpor.evaluation.warmup_done"));
         CreateCMPOR.LOGGER.info("评估会话 {} 预热结束，进入正式采样", session.id());
     }
@@ -287,6 +294,19 @@ final class EvaluationScheduler {
         var owner = server.getPlayerList().getPlayer(session.owner());
         if (owner != null) {
             owner.displayClientMessage(message, false);
+        }
+    }
+
+    /** 通知主世界评估方块进入指定倒计时阶段（读配置预设秒数）。 */
+    private static void notifyEvaluatorCountdown(MinecraftServer server, EvaluationSession session,
+                                                 EvaluatorBlockEntity.EvaluationStage stage, int seconds) {
+        GlobalPos machinePos = session.machinePos();
+        ServerLevel level = server.getLevel(machinePos.dimension());
+        if (level == null || !level.isLoaded(machinePos.pos())) {
+            return;
+        }
+        if (level.getBlockEntity(machinePos.pos()) instanceof EvaluatorBlockEntity evaluator) {
+            evaluator.beginCountdown(stage, seconds);
         }
     }
 
