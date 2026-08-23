@@ -148,10 +148,8 @@ public class EvaluatorBlockEntity extends RoomCodeBlockEntity implements IHaveGo
         countdownCooldown = 20; // 每 20 tick = 1 秒递减
         remainingSeconds = Math.max(0, remainingSeconds - 1);
         setChanged();
-        if (remainingSeconds == 0) {
-            // 倒计时归零：阶段收尾，同步客户端（显示"剩余 0 秒"直至固化替换）
-            level.sendBlockUpdated(worldPosition, getBlockState(), getBlockState(), 3);
-        }
+        // 每次递减都要发数据包给客户端（客户端 tooltip 依赖最新剩余秒数）
+        level.sendBlockUpdated(worldPosition, getBlockState(), getBlockState(), 3);
     }
 
     // ===== 护目镜 tooltip（客户端调用） =====
@@ -159,14 +157,26 @@ public class EvaluatorBlockEntity extends RoomCodeBlockEntity implements IHaveGo
     @Override
     public boolean addToGoggleTooltip(List<Component> tooltip, boolean isPlayerSneaking) {
         switch (stage) {
-            case PREPARING -> tooltip.add(Component.literal("平行房间评估：准备中…"));
+            case PREPARING -> {
+                net.createmod.catnip.lang.Lang.builder("createcmpor")
+                        .translate("tooltip.evaluator.preparing")
+                        .forGoggles(tooltip, 1);
+            }
             case WARMING -> {
-                tooltip.add(Component.literal("平行房间评估：预热中"));
-                tooltip.add(Component.literal("剩余 " + remainingSeconds + " 秒"));
+                net.createmod.catnip.lang.Lang.builder("createcmpor")
+                        .translate("tooltip.evaluator.title")
+                        .forGoggles(tooltip, 1);
+                net.createmod.catnip.lang.Lang.builder("createcmpor")
+                        .translate("tooltip.evaluator.warming", remainingSeconds)
+                        .forGoggles(tooltip, 1);
             }
             case SAMPLING -> {
-                tooltip.add(Component.literal("平行房间评估：采集中"));
-                tooltip.add(Component.literal("剩余 " + remainingSeconds + " 秒"));
+                net.createmod.catnip.lang.Lang.builder("createcmpor")
+                        .translate("tooltip.evaluator.title")
+                        .forGoggles(tooltip, 1);
+                net.createmod.catnip.lang.Lang.builder("createcmpor")
+                        .translate("tooltip.evaluator.sampling", remainingSeconds)
+                        .forGoggles(tooltip, 1);
             }
             case NONE -> {
                 return false;
