@@ -61,4 +61,19 @@ public class EvaluatorBlock extends BaseEntityBlock {
     public @Nullable BlockEntity newBlockEntity(BlockPos pos, BlockState state) {
         return new EvaluatorBlockEntity(pos, state);
     }
+
+    /** 服务端 tick：驱动评估方块实体做倒计时递减（进度同步）。 */
+    @Override
+    @Nullable
+    public <T extends BlockEntity> net.minecraft.world.level.block.entity.BlockEntityTicker<T> getTicker(
+            Level level, BlockState state, net.minecraft.world.level.block.entity.BlockEntityType<T> type) {
+        if (level.isClientSide) {
+            return null;
+        }
+        return (tickerLevel, pos, tickerState, entity) -> {
+            if (entity instanceof EvaluatorBlockEntity evaluator) {
+                evaluator.tick();
+            }
+        };
+    }
 }
