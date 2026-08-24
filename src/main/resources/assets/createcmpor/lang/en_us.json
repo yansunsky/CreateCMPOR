@@ -92,6 +92,7 @@
   "message.createcmpor.factory.revert_unavailable": "This factory has no restore data and cannot be reverted.",
   "message.createcmpor.factory.reverted": "The factory was reverted to the original machine.",
   "message.createcmpor.factory.revert_failed": "Factory revert failed; check the server log.",
+  "message.createcmpor.antidupe.space_factory_reverted": "You entered an evaluated room; the factory has been reverted to the original machine to prevent item duplication.",
   "createcmpor.ponder.stress_input.header": "Stress Input Block",
   "createcmpor.ponder.stress_input.text_1": "The Stress Input block brings mechanical stress from outside into the room.",
   "createcmpor.ponder.stress_input.text_2": "IO blocks are activated during evaluation to provide items or stress.",

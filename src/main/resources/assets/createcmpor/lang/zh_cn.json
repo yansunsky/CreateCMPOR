@@ -92,6 +92,7 @@
   "message.createcmpor.factory.revert_unavailable": "该工厂缺少还原数据，无法还原。",
   "message.createcmpor.factory.reverted": "工厂已还原为原机器。",
   "message.createcmpor.factory.revert_failed": "工厂还原失败，请检查服务端日志。",
+  "message.createcmpor.antidupe.space_factory_reverted": "你进入了已评估的房间，主世界工厂已自动还原为原机器（防止物品复制）。",
   "createcmpor.ponder.stress_input.header": "应力输入方块",
   "createcmpor.ponder.stress_input.text_1": "应力输入方块可将外部应力引入房间内。",
   "createcmpor.ponder.stress_input.text_2": "应力输入方块会在评估时激活，提供应力。",
