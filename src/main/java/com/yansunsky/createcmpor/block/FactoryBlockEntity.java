@@ -283,6 +283,11 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         if (!hasRestoreData()) {
             return false;
         }
+        // 清除 roomCode → 工厂 索引（防止自动还原后玩家再进空间误判存在工厂）
+        if (roomCode != null && !roomCode.isBlank() && level.getServer() != null) {
+            com.yansunsky.createcmpor.evaluation.FactoryIndexSavedData.get(level.getServer())
+                    .removeFactory(roomCode);
+        }
         BlockPos pos = getBlockPos();
         BlockState originalState = NbtUtils.readBlockState(
                 level.registryAccess().lookupOrThrow(net.minecraft.core.registries.Registries.BLOCK),

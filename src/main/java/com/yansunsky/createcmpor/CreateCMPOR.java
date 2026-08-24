@@ -73,6 +73,8 @@ public class CreateCMPOR {
         NeoForge.EVENT_BUS.addListener(EvaluationManager.INSTANCE::onBlockBreak);
         NeoForge.EVENT_BUS.addListener(EvalWorldGuard::onServerTick);
         NeoForge.EVENT_BUS.addListener(EvalWorldGuard::onPlayerRespawn);
+        // 防复制护栏：玩家进入已评估房间的空间时自动还原工厂
+        NeoForge.EVENT_BUS.addListener(com.yansunsky.createcmpor.evaluation.AntiDupeSpaceEntryHandler::onServerTick);
 
         // 配置文件（含 enableStressOutput）
         modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);

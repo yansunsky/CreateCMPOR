@@ -7,6 +7,7 @@ import dev.compactmods.machines.api.room.RoomInstance;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.GlobalPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -358,6 +359,9 @@ public final class EvaluationCloneManager {
         }
         factory.installRestoreData(session.originalState(), session.originalBlockEntityNbt(),
                 result.stressProfile());
+        // 登记 roomCode → 工厂位置（玩家进入压缩空间时自动还原防复制用）
+        FactoryIndexSavedData.get(server).registerFactory(session.roomCode(),
+                GlobalPos.of(machineLevel.dimension(), pos));
         session.setFactoryInstalled(true);
         session.setState(EvaluationSession.State.CLEANING);
         data.changed();
