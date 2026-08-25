@@ -223,6 +223,7 @@ public final class EvaluationCloneManager {
         record.setStagingStatus(EvaluationManifest.StagingStatus.WRITTEN);
         runtime.sourceEntities.put(sourceChunk.pos(), sourceChunk.entities().copy());
         sourceChunk.poi().ifPresent(poi -> runtime.sourcePoi.put(sourceChunk.pos(), poi.copy()));
+        runtime.sourceTags.put(sourceChunk.pos(), sourceChunk.tag().copy());
         data.changed();
         notifyCloneProgress(server, session, manifest);
         runtime.clearOperation();
@@ -258,6 +259,26 @@ public final class EvaluationCloneManager {
         String hash = CanonicalNbtHasher.sha256(tag);
         EvaluationManifest.ChunkRecord record = requireChunk(manifest, runtime.chunk);
         if (!hash.equals(record.sourceHash())) {
+            // 探针：diff staging 读出 NBT 与源的顶层 key 差异（定位具体字段）
+            CompoundTag sourceTag = runtime.sourceTags.get(runtime.chunk);
+            if (sourceTag != null) {
+                java.util.Set<String> sourceKeys = sourceTag.getAllKeys();
+                java.util.Set<String> stagingKeys = tag.getAllKeys();
+                java.util.Set<String> onlySource = new java.util.TreeSet<>(sourceKeys);
+                onlySource.removeAll(stagingKeys);
+                java.util.Set<String> onlyStaging = new java.util.TreeSet<>(stagingKeys);
+                onlyStaging.removeAll(sourceKeys);
+                java.util.Set<String> common = new java.util.TreeSet<>(sourceKeys);
+                common.retainAll(stagingKeys);
+                java.util.List<String> changedCommon = new java.util.ArrayList<>();
+                for (String key : common) {
+                    if (!tag.get(key).equals(sourceTag.get(key))) {
+                        changedCommon.add(key);
+                    }
+                }
+                CreateCMPOR.LOGGER.error("[探针] staging 摘要不一致 @{}: 仅源有={} 仅staging有={} 共同但不同={}",
+                        runtime.chunk, onlySource, onlyStaging, changedCommon);
+            }
             // 探针：打印 staging 读出 NBT 与源 hash 的差异细节（排查摘要不一致）
             CreateCMPOR.LOGGER.error("[探针] staging 摘要不一致 @{}: staging={} source={} | stagingDV={} sourceDV={} | stagingStatus={}",
                     runtime.chunk,
@@ -815,6 +836,8 @@ public final class EvaluationCloneManager {
         private final ChunkStorage staging;
         private final Map<ChunkPos, ListTag> sourceEntities = new LinkedHashMap<>();
         private final Map<ChunkPos, CompoundTag> sourcePoi = new LinkedHashMap<>();
+        /** 探针：写 staging 时的源区块 tag（diff 排查摘要不一致）。 */
+        private final Map<ChunkPos, CompoundTag> sourceTags = new LinkedHashMap<>();
         private Map<ChunkPos, List<CompoundTag>> rewrittenEntities = Map.of();
         private Operation operation = Operation.NONE;
         private ChunkPos chunk;
