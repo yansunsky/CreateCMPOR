@@ -258,6 +258,13 @@ public final class EvaluationCloneManager {
         String hash = CanonicalNbtHasher.sha256(tag);
         EvaluationManifest.ChunkRecord record = requireChunk(manifest, runtime.chunk);
         if (!hash.equals(record.sourceHash())) {
+            // 探针：打印 staging 读出 NBT 与源 hash 的差异细节（排查摘要不一致）
+            CreateCMPOR.LOGGER.error("[探针] staging 摘要不一致 @{}: staging={} source={} | stagingDV={} sourceDV={} | stagingStatus={}",
+                    runtime.chunk,
+                    hash.length() > 16 ? hash.substring(0, 16) : hash,
+                    record.sourceHash().length() > 16 ? record.sourceHash().substring(0, 16) : record.sourceHash(),
+                    tag.getInt("DataVersion"), record.dataVersion(),
+                    tag.getString("Status"));
             throw new IllegalStateException("staging 摘要不一致：" + runtime.chunk);
         }
         record.setStagingHash(hash);
