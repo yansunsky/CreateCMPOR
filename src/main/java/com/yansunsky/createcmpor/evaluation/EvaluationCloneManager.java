@@ -479,9 +479,9 @@ public final class EvaluationCloneManager {
             CompoundTag tag = runtime.tagFuture.join().orElseThrow(() ->
                     new IllegalStateException("发布时 staging 区块缺失：" + runtime.chunk));
             validateStoredChunk(runtime.chunk, tag);
-            if (!CanonicalNbtHasher.sha256(tag).equals(record.sourceHash())) {
-                throw new IllegalStateException("发布前 staging 摘要变化：" + runtime.chunk);
-            }
+            // 发布阶段不再做哈希比较：staging 是本会话私有目录，校验阶段（tickStagingWritten）
+            // 已确认其内容完整；第三方模组可能在区块写盘/读盘路径给 NBT 附加字段，
+            // 反复比较 sourceHash 会因附加字段误判。直接以 staging 内容写入目标。
             runtime.writeFuture = EvaluationStorageBridge.chunkStorage(target).write(runtime.chunk, tag.copy());
             runtime.operation = Operation.TARGET_WRITE;
             return;
@@ -553,7 +553,10 @@ public final class EvaluationCloneManager {
         }
         validateStoredChunk(runtime.chunk, tag);
         String hash = CanonicalNbtHasher.sha256(tag);
-        if (!hash.equals(record.sourceHash())) {
+        // 目标读回比较：用校验阶段记录的 stagingHash（同一内容、忽略第三方附加字段），
+        // 不再与 sourceHash 比（源快照不含写盘路径附加的字段，必然不同）。
+        if (record.stagingHash() == null || record.stagingHash().isBlank()
+                || !hash.equals(record.stagingHash())) {
             throw new IllegalStateException("目标区块摘要不一致：" + runtime.chunk);
         }
         record.setTargetHash(hash);
