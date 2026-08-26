@@ -52,6 +52,15 @@ public final class EvaluationSession {
     /** 目标冲突取消标记：为 true 时 CLEANING 阶段会强制清理目标区域（即使未写入）。 */
     private boolean cleanTargetOnCancel;
 
+    /** 多分支评估（并行空间输入方块）：当前分支索引（0-based）。 */
+    private int branchIndex = 0;
+    /** 多分支评估：总分支数（并行方块配置物品数）；1 = 单分支普通评估。 */
+    private int branchCount = 1;
+    /** 多分支评估：各分支结果（运行时内存，重启后回滚）。 */
+    private final java.util.List<EvaluationVerdict.Result> branchResults = new java.util.ArrayList<>();
+    /** 分支间清理标记：advanceBranch 后进入 CLEANING 是"正常分支间清理"；失败清理会清掉此标记。 */
+    private boolean branchTransitionPending = false;
+
     public EvaluationSession(UUID id, UUID owner, GlobalPos machinePos, String roomCode,
                              BlockState originalState, CompoundTag originalBlockEntityNbt) {
         this(id, owner, machinePos, roomCode, originalState, originalBlockEntityNbt,
@@ -190,6 +199,8 @@ public final class EvaluationSession {
         tag.putString("rollback_message_key", rollbackMessageKey);
         tag.putBoolean("factory_installed", factoryInstalled);
         tag.putBoolean("clean_target_on_cancel", cleanTargetOnCancel);
+        tag.putInt("branch_index", branchIndex);
+        tag.putInt("branch_count", branchCount);
         return tag;
     }
 
@@ -232,6 +243,8 @@ public final class EvaluationSession {
                 rollbackMessageKey,
                 tag.getBoolean("factory_installed"));
         session.cleanTargetOnCancel = tag.getBoolean("clean_target_on_cancel");
+        session.branchIndex = tag.getInt("branch_index");
+        session.branchCount = Math.max(1, tag.getInt("branch_count"));
         return session;
     }
 
@@ -248,5 +261,42 @@ public final class EvaluationSession {
     /** 是否需要在 CLEANING 阶段强制清理目标区域。 */
     public boolean cleanTargetOnCancel() {
         return cleanTargetOnCancel;
+    }
+
+    // ===== 多分支评估（并行空间输入方块）=====
+
+    public int branchIndex() {
+        return branchIndex;
+    }
+
+    public int branchCount() {
+        return branchCount;
+    }
+
+    public void setBranchCount(int branchCount) {
+        this.branchCount = Math.max(1, branchCount);
+    }
+
+    public java.util.List<EvaluationVerdict.Result> branchResults() {
+        return branchResults;
+    }
+
+    /** 进入下一分支：记录已完成分支、推进索引、清空运行时结果。返回是否还有下一分支。 */
+    public boolean advanceBranch(EvaluationVerdict.Result result) {
+        branchResults.add(result);
+        branchIndex++;
+        evaluationResult = null;
+        branchTransitionPending = true;
+        return branchIndex < branchCount;
+    }
+
+    /** 分支间清理标记：CLEANING 完成后据此判断是"继续下一分支"还是"收尾/回滚"。 */
+    public boolean branchTransitionPending() {
+        return branchTransitionPending;
+    }
+
+    /** 清除分支间清理标记（CLEANING 完成、进入下一分支前调用）。 */
+    public void clearBranchTransitionPending() {
+        this.branchTransitionPending = false;
     }
 }

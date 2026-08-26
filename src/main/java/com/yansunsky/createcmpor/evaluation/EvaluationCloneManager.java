@@ -103,6 +103,8 @@ public final class EvaluationCloneManager {
     void requestCleanup(MinecraftServer server, EvaluationSavedData data, EvaluationSession session,
                         String messageKey) {
         session.setRollbackMessageKey(messageKey);
+        // 失败清理：不再是正常分支间过渡，清除标记防止 CLEANING 完成后误入下一分支
+        session.clearBranchTransitionPending();
         if (session.id().equals(publishingSession)) {
             publishingSession = null;
         }
@@ -672,6 +674,17 @@ public final class EvaluationCloneManager {
                         Component.translatable("message.createcmpor.factory.revert_hint"), false);
             }
             CreateCMPOR.LOGGER.info("评估会话 {} 固化收尾完成：副本已清理，工厂就绪", session.id());
+            return;
+        }
+        // 多分支评估：正常分支间清理（advanceBranch 后进入 CLEANING）且还有分支 → 重新克隆下一分支
+        if (session.branchTransitionPending() && session.branchIndex() < session.branchCount()) {
+            session.clearBranchTransitionPending();
+            manifest.resetForBranch();
+            session.setState(EvaluationSession.State.STAGING_SOURCE);
+            data.changed();
+            syncCriticalState(server, data);
+            CreateCMPOR.LOGGER.info("评估会话 {} 分支 {}/{} 副本已清理，开始下一分支克隆",
+                    session.id(), session.branchIndex(), session.branchCount());
             return;
         }
         session.setState(EvaluationSession.State.ROLLING_BACK);
