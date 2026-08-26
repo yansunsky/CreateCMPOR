@@ -392,7 +392,30 @@ public final class EvaluationCloneManager {
         }
         for (int i = 0; i < count; i++) {
             BlockPos pos = basePos.offset(0, i, 0);
-            // 空间处理：破坏重叠方块（掉落）；遇不可破坏方块（如基岩）→ 发布失败
+            if (i == 0) {
+                // 主位置是评估方块（EvaluatorBlock，不可破坏标记方块）的安装位置：
+                // 直接替换为工厂，不参与破坏检测（评估开始前已对上方 N-1 格做过预检测）。
+                machineLevel.removeBlockEntity(pos);
+                machineLevel.setBlockAndUpdate(pos,
+                        com.yansunsky.createcmpor.init.ModBlocks.FACTORY.get().defaultBlockState());
+                if (!(machineLevel.getBlockEntity(pos) instanceof com.yansunsky.createcmpor.block.FactoryBlockEntity factory)) {
+                    throw new IllegalStateException("工厂方块实体未创建 @" + pos);
+                }
+                factory.setRoomCode(session.roomCode());
+                factory.setGroupInfo(i, count);
+                EvaluationVerdict.Result branchResult = results.get(i);
+                if (EvaluationVerdict.VERDICT_REPLAY.equals(branchResult.verdict())) {
+                    factory.installPatterns(branchResult.replayIn(), branchResult.replayOut(),
+                            branchResult.energyReplayIn(), branchResult.energyReplayOut());
+                } else {
+                    factory.installRates(branchResult.inputRates(), branchResult.outputRates(),
+                            branchResult.inputEnergyRate(), branchResult.outputEnergyRate());
+                }
+                factory.installRestoreData(session.originalState(), session.originalBlockEntityNbt(),
+                        branchResult.stressProfile());
+                continue;
+            }
+            // 上方位置：破坏重叠方块（掉落）；遇不可破坏方块（如基岩）→ 发布失败（评估开始前已预检测，此处兜底）
             BlockState existing = machineLevel.getBlockState(pos);
             if (!existing.isAir()) {
                 float destroySpeed = existing.getDestroySpeed(machineLevel, pos);

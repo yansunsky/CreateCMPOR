@@ -67,6 +67,14 @@ public final class EvaluationManager {
             return StartResult.failure(Component.translatable("message.createcmpor.evaluation.machine_missing"));
         }
 
+        // 预检测：工厂将占用的位置（机器位置向上 N 格）必须是可破坏方块（生存可清理）。
+        // 不可破坏方块（如基岩）无法被生存模式移动，评估固化必然失败 → 评估开始前就阻止。
+        // 主位置（i=0）是评估方块的安装位置（EvaluatorBlock 不可破坏标记），无条件排除。
+        String blocked = precheckFactorySpace(server, machinePos, roomCode);
+        if (blocked != null) {
+            return StartResult.failure(Component.literal(blocked));
+        }
+
         BlockState originalState = machineLevel.getBlockState(machinePos.pos());
         boolean consumeLauncher = !player.isCreative();
         EvaluationSession session = new EvaluationSession(
@@ -96,11 +104,70 @@ public final class EvaluationManager {
         }
     }
 
-    public boolean isRoomLocked(MinecraftServer server, String roomCode) {
-        return EvaluationSavedData.get(server).sessionByRoom(roomCode).isPresent();
+    /**
+     * 评估开始前预检测：工厂固化将占用的位置（机器位置向上 N 格，N = 并行方块配置物品数，
+     * 无并行方块则为 1）必须全部是可破坏方块。不可破坏方块（destroySpeed < 0，如基岩）无法被
+     * 生存模式移动，固化必然失败 → 在评估开始前就阻止，让玩家先清理。
+     *
+     * <p>主位置（i = 0，机器位置本身）无条件排除：评估期间它被不可破坏的评估方块（EvaluatorBlock）
+     * 替代，固化时直接替换为工厂，不参与破坏检测。</p>
+     *
+     * @return 第一个不可破坏方块的位置描述；全部可破坏（或无可检测问题）返回 null
+     */
+    private static String precheckFactorySpace(MinecraftServer server, GlobalPos machinePos, String roomCode) {
+        ServerLevel machineLevel = server.getLevel(machinePos.dimension());
+        if (machineLevel == null) {
+            return null;
+        }
+        // 与 activateIoBlocks 一致：房间内第一个并行空间输入方块的配置物品数 = 分支数
+        int[] factoryCount = {1};
+        CompactMachines.room(server, roomCode).ifPresent(room -> {
+            AABB bounds = room.boundaries().outerBounds();
+            int startX = (int) Math.floor(bounds.minX);
+            int startY = (int) Math.floor(bounds.minY);
+            int startZ = (int) Math.floor(bounds.minZ);
+            int endX = (int) Math.floor(bounds.maxX - 1.0E-5);
+            int endY = (int) Math.floor(bounds.maxY - 1.0E-5);
+            int endZ = (int) Math.floor(bounds.maxZ - 1.0E-5);
+            outer:
+            for (int x = startX; x <= endX; x++) {
+                for (int y = startY; y <= endY; y++) {
+                    for (int z = startZ; z <= endZ; z++) {
+                        BlockPos pos = new BlockPos(x, y, z);
+                        if (room.level().getBlockState(pos).is(ModBlocks.PARALLEL_INPUT.get())) {
+                            if (room.level().getBlockEntity(pos)
+                                    instanceof com.yansunsky.createcmpor.block.ParallelInputBlockEntity parallel
+                                    && parallel.configuredItemCount() > 1) {
+                                factoryCount[0] = parallel.configuredItemCount();
+                            }
+                            break outer;
+                        }
+                    }
+                }
+            }
+        });
+
+        BlockPos base = machinePos.pos();
+        for (int i = 0; i < factoryCount[0]; i++) {
+            if (i == 0) {
+                continue; // 主位置是评估方块安装位置，无条件排除
+            }
+            BlockPos pos = base.offset(0, i, 0);
+            BlockState state = machineLevel.getBlockState(pos);
+            if (!state.isAir() && state.getDestroySpeed(machineLevel, pos) < 0) {
+                CreateCMPOR.LOGGER.warn("评估预检测失败：工厂位置 {} 有不可破坏方块 {}",
+                        pos, state.getBlock());
+                return "工厂位置 " + pos.toShortString() + " 有不可破坏方块 "
+                        + state.getBlock().getName().getString()
+                        + "（无法被生存模式移动），请先清理后再开始评估";
+            }
+        }
+        return null;
     }
 
-    public boolean isMachineLocked(MinecraftServer server, GlobalPos machinePos) {
+    public boolean isRoomLocked(MinecraftServer server, String roomCode) {
+        return EvaluationSavedData.get(server).sessionByRoom(roomCode).isPresent();
+    }    public boolean isMachineLocked(MinecraftServer server, GlobalPos machinePos) {
         return EvaluationSavedData.get(server).sessionByMachine(machinePos).isPresent();
     }
 
