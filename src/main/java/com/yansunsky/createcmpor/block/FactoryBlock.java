@@ -254,7 +254,61 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
         if (!(level instanceof ServerLevel serverLevel)) {
             return ItemInteractionResult.SUCCESS;
         }
+        // 多工厂组还原：同 roomCode 组内所有工厂一起还原（数量校验）
+        if (factory.getFactoryCount() > 1 && !factory.getRoomCode().isBlank()) {
+            return revertGroup(serverLevel, pos, factory, stack, player);
+        }
         if (factory.revertToMachine(serverLevel)) {
+            if (!player.isCreative()) {
+                stack.shrink(1);
+            }
+            player.displayClientMessage(
+                    Component.translatable("message.createcmpor.factory.reverted"), false);
+        } else {
+            player.displayClientMessage(
+                    Component.translatable("message.createcmpor.factory.revert_failed"), true);
+        }
+        return ItemInteractionResult.SUCCESS;
+    }
+
+    /**
+     * 多工厂组还原：同 roomCode 组内所有工厂一起还原。
+     * <ul>
+     *   <li>数量校验：索引中同 roomCode 的工厂数 == factoryCount 才还原；否则提示"请重新排列子工厂"。</li>
+     *   <li>被右键的还原为原 CM 机器，其余工厂直接消失（不掉落）。</li>
+     * </ul>
+     */
+    private static ItemInteractionResult revertGroup(ServerLevel level, BlockPos pos,
+                                                     FactoryBlockEntity factory, ItemStack stack, Player player) {
+        String roomCode = factory.getRoomCode();
+        int expected = factory.getFactoryCount();
+        java.util.List<net.minecraft.core.GlobalPos> positions =
+                com.yansunsky.createcmpor.evaluation.FactoryIndexSavedData.get(level.getServer())
+                        .factoriesForRoom(roomCode).orElse(java.util.List.of());
+        java.util.List<BlockPos> present = new java.util.ArrayList<>();
+        for (net.minecraft.core.GlobalPos gp : positions) {
+            if (gp.dimension().equals(level.dimension()) && level.isLoaded(gp.pos())
+                    && level.getBlockEntity(gp.pos()) instanceof FactoryBlockEntity) {
+                present.add(gp.pos());
+            }
+        }
+        if (present.size() != expected) {
+            player.displayClientMessage(
+                    Component.translatable("message.createcmpor.factory.group_rearrange",
+                            expected, present.size()), true);
+            return ItemInteractionResult.SUCCESS;
+        }
+        // 数量正确：被右键的还原为原机器，其余消失
+        for (BlockPos p : present) {
+            if (!p.equals(pos) && level.getBlockEntity(p) instanceof FactoryBlockEntity other) {
+                level.removeBlockEntity(p);
+                level.setBlock(p, net.minecraft.world.level.block.Blocks.AIR.defaultBlockState(),
+                        net.minecraft.world.level.block.Block.UPDATE_ALL);
+            }
+        }
+        com.yansunsky.createcmpor.evaluation.FactoryIndexSavedData.get(level.getServer())
+                .removeFactory(roomCode);
+        if (factory.revertToMachine(level)) {
             if (!player.isCreative()) {
                 stack.shrink(1);
             }

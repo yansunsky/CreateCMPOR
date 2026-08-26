@@ -13,16 +13,20 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.saveddata.SavedData;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
 /**
- * 已固化工厂的持久化索引：{@code roomCode → 主世界工厂位置}。
+ * 已固化工厂的持久化索引：{@code roomCode → 主世界工厂位置列表}。
  *
  * <p><b>与 {@link EvaluationSavedData} 独立</b>：评估会话结束后该索引必须保留
- * （还原数据在工厂 BE 内，索引用于在玩家进入压缩空间时反查对应工厂，自动还原防复制）。
- * </p>
+ * （还原数据在工厂 BE 内，索引用于在玩家进入压缩空间时反查对应工厂，自动还原防复制；
+ * 以及多工厂组还原时数量校验）。</p>
+ *
+ * <p>列表第一个元素 = 主位置（原机器位），其余为多工厂组中向上堆叠的成员。</p>
  *
  * <p>写入时机：工厂固化（{@code EvaluationCloneManager.tickSolidifying}）时。
  * 清除时机：工厂被启动棒还原（{@code FactoryBlockEntity.revertToMachine}）时。
@@ -34,7 +38,7 @@ public final class FactoryIndexSavedData extends SavedData {
     private static final Factory<FactoryIndexSavedData> FACTORY = new Factory<>(
             FactoryIndexSavedData::new, FactoryIndexSavedData::load);
 
-    private final Map<String, GlobalPos> factoryByRoom = new HashMap<>();
+    private final Map<String, List<GlobalPos>> factoryByRoom = new HashMap<>();
 
     public static FactoryIndexSavedData get(MinecraftServer server) {
         return server.overworld().getDataStorage().computeIfAbsent(FACTORY, DATA_NAME);
@@ -46,48 +50,89 @@ public final class FactoryIndexSavedData extends SavedData {
         for (int i = 0; i < entries.size(); i++) {
             CompoundTag entry = entries.getCompound(i);
             String roomCode = entry.getString("room");
-            if (roomCode.isBlank() || !entry.contains("dimension") || !entry.contains("pos")) {
+            if (roomCode.isBlank()) {
                 continue;
             }
-            String dimension = entry.getString("dimension");
-            Optional<BlockPos> pos = NbtUtils.readBlockPos(entry, "pos");
-            if (pos.isEmpty() || dimension.isBlank()) {
-                continue;
+            List<GlobalPos> positions = new ArrayList<>();
+            if (entry.contains("dimension") && entry.contains("pos")) {
+                String dimension = entry.getString("dimension");
+                Optional<BlockPos> pos = NbtUtils.readBlockPos(entry, "pos");
+                if (pos.isPresent() && !dimension.isBlank()) {
+                    positions.add(GlobalPos.of(
+                            ResourceKey.create(net.minecraft.core.registries.Registries.DIMENSION,
+                                    net.minecraft.resources.ResourceLocation.tryParse(dimension)),
+                            pos.get()));
+                }
             }
-            data.factoryByRoom.put(roomCode, GlobalPos.of(
-                    ResourceKey.create(net.minecraft.core.registries.Registries.DIMENSION,
-                            net.minecraft.resources.ResourceLocation.tryParse(dimension)),
-                    pos.get()));
+            // 旧格式可能只有单位置；新格式有多位置列表
+            if (entry.contains("positions", Tag.TAG_LIST)) {
+                ListTag posList = entry.getList("positions", Tag.TAG_COMPOUND);
+                String dimension = entry.getString("dimension");
+                for (int p = 0; p < posList.size(); p++) {
+                    Optional<BlockPos> ppos = NbtUtils.readBlockPos(posList.getCompound(p), "pos");
+                    if (ppos.isPresent() && !dimension.isBlank()) {
+                        positions.add(GlobalPos.of(
+                                ResourceKey.create(net.minecraft.core.registries.Registries.DIMENSION,
+                                        net.minecraft.resources.ResourceLocation.tryParse(dimension)),
+                                ppos.get()));
+                    }
+                }
+            }
+            if (!positions.isEmpty()) {
+                data.factoryByRoom.put(roomCode, positions);
+            }
         }
         return data;
     }
 
-    /** 固化工厂时登记：roomCode → 主世界工厂位置。 */
-    public void registerFactory(String roomCode, GlobalPos factoryPos) {
-        factoryByRoom.put(roomCode, factoryPos);
+    /** 固化工厂时登记整组：roomCode → 工厂位置列表（第一个为主位置）。 */
+    public void registerFactory(String roomCode, List<GlobalPos> positions) {
+        if (positions == null || positions.isEmpty()) {
+            return;
+        }
+        factoryByRoom.put(roomCode, new ArrayList<>(positions));
         setDirty();
     }
 
-    /** 工厂还原时移除索引。 */
+    /** 工厂还原时移除索引（整组）。 */
     public void removeFactory(String roomCode) {
         if (factoryByRoom.remove(roomCode) != null) {
             setDirty();
         }
     }
 
-    /** 按房间号查工厂位置；未命中返回 empty（旧存档兼容：仅 WARN，不阻塞）。 */
-    public Optional<GlobalPos> factoryForRoom(String roomCode) {
+    /** 按房间号查工厂位置列表（第一个 = 主位置）；未命中返回 empty。 */
+    public Optional<List<GlobalPos>> factoriesForRoom(String roomCode) {
         return Optional.ofNullable(factoryByRoom.get(roomCode));
+    }
+
+    /** 按房间号查主位置工厂（防复制自动还原用）；未命中返回 empty（旧存档兼容：仅 WARN，不阻塞）。 */
+    public Optional<GlobalPos> factoryForRoom(String roomCode) {
+        List<GlobalPos> positions = factoryByRoom.get(roomCode);
+        if (positions == null || positions.isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.of(positions.get(0));
     }
 
     @Override
     public CompoundTag save(CompoundTag tag, HolderLookup.Provider registries) {
         ListTag entries = new ListTag();
-        factoryByRoom.forEach((roomCode, globalPos) -> {
+        factoryByRoom.forEach((roomCode, positions) -> {
             CompoundTag entry = new CompoundTag();
             entry.putString("room", roomCode);
-            entry.putString("dimension", globalPos.dimension().location().toString());
-            entry.put("pos", NbtUtils.writeBlockPos(globalPos.pos()));
+            if (!positions.isEmpty()) {
+                GlobalPos first = positions.get(0);
+                entry.putString("dimension", first.dimension().location().toString());
+                entry.put("pos", NbtUtils.writeBlockPos(first.pos()));
+            }
+            ListTag posList = new ListTag();
+            for (GlobalPos pos : positions) {
+                CompoundTag posTag = new CompoundTag();
+                posTag.put("pos", NbtUtils.writeBlockPos(pos.pos()));
+                posList.add(posTag);
+            }
+            entry.put("positions", posList);
             entries.add(entry);
         });
         tag.put("factories", entries);

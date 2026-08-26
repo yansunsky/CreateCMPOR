@@ -12,6 +12,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.chunk.storage.ChunkStorage;
 import org.jetbrains.annotations.Nullable;
@@ -365,41 +366,78 @@ public final class EvaluationCloneManager {
 
     private void tickSolidifying(MinecraftServer server, EvaluationSavedData data,
                                  EvaluationSession session) {
-        EvaluationVerdict.Result result = session.evaluationResult();
-        if (result == null || result.rejected()) {
+        EvaluationVerdict.Result lastResult = session.evaluationResult();
+        if (lastResult == null || lastResult.rejected()) {
             requestCleanup(server, data, session, "message.createcmpor.evaluation.clone_failed");
             return;
+        }
+        // 结果列表：单分支用最后一次判定；多分支用全部 branchResults（advanceBranch 已逐个记录）
+        List<EvaluationVerdict.Result> results = new ArrayList<>(session.branchResults());
+        if (results.isEmpty()) {
+            results.add(lastResult);
         }
         ServerLevel machineLevel = server.getLevel(session.machinePos().dimension());
         if (machineLevel == null) {
             throw new IllegalStateException("机器维度未加载：" + session.machinePos().dimension().location());
         }
-        BlockPos pos = session.machinePos().pos();
-        machineLevel.removeBlockEntity(pos);
-        machineLevel.setBlockAndUpdate(pos, com.yansunsky.createcmpor.init.ModBlocks.FACTORY.get().defaultBlockState());
-        if (!(machineLevel.getBlockEntity(pos) instanceof com.yansunsky.createcmpor.block.FactoryBlockEntity factory)) {
-            throw new IllegalStateException("工厂方块实体未创建");
+        BlockPos basePos = session.machinePos().pos();
+        int count = results.size();
+        // 发布前提示：工厂将占用主位置向上 N 个方块（含覆盖掉落）
+        if (count > 1) {
+            notifyOwner(server, session, Component.literal(
+                    "多分支评估完成，将生成 " + count + " 个工厂：主位置 " + basePos
+                            + " 向上 " + count + " 格（重叠方块将被破坏掉落）"));
+            CreateCMPOR.LOGGER.info("评估会话 {} 多分支固化：主位置 {} 向上 {} 个工厂",
+                    session.id(), basePos, count);
         }
-        factory.setRoomCode(session.roomCode());
-        if (EvaluationVerdict.VERDICT_REPLAY.equals(result.verdict())) {
-            factory.installPatterns(result.replayIn(), result.replayOut(),
-                    result.energyReplayIn(), result.energyReplayOut());
-        } else {
-            factory.installRates(result.inputRates(), result.outputRates(),
-                    result.inputEnergyRate(), result.outputEnergyRate());
+        for (int i = 0; i < count; i++) {
+            BlockPos pos = basePos.offset(0, i, 0);
+            // 空间处理：破坏重叠方块（掉落）；遇不可破坏方块（如基岩）→ 发布失败
+            BlockState existing = machineLevel.getBlockState(pos);
+            if (!existing.isAir()) {
+                float destroySpeed = existing.getDestroySpeed(machineLevel, pos);
+                if (destroySpeed < 0) {
+                    requestCleanup(server, data, session, "message.createcmpor.evaluation.solidify_blocked");
+                    CreateCMPOR.LOGGER.error("评估会话 {} 固化失败：位置 {} 有不可破坏方块 {}",
+                            session.id(), pos, existing.getBlock());
+                    return;
+                }
+                machineLevel.destroyBlock(pos, true);
+                CreateCMPOR.LOGGER.info("评估会话 {} 固化：破坏 {} 处重叠方块 {}",
+                        session.id(), pos, existing.getBlock());
+            }
+            machineLevel.removeBlockEntity(pos);
+            machineLevel.setBlockAndUpdate(pos,
+                    com.yansunsky.createcmpor.init.ModBlocks.FACTORY.get().defaultBlockState());
+            if (!(machineLevel.getBlockEntity(pos) instanceof com.yansunsky.createcmpor.block.FactoryBlockEntity factory)) {
+                throw new IllegalStateException("工厂方块实体未创建 @" + pos);
+            }
+            factory.setRoomCode(session.roomCode());
+            factory.setGroupInfo(i, count);
+            EvaluationVerdict.Result branchResult = results.get(i);
+            if (EvaluationVerdict.VERDICT_REPLAY.equals(branchResult.verdict())) {
+                factory.installPatterns(branchResult.replayIn(), branchResult.replayOut(),
+                        branchResult.energyReplayIn(), branchResult.energyReplayOut());
+            } else {
+                factory.installRates(branchResult.inputRates(), branchResult.outputRates(),
+                        branchResult.inputEnergyRate(), branchResult.outputEnergyRate());
+            }
+            factory.installRestoreData(session.originalState(), session.originalBlockEntityNbt(),
+                    branchResult.stressProfile());
         }
-        factory.installRestoreData(session.originalState(), session.originalBlockEntityNbt(),
-                result.stressProfile());
-        // 登记 roomCode → 工厂位置（玩家进入压缩空间时自动还原防复制用）
-        FactoryIndexSavedData.get(server).registerFactory(session.roomCode(),
-                GlobalPos.of(machineLevel.dimension(), pos));
+        // 登记 roomCode → 全部工厂位置（第一个=主位置；玩家进入压缩空间自动还原防复制 + 多工厂组还原数量校验用）
+        List<GlobalPos> groupPositions = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            groupPositions.add(GlobalPos.of(machineLevel.dimension(), basePos.offset(0, i, 0)));
+        }
+        FactoryIndexSavedData.get(server).registerFactory(session.roomCode(), groupPositions);
         session.setFactoryInstalled(true);
         session.setState(EvaluationSession.State.CLEANING);
         data.changed();
         syncCriticalState(server, data);
         notifyOwner(server, session, Component.translatable("message.createcmpor.factory.installed"));
-        CreateCMPOR.LOGGER.info("评估会话 {} 工厂已固化（{} 模式），开始清理副本",
-                session.id(), result.verdict());
+        CreateCMPOR.LOGGER.info("评估会话 {} 已固化 {} 个工厂，开始清理副本",
+                session.id(), count);
     }
 
     private void tickPublishing(MinecraftServer server, EvaluationSavedData data,
