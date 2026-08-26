@@ -119,13 +119,13 @@ public class Config {
                 .defineInRange("maxConcurrentEvaluations", 4, 1, 16);
         EVALUATE_SECONDS = builder
                 .comment(
-                        "评估时长（秒）。开发阶段配置文件中覆盖为 60。",
-                        "Evaluation duration (seconds). Overridden to 60 in dev config files.")
-                .defineInRange("evaluateSeconds", 300, 1, 3600);
+                        "评估时长（秒）。",
+                        "Evaluation duration (seconds).")
+                .defineInRange("evaluateSeconds", 60, 1, 3600);
         RECORD_START = builder
                 .comment(
-                        "评估开始时的预热秒数（该时段不计入结果）。开发阶段配置文件中覆盖为 0。",
-                        "Warmup seconds at evaluation start (not counted in the result). Overridden to 0 in dev config files.")
+                        "评估开始时的预热秒数（该时段不计入结果）。",
+                        "Warmup seconds at evaluation start (not counted in the result).")
                 .defineInRange("recordStart", 60, 0, 600);
         EVALUATION_MODE = builder
                 .comment(
