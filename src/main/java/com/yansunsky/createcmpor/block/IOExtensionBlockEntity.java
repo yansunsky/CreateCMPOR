@@ -143,6 +143,11 @@ public class IOExtensionBlockEntity extends KineticBlockEntity {
         Set<Long> visited = new HashSet<>();
         Deque<BlockPos> queue = new ArrayDeque<>();
 
+        // 起点隔离：本方块自身加入 visited，防止 BFS 从起始端扩展时绕回另一侧
+        // （否则"正端出发"会经链上其他成员绕回负端收集到工厂，导致两端都判为
+        // 触达工厂而误自毁——连续拓展时旧方块被破坏的根因）。
+        visited.add(worldPosition.asLong());
+
         BlockPos first = worldPosition.relative(startDir);
         BlockState fs = level.getBlockState(first);
         if (isIoExtensionState(fs) && fs.getValue(IOExtensionBlock.AXIS) == axis) {
