@@ -82,7 +82,11 @@ public class CreateCMPOR {
 
     private void commonSetup(FMLCommonSetupEvent event) {
         // 在主线程安全地向 Create 注册应力值（不能用 CStress——它对非 Create 方块抛异常）
-        event.enqueueWork(ModBlocks::registerStressValues);
+        event.enqueueWork(() -> {
+            ModBlocks.registerStressValues();
+            // 蓝图打印安全：应力方块激活态不允许被蓝图复制
+            com.yansunsky.createcmpor.init.BlueprintSafety.register();
+        });
     }
 
     /**

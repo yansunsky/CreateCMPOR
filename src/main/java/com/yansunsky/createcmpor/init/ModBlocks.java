@@ -8,6 +8,7 @@ import com.yansunsky.createcmpor.block.InputBlock;
 import com.yansunsky.createcmpor.block.IOExtensionBlock;
 import com.yansunsky.createcmpor.block.OutputBlock;
 import com.yansunsky.createcmpor.block.StressInputBlock;
+import com.yansunsky.createcmpor.block.StressInputBlockEntity;
 import com.yansunsky.createcmpor.block.StressOutputBlock;
 import com.simibubi.create.api.stress.BlockStressValues;
 import net.minecraft.core.BlockPos;
@@ -155,6 +156,9 @@ public class ModBlocks {
     }
 
     public static void registerStressValues() {
+        // 应力输入方块：与创造马达一致——容量 16384 SU + 生成转速 16 RPM（tooltip 显示"应力量：16384x转/分钟"）
         BlockStressValues.CAPACITIES.register(STRESS_INPUT.get(), () -> 16384.0);
+        BlockStressValues.RPM.register(STRESS_INPUT.get(),
+                new BlockStressValues.GeneratedRpm(StressInputBlockEntity.DEFAULT_SPEED, true));
     }
 }

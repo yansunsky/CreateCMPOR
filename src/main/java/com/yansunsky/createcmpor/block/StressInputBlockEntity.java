@@ -1,23 +1,35 @@
 package com.yansunsky.createcmpor.block;
 
+import com.simibubi.create.api.equipment.goggles.IHaveGoggleInformation;
+import com.simibubi.create.content.kinetics.KineticNetwork;
+import com.simibubi.create.content.kinetics.base.GeneratingKineticBlockEntity;
+import com.simibubi.create.content.kinetics.motor.KineticScrollValueBehaviour;
+import com.simibubi.create.foundation.blockEntity.behaviour.BlockEntityBehaviour;
+import com.simibubi.create.foundation.blockEntity.behaviour.ValueBoxTransform;
+import com.simibubi.create.foundation.utility.CreateLang;
 import com.yansunsky.createcmpor.CreateCMPOR;
 import com.yansunsky.createcmpor.init.ModBlockEntities;
 import com.yansunsky.createcmpor.stress.StressEvaluationRegistry;
-import com.simibubi.create.content.kinetics.KineticNetwork;
-import com.simibubi.create.content.kinetics.base.GeneratingKineticBlockEntity;
-import com.simibubi.create.foundation.blockEntity.behaviour.BlockEntityBehaviour;
+import net.createmod.catnip.math.AngleHelper;
+import net.createmod.catnip.math.VecHelper;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.core.Direction.Axis;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.chat.Component;
+import net.minecraft.world.level.LevelAccessor;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.List;
 
 /**
  * 应力输入方块的方块实体（放置于压缩空间内部）。
  *
- * <p>评估期激活后作为<b>应力源</b>（类创造马达），提供虚拟应力容量（16384 SU）和转速（32 RPM），
- * 驱动内部机器运转以便测得真实应力消耗。每秒采样网络的三维度数据并上报：
+ * <p>评估期激活后作为<b>应力源</b>（类创造马达）：提供虚拟应力容量（16384 SU）和可调转速
+ * （默认 16 RPM，右键拖拽注记框调整 -256~256 支持正反转）。驱动内部机器运转以便测得真实
+ * 应力消耗。每秒采样网络的三维度数据并上报：
  * <ul>
  *     <li>{@code capacity}：网络总应力上限（含本方块提供的虚拟容量）</li>
  *     <li>{@code stress}：网络总应力消耗</li>
@@ -29,7 +41,10 @@ import java.util.List;
  */
 public class StressInputBlockEntity extends GeneratingKineticBlockEntity {
 
-    public static final int INPUT_SPEED = 32;
+    public static final int DEFAULT_SPEED = 16;
+    public static final int MAX_SPEED = 256;
+
+    public KineticScrollValueBehaviour generatedSpeed;
 
     private String roomCode;
     private int sampleCooldown = 0;
@@ -41,6 +56,14 @@ public class StressInputBlockEntity extends GeneratingKineticBlockEntity {
     @Override
     public void addBehaviours(List<BlockEntityBehaviour> behaviours) {
         super.addBehaviours(behaviours);
+        int max = MAX_SPEED;
+        generatedSpeed = new KineticScrollValueBehaviour(
+                CreateLang.translateDirect("kinetics.creative_motor.rotation_speed"),
+                this, new MotorValueBox());
+        generatedSpeed.between(-max, max);
+        generatedSpeed.value = DEFAULT_SPEED;
+        generatedSpeed.withCallback(i -> this.updateGeneratedRotation());
+        behaviours.add(generatedSpeed);
     }
 
     @Override
@@ -62,7 +85,7 @@ public class StressInputBlockEntity extends GeneratingKineticBlockEntity {
     public float getGeneratedSpeed() {
         if (!isActive())
             return 0;
-        return convertToDirection(INPUT_SPEED, getBlockState().getValue(StressInputBlock.FACING));
+        return convertToDirection(generatedSpeed.getValue(), getBlockState().getValue(StressInputBlock.FACING));
     }
 
     @Override
@@ -115,6 +138,53 @@ public class StressInputBlockEntity extends GeneratingKineticBlockEntity {
 
     public void onActiveChanged() {
         updateGeneratedRotation();
+    }
+
+    // ===== 护目镜 tooltip =====
+
+    @Override
+    public boolean addToGoggleTooltip(List<Component> tooltip, boolean isPlayerSneaking) {
+        super.addToGoggleTooltip(tooltip, isPlayerSneaking);
+        // 提示：评估时自动激活提供应力（右键注记框可调整转速）
+        net.createmod.catnip.lang.Lang.builder("createcmpor")
+                .translate("tooltip.stress_input.auto_activate")
+                .forGoggles(tooltip, 1);
+        return true;
+    }
+
+    /** 数值注记框位置：参照创造马达，位于朝向反面的半侧。 */
+    static class MotorValueBox extends ValueBoxTransform.Sided {
+        @Override
+        protected Vec3 getSouthLocation() {
+            return VecHelper.voxelSpace(8, 8, 12.5);
+        }
+
+        @Override
+        public Vec3 getLocalOffset(LevelAccessor level, BlockPos pos, BlockState state) {
+            Direction facing = state.getValue(StressInputBlock.FACING);
+            return super.getLocalOffset(level, pos, state).add(Vec3.atLowerCornerOf(facing.getNormal())
+                    .scale(-1 / 16f));
+        }
+
+        @Override
+        public void rotate(LevelAccessor level, BlockPos pos, BlockState state, com.mojang.blaze3d.vertex.PoseStack ms) {
+            super.rotate(level, pos, state, ms);
+            Direction facing = state.getValue(StressInputBlock.FACING);
+            if (facing.getAxis() == Axis.Y)
+                return;
+            if (getSide() != Direction.UP)
+                return;
+            dev.engine_room.flywheel.lib.transform.TransformStack.of(ms)
+                    .rotateZDegrees(-AngleHelper.horizontalAngle(facing) + 180);
+        }
+
+        @Override
+        protected boolean isSideActive(BlockState state, Direction direction) {
+            Direction facing = state.getValue(StressInputBlock.FACING);
+            if (facing.getAxis() != Axis.Y && direction == Direction.DOWN)
+                return false;
+            return direction.getAxis() != facing.getAxis();
+        }
     }
 
     @Override
