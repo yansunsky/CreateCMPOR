@@ -159,6 +159,11 @@ public class ParallelInputBlockEntity extends BaseIOBlockEntity {
         return branchIndex;
     }
 
+    /** 配置的物品数量（评估调度器用于确定总分支数）。 */
+    public int configuredItemCount() {
+        return items.size();
+    }
+
     /** 分支模式下只返回对应物品；正常模式返回全部白名单物品。 */
     private java.util.List<ResourceLocation> branchItems() {
         if (branchIndex >= 0 && branchIndex < items.size()) {

@@ -158,6 +158,19 @@ public final class EvaluationManifest {
         this.targetReady = targetReady;
     }
 
+    /**
+     * 多分支评估：清理副本完成后重置本清单的克隆/发布状态，供下一分支重新克隆。
+     * （房间保持冻结，源 chunk 数据不变，直接从源重新走 STAGING_SOURCE → … → PUBLISHED。）
+     */
+    public void resetForBranch() {
+        this.targetWriteIntent = false;
+        this.ticketsAdded = false;
+        this.targetReady = false;
+        for (ChunkRecord chunk : chunks) {
+            chunk.resetForBranch();
+        }
+    }
+
     public int entityCount() {
         return entityCount;
     }
@@ -339,6 +352,20 @@ public final class EvaluationManifest {
 
         private ChunkRecord(ChunkPos chunkPos) {
             this.chunkPos = chunkPos;
+        }
+
+        /** 多分支评估：下一分支重新克隆前重置本区块的读取/暂存/发布状态。 */
+        private void resetForBranch() {
+            this.sourceStatus = SourceStatus.MISSING;
+            this.stagingStatus = StagingStatus.NONE;
+            this.publishStatus = PublishStatus.NONE;
+            this.sourceHash = "";
+            this.stagingHash = "";
+            this.targetHash = "";
+            this.dataVersion = -1;
+            this.hadSourceRecord = false;
+            this.hadTargetRecord = false;
+            this.error = "";
         }
 
         public ChunkPos chunkPos() {

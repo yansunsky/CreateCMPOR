@@ -5,6 +5,7 @@ import com.yansunsky.createcmpor.CreateCMPOR;
 import com.yansunsky.createcmpor.block.BaseIOBlock;
 import com.yansunsky.createcmpor.block.BaseIOBlockEntity;
 import com.yansunsky.createcmpor.block.EvaluatorBlockEntity;
+import com.yansunsky.createcmpor.block.ParallelInputBlockEntity;
 import com.yansunsky.createcmpor.block.StressInputBlock;
 import com.yansunsky.createcmpor.block.StressInputBlockEntity;
 import com.yansunsky.createcmpor.block.StressOutputBlock;
@@ -109,7 +110,7 @@ final class EvaluationScheduler {
         // S0 初次扫描必须在 IO 激活前：代表房间"未开工"的初始态（防刷兜底基准，过滤中间产物用）
         state.s0 = EvaluationAudit.scan(target, bounds);
         EvaluationAudit.logInventory("S0", state.s0);
-        int ioCount = activateIoBlocks(target, bounds, session.roomCode());
+        int ioCount = activateIoBlocks(target, bounds, session.roomCode(), session);
         CreateCMPOR.LOGGER.info("评估会话 {} 已激活 {} 个 IO 方块", session.id(), ioCount);
 
         Map<EvaluationTrace.FlowKey, Long> floor = new HashMap<>();
@@ -212,20 +213,44 @@ final class EvaluationScheduler {
         }
         EvaluationTicketManager.switchToBlockTicking(target, manifest);
         session.setEvaluationResult(state.result);
-        // REJECTED 直接回滚；否则进入固化流程（SOLIDIFYING 由 CloneManager 编排）
-        session.setState(state.result.rejected()
-                ? EvaluationSession.State.ROLLING_BACK
-                : EvaluationSession.State.SOLIDIFYING);
+        if (state.result.rejected()) {
+            // REJECTED 直接回滚
+            session.setState(EvaluationSession.State.ROLLING_BACK);
+            data.changed();
+            EvaluationCloneManager.syncCritical(server, data);
+            notifyOwner(server, session, Component.literal("评估结论：" + state.result.verdict()
+                    + "（" + state.result.rejectReason() + "）"));
+            CreateCMPOR.LOGGER.info("评估会话 {} 结论 {}：{}",
+                    session.id(), state.result.verdict(), state.result.detail());
+            cleanup(session.id(), session.roomCode());
+            return;
+        }
+        // 多分支评估：还有分支则清理副本并重新克隆（A2：每分支独立克隆），否则固化
+        boolean hasNextBranch = session.advanceBranch(state.result);
+        CreateCMPOR.LOGGER.info("评估会话 {} 分支 {}/{} 结论 {}：{}",
+                session.id(), session.branchIndex(), session.branchCount(),
+                state.result.verdict(), state.result.detail());
+        if (hasNextBranch) {
+            // 进入 CLEANING 清理副本；完成后由 CloneManager 判断还有分支 → 回 STAGING_SOURCE
+            session.setState(EvaluationSession.State.CLEANING);
+            data.changed();
+            EvaluationCloneManager.syncCritical(server, data);
+            notifyOwner(server, session, Component.literal("分支 " + session.branchIndex()
+                    + "/" + session.branchCount() + " 评估完成，开始下一分支"));
+            cleanup(session.id(), session.roomCode());
+            return;
+        }
+        // 全部分支完成：进入固化流程（SOLIDIFYING 由 CloneManager 编排）
+        session.setState(EvaluationSession.State.SOLIDIFYING);
         data.changed();
         EvaluationCloneManager.syncCritical(server, data);
-        notifyOwner(server, session, Component.literal("评估结论：" + state.result.verdict()
-                + (state.result.rejected() ? "（" + state.result.rejectReason() + "）" : "")));
-        CreateCMPOR.LOGGER.info("评估会话 {} 结论 {}：{}",
+        notifyOwner(server, session, Component.literal("评估结论：" + state.result.verdict()));
+        CreateCMPOR.LOGGER.info("评估会话 {} 全部分支完成，结论 {}：{}",
                 session.id(), state.result.verdict(), state.result.detail());
         cleanup(session.id(), session.roomCode());
     }
 
-    private static int activateIoBlocks(ServerLevel target, AABB bounds, String roomCode) {
+    private static int activateIoBlocks(ServerLevel target, AABB bounds, String roomCode, EvaluationSession session) {
         int[] count = new int[1];
         forEachBlock(target, bounds, (pos, state) -> {
             Block block = state.getBlock();
@@ -238,6 +263,24 @@ final class EvaluationScheduler {
                     // 诊断：打印 IO 方块详情（白名单是否完整复制）
                     CreateCMPOR.LOGGER.info("评估会话 IO 激活 {} {} 白名单: {}",
                             block == ModBlocks.INPUT.get() ? "输入" : "输出", pos, entity.describeIoFilter());
+                }
+                count[0]++;
+            } else if (block == ModBlocks.PARALLEL_INPUT.get()) {
+                // 并行空间输入方块：激活 + 绑定房间码 + 设置当前分支索引（只暴露第 N 个物品）
+                target.setBlock(pos, state.setValue(BaseIOBlock.ACTIVE, true), Block.UPDATE_CLIENTS);
+                if (target.getBlockEntity(pos) instanceof ParallelInputBlockEntity entity) {
+                    entity.setRoomCode(roomCode);
+                    entity.setBranchIndex(session.branchIndex());
+                    // 首个分支时读取配置物品数作为总分支数
+                    if (session.branchIndex() == 0 && session.branchCount() <= 1
+                            && entity.getBranchIndex() == 0) {
+                        int itemCount = entity.configuredItemCount();
+                        if (itemCount > 1) {
+                            session.setBranchCount(itemCount);
+                            CreateCMPOR.LOGGER.info("评估会话 {} 并行空间输入方块 @{} 配置 {} 个物品，启用多分支评估",
+                                    session.id(), pos, itemCount);
+                        }
+                    }
                 }
                 count[0]++;
             } else if (block == ModBlocks.STRESS_INPUT.get()) {
