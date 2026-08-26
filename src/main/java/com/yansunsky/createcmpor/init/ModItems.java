@@ -22,6 +22,9 @@ public class ModItems {
     public static final DeferredItem<BlockItem> INPUT =
             ITEMS.registerSimpleBlockItem("input_block", ModBlocks.INPUT);
 
+    public static final DeferredItem<BlockItem> PARALLEL_INPUT =
+            ITEMS.registerSimpleBlockItem("parallel_input_block", ModBlocks.PARALLEL_INPUT);
+
     public static final DeferredItem<BlockItem> OUTPUT =
             ITEMS.registerSimpleBlockItem("output_block", ModBlocks.OUTPUT);
 

@@ -1,0 +1,20 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "ABA",
+    "BCB",
+    "ABA"
+  ],
+  "key": {
+    "B": {
+      "item": "createcmpor:input_block"
+    },
+    "C": {
+      "item": "create:filter"
+    }
+  },
+  "result": {
+    "count": 1,
+    "id": "createcmpor:parallel_input_block"
+  }
+}
