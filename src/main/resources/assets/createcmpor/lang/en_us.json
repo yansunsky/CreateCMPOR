@@ -85,6 +85,7 @@
   "createcmpor.tooltip.evaluator.preparing": "Preparing...",
   "createcmpor.tooltip.evaluator.warming": "Warming up, %1$s seconds left",
   "createcmpor.tooltip.evaluator.sampling": "Sampling, %1$s seconds left",
+  "createcmpor.tooltip.stress_input.auto_activate": "Activates automatically during evaluation; right-click to adjust speed and direction",
   "message.createcmpor.factory.installed": "Evaluation finished. The factory was installed; the replica is being cleaned up.",
   "message.createcmpor.factory.ready": "The factory is ready and the room lock was released.",
   "message.createcmpor.factory.revert_hint": "Right-click with the evaluation launcher to restore the original machine.",

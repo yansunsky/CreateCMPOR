@@ -85,6 +85,7 @@
   "createcmpor.tooltip.evaluator.preparing": "准备中…",
   "createcmpor.tooltip.evaluator.warming": "预热中，剩余 %1$s 秒",
   "createcmpor.tooltip.evaluator.sampling": "采集中，剩余 %1$s 秒",
+  "createcmpor.tooltip.stress_input.auto_activate": "评估时自动激活提供应力；右键可调整转速与转向",
   "message.createcmpor.factory.installed": "评估完成，工厂已固化，副本清理中。",
   "message.createcmpor.factory.ready": "工厂已就绪，房间锁已释放。",
   "message.createcmpor.factory.revert_hint": "手持平行评估启动棒右键可还原为原机器。",
