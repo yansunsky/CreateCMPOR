@@ -86,6 +86,15 @@ public abstract class BaseIOBlockEntity extends RoomCodeBlockEntity {
         return getBlockState().getValue(BaseIOBlock.ACTIVE) && roomCode != null && !roomCode.isBlank();
     }
 
+    /**
+     * 是否作为"输入方向"采样（输入方块 → 原料进房间；输出方块 → 产物出房间）。
+     * 默认按实例类型判断；并行空间输入方块是输入角色，必须覆盖返回 true，
+     * 否则其流量会被记为输出方向（原料变输出的 bug）。
+     */
+    protected boolean isInputSide() {
+        return this instanceof InputBlockEntity;
+    }
+
     /** 诊断：IO 白名单摘要（评估激活日志用）。 */
     public String describeIoFilter() {
         return "items=" + items + " fluids=" + fluids;
@@ -107,7 +116,7 @@ public abstract class BaseIOBlockEntity extends RoomCodeBlockEntity {
             return;
         }
         ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
-        boolean input = this instanceof InputBlockEntity;
+        boolean input = isInputSide();
         com.yansunsky.createcmpor.evaluation.EvaluationTrace.Hub.INSTANCE.record(
                 roomCode, com.yansunsky.createcmpor.evaluation.EvaluationTrace.FlowKey.item(id),
                 stack.getCount(), input, getLevel().getGameTime());
@@ -118,7 +127,7 @@ public abstract class BaseIOBlockEntity extends RoomCodeBlockEntity {
             return;
         }
         ResourceLocation id = BuiltInRegistries.FLUID.getKey(stack.getFluid());
-        boolean input = this instanceof InputBlockEntity;
+        boolean input = isInputSide();
         com.yansunsky.createcmpor.evaluation.EvaluationTrace.Hub.INSTANCE.record(
                 roomCode, com.yansunsky.createcmpor.evaluation.EvaluationTrace.FlowKey.fluid(id),
                 stack.getAmount(), input, getLevel().getGameTime());
@@ -129,7 +138,7 @@ public abstract class BaseIOBlockEntity extends RoomCodeBlockEntity {
                 || holder.value() == null) {
             return;
         }
-        boolean input = this instanceof InputBlockEntity;
+        boolean input = isInputSide();
         if (holder.value() instanceof net.minecraft.world.item.Item item) {
             ResourceLocation id = BuiltInRegistries.ITEM.getKey(item);
             com.yansunsky.createcmpor.evaluation.EvaluationTrace.Hub.INSTANCE.record(
@@ -143,7 +152,7 @@ public abstract class BaseIOBlockEntity extends RoomCodeBlockEntity {
             return;
         }
         com.yansunsky.createcmpor.evaluation.EvaluationTrace.Hub.INSTANCE.recordEnergy(
-                roomCode, energy, this instanceof InputBlockEntity, getLevel().getGameTime());
+                roomCode, energy, isInputSide(), getLevel().getGameTime());
     }
 
     @Override

@@ -164,6 +164,12 @@ public class ParallelInputBlockEntity extends BaseIOBlockEntity {
         return items.size();
     }
 
+    /** 输入角色：流量必须记为输入方向（否则原料会被误记为输出）。 */
+    @Override
+    protected boolean isInputSide() {
+        return true;
+    }
+
     /** 分支模式下只返回对应物品；正常模式返回全部白名单物品。 */
     private java.util.List<ResourceLocation> branchItems() {
         if (branchIndex >= 0 && branchIndex < items.size()) {
