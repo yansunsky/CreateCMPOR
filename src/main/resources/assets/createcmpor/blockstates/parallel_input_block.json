@@ -1,0 +1,10 @@
+{
+  "variants": {
+    "active=false": {
+      "model": "createcmpor:block/parallel_input_block"
+    },
+    "active=true": {
+      "model": "createcmpor:block/parallel_input_block"
+    }
+  }
+}

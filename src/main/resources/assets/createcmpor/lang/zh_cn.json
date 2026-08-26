@@ -3,6 +3,7 @@
   "block.createcmpor.io_extension": "IO 拓展方块",
   "block.createcmpor.factory_block": "平行工厂方块",
   "block.createcmpor.input_block": "压缩空间输入方块",
+  "block.createcmpor.parallel_input_block": "并行空间输入方块",
   "block.createcmpor.output_block": "压缩空间输出方块",
   "block.createcmpor.evaluator_block": "评估方块",
   "block.createcmpor.stress_input": "应力输入方块",

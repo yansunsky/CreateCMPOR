@@ -7,6 +7,7 @@ import com.yansunsky.createcmpor.block.FactoryBlockEntity;
 import com.yansunsky.createcmpor.block.InputBlock;
 import com.yansunsky.createcmpor.block.IOExtensionBlock;
 import com.yansunsky.createcmpor.block.OutputBlock;
+import com.yansunsky.createcmpor.block.ParallelInputBlock;
 import com.yansunsky.createcmpor.block.StressInputBlock;
 import com.yansunsky.createcmpor.block.StressInputBlockEntity;
 import com.yansunsky.createcmpor.block.StressOutputBlock;
@@ -47,6 +48,13 @@ public class ModBlocks {
 
     public static final DeferredBlock<InputBlock> INPUT =
             BLOCKS.register("input_block", () -> new InputBlock(
+                    BlockBehaviour.Properties.of()
+                            .mapColor(MapColor.COLOR_BLACK)
+                            .strength(3.0f, 6.0f)
+                            .requiresCorrectToolForDrops()));
+
+    public static final DeferredBlock<ParallelInputBlock> PARALLEL_INPUT =
+            BLOCKS.register("parallel_input_block", () -> new ParallelInputBlock(
                     BlockBehaviour.Properties.of()
                             .mapColor(MapColor.COLOR_BLACK)
                             .strength(3.0f, 6.0f)

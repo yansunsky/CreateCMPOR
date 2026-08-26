@@ -3,6 +3,7 @@
   "values": [
     "createcmpor:factory_block",
     "createcmpor:input_block",
+    "createcmpor:parallel_input_block",
     "createcmpor:output_block",
     "createcmpor:evaluator_block",
     "createcmpor:stress_input",

@@ -22,6 +22,7 @@ public class ModCreativeTabs {
                         output.accept(ModItems.IO_EXTENSION.get());
                         output.accept(ModItems.FACTORY.get());
                         output.accept(ModItems.INPUT.get());
+                        output.accept(ModItems.PARALLEL_INPUT.get());
                         output.accept(ModItems.OUTPUT.get());
                         output.accept(ModItems.STRESS_INPUT.get());
                         output.accept(ModItems.STRESS_OUTPUT.get());
