@@ -55,6 +55,11 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
 
     private String roomCode;
 
+    /** 多工厂组：本工厂的分支索引（0-based）；单工厂 = 0。 */
+    private int branchIndex = 0;
+    /** 多工厂组：同 roomCode 工厂总数（组还原数量校验用）；单工厂 = 1。 */
+    private int factoryCount = 1;
+
     private static final class Container {
         long capacity;
         long amount;
@@ -117,6 +122,21 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
 
     public void setRoomCode(String roomCode) {
         this.roomCode = roomCode;
+        setChanged();
+    }
+
+    public int getBranchIndex() {
+        return branchIndex;
+    }
+
+    public int getFactoryCount() {
+        return factoryCount;
+    }
+
+    /** 固化时写入多工厂组信息（单工厂 branchIndex=0, factoryCount=1）。 */
+    public void setGroupInfo(int branchIndex, int factoryCount) {
+        this.branchIndex = branchIndex;
+        this.factoryCount = Math.max(1, factoryCount);
         setChanged();
     }
 
@@ -821,6 +841,19 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         // - 输入型：KineticBlockEntity 的 Impact 行（calculateStressApplied 非 0 时显示）
         // - 输出型：GeneratingKineticBlockEntity 的 generator_stats + capacityProvided 容量行
         super.addToGoggleTooltip(tooltip, isPlayerSneaking);
+        // 房间号 + 同类工厂数量（多工厂组：组还原数量校验提示用）
+        if (roomCode != null && !roomCode.isBlank()) {
+            net.createmod.catnip.lang.Lang.builder("createcmpor")
+                    .translate("tooltip.factory.room", roomCode)
+                    .style(ChatFormatting.GRAY)
+                    .forGoggles(tooltip, 1);
+        }
+        if (factoryCount > 1) {
+            net.createmod.catnip.lang.Lang.builder("createcmpor")
+                    .translate("tooltip.factory.group_count", branchIndex + 1, factoryCount)
+                    .style(ChatFormatting.GRAY)
+                    .forGoggles(tooltip, 1);
+        }
         // 自定义行：所需/提供的应力总量（SU），方便玩家直接看到需要消耗多少应力
         StressProfile profile = FactoryStressAccess.get(this);
         if (!profile.isEmpty()) {
@@ -946,6 +979,8 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
     protected void read(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
         super.read(tag, registries, clientPacket);
         roomCode = tag.getString("room_code");
+        branchIndex = tag.getInt("branch_index");
+        factoryCount = Math.max(1, tag.getInt("factory_count"));
         replayMode = tag.getBoolean("replay_mode");
         installed = tag.getBoolean("installed");
         loadContainerMap(tag, "input_items", inputItems);
@@ -980,6 +1015,8 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
     protected void write(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
         super.write(tag, registries, clientPacket);
         tag.putString("room_code", roomCode == null ? "" : roomCode);
+        tag.putInt("branch_index", branchIndex);
+        tag.putInt("factory_count", factoryCount);
         tag.putBoolean("replay_mode", replayMode);
         tag.putBoolean("installed", installed);
         saveContainerMap(tag, "input_items", inputItems);
