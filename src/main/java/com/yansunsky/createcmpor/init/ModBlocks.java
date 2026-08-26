@@ -139,6 +139,14 @@ public class ModBlocks {
         event.registerBlockEntity(Capabilities.EnergyStorage.BLOCK, ModBlockEntities.INPUT.get(),
                 (be, side) -> be.getEnergyHandler());
 
+        // 并行空间输入方块：与输入方块相同的 Forge 能力暴露（Jade 通过能力系统识别并显示内容）
+        event.registerBlockEntity(Capabilities.ItemHandler.BLOCK, ModBlockEntities.PARALLEL_INPUT.get(),
+                (be, side) -> be.getItemHandler());
+        event.registerBlockEntity(Capabilities.FluidHandler.BLOCK, ModBlockEntities.PARALLEL_INPUT.get(),
+                (be, side) -> be.getFluidHandler());
+        event.registerBlockEntity(Capabilities.EnergyStorage.BLOCK, ModBlockEntities.PARALLEL_INPUT.get(),
+                (be, side) -> be.getEnergyHandler());
+
         event.registerBlockEntity(Capabilities.ItemHandler.BLOCK, ModBlockEntities.OUTPUT.get(),
                 (be, side) -> be.getItemHandler());
         event.registerBlockEntity(Capabilities.FluidHandler.BLOCK, ModBlockEntities.OUTPUT.get(),

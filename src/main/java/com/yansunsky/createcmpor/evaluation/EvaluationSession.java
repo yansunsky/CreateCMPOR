@@ -281,11 +281,10 @@ public final class EvaluationSession {
         return branchResults;
     }
 
-    /** 进入下一分支：记录已完成分支、推进索引、清空运行时结果。返回是否还有下一分支。 */
+    /** 进入下一分支：记录已完成分支、推进索引。返回是否还有下一分支。 */
     public boolean advanceBranch(EvaluationVerdict.Result result) {
         branchResults.add(result);
         branchIndex++;
-        evaluationResult = null;
         branchTransitionPending = true;
         return branchIndex < branchCount;
     }
