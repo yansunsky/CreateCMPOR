@@ -45,6 +45,7 @@ final class EvaluationAudit {
     private EvaluationAudit() {
     }
 
+    // 想不到有一天能写出O(5)的垃圾代码
     static InventorySnapshot scan(ServerLevel level, AABB bounds) {
         int startX = (int) Math.floor(bounds.minX);
         int startY = (int) Math.floor(bounds.minY);
@@ -93,6 +94,7 @@ final class EvaluationAudit {
                             IItemHandler itemHandler = level.getCapability(
                                     Capabilities.ItemHandler.BLOCK, pos, direction);
                             if (itemHandler != null && seenItemHandlers.add(itemHandler)) {
+                                logScanItemSource(pos, blockId, "handler");
                                 if (dedupBlockIds.contains(blockId) || isStorageDrawersCompacting(blockId)) {
                                     ItemStack lastStack = ItemStack.EMPTY;
                                     for (int slot = 0; slot < itemHandler.getSlots(); slot++) {
@@ -102,6 +104,7 @@ final class EvaluationAudit {
                                         }
                                     }
                                     if (!lastStack.isEmpty()) {
+                                        logScanItemSource(pos, blockId, "物品(压缩聚合)");
                                         ContainerItemExpander.addToSnapshot(
                                                 lastStack, lastStack.getCount(), registries, items);
                                     }
@@ -109,6 +112,8 @@ final class EvaluationAudit {
                                     for (int slot = 0; slot < itemHandler.getSlots(); slot++) {
                                         ItemStack stack = itemHandler.getStackInSlot(slot);
                                         if (!stack.isEmpty()) {
+                                            logScanItemSource(pos, blockId,
+                                                    "物品槽#" + slot + " " + stack);
                                             ContainerItemExpander.addToSnapshot(
                                                     stack, stack.getCount(), registries, items);
                                         }
@@ -120,6 +125,7 @@ final class EvaluationAudit {
                         }
                     }
                     if (!itemHandlerScanned) {
+                        logScanItemSource(pos, blockId, "AE2 展开");
                         Ae2BlockContents.addToSnapshot(level, pos, blockId, registries, items);
                     }
 
@@ -132,6 +138,8 @@ final class EvaluationAudit {
                                 if (!fluidStack.isEmpty()) {
                                     ResourceLocation id = net.minecraft.core.registries.BuiltInRegistries.FLUID
                                             .getKey(fluidStack.getFluid());
+                                    logScanItemSource(pos, blockId,
+                                            "流体#tank" + tank + " " + id + " x " + fluidStack.getAmount());
                                     fluids.merge(id, (long) fluidStack.getAmount(), Long::sum);
                                 }
                             }
@@ -143,7 +151,11 @@ final class EvaluationAudit {
                         IEnergyStorage energyStorage = level.getCapability(
                                 Capabilities.EnergyStorage.BLOCK, pos, direction);
                         if (energyStorage != null && seenEnergyHandlers.add(energyStorage)) {
-                            energy += energyStorage.getEnergyStored();
+                            int stored = energyStorage.getEnergyStored();
+                            if (stored > 0) {
+                                logScanItemSource(pos, blockId, "能量 x " + stored);
+                            }
+                            energy += stored;
                             break;
                         }
                     }
@@ -160,6 +172,8 @@ final class EvaluationAudit {
             if (entity.getItem().isEmpty()) {
                 continue;
             }
+            logScanItemSource(entity.blockPosition(), null,
+                    "掉落物 " + entity.getItem());
             ContainerItemExpander.addToSnapshot(
                     entity.getItem(), entity.getItem().getCount(), registries, items);
         }
@@ -168,6 +182,12 @@ final class EvaluationAudit {
             return InventorySnapshot.empty();
         }
         return new InventorySnapshot(items, fluids, energy);
+    }
+
+    /** 调试：打印 scan 统计到的每个条目来源（方块坐标 + 类型 + 内容），便于定位干扰模组。 */
+    private static void logScanItemSource(BlockPos pos, ResourceLocation blockId, String detail) {
+        CreateCMPOR.LOGGER.info("[scan] pos=({},{},{}) {} -> {}", pos.getX(), pos.getY(), pos.getZ(),
+                blockId == null ? "(掉落物)" : blockId, detail);
     }
 
     /**
