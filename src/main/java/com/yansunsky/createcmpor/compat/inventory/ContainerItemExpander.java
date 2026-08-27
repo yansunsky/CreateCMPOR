@@ -43,9 +43,25 @@ public final class ContainerItemExpander {
         }
 
         ResourceLocation id = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem());
+        if (isConfigOnlyItem(id)) {
+            return; // 配置型物品（createsifter 筛网等）不是房间库存，不统计
+        }
         merge(items, id, amount);
         expand(stack.copyWithCount(1), amount, registries, items,
                 0, new HashSet<>(), new HashSet<>());
+    }
+
+    /**
+     * 判定"配置型物品"（严格意义上不是房间库存，不参与三扫描/净平衡）：
+     * 目前覆盖 createsifter 的筛网（{@code <metal>_mesh} / custom_mesh / sturdy_mesh 等，
+     * 全部以 {@code _mesh} 结尾，与其原料/产物（raw_*_piece/pebble/crushed_* 等）无冲突）。
+     *
+     * <p>与精妙背包升级槽（{@link SophisticatedBackpackContents} 只读 inventory）同类的
+     * 配置型排除；注意：判定按"物品本身"而非槽位 —— 玩家把筛网放进普通容器也不会被统计
+     * （配置型耗材语义，用户确认）。</p>
+     */
+    static boolean isConfigOnlyItem(ResourceLocation id) {
+        return "createsifter".equals(id.getNamespace()) && id.getPath().endsWith("_mesh");
     }
 
     private static void expand(ItemStack stack, long multiplier,
@@ -89,7 +105,9 @@ public final class ContainerItemExpander {
                 }
                 ResourceLocation id = net.minecraft.core.registries.BuiltInRegistries.ITEM
                         .getKey(contained.stack().getItem());
-                merge(items, id, containedAmount);
+                if (!isConfigOnlyItem(id)) {
+                    merge(items, id, containedAmount);
+                }
                 expand(contained.stack(), containedAmount, registries, items,
                         depth + 1, activeIdentities, reportedFailures);
             }
