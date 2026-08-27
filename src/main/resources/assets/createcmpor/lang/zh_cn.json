@@ -131,5 +131,19 @@
   "createcmpor.ponder.factory_running.text_2": "用扳手右键工厂任意一面，可打开传动轴面，接入机械应力。",
   "createcmpor.ponder.factory_reverted.header": "还原房间机器",
   "createcmpor.ponder.factory_reverted.text_1": "手持启动棒右键工厂，即可还原为原来的 Compact Machines 机器。",
-  "createcmpor.ponder.factory_reverted.text_2": "还原后房间恢复原状，可再次进入或重新评估。"
+  "createcmpor.ponder.factory_reverted.text_2": "还原后房间恢复原状，可再次进入或重新评估。",
+  "createcmpor.ponder.parallel_input_configure.header": "并行空间输入方块",
+  "createcmpor.ponder.parallel_input_configure.text_1": "并行空间输入方块：一次评估即可评估多种物品。",
+  "createcmpor.ponder.parallel_input_configure.text_2": "与输入方块一样，用物品或流体容器右键配置白名单。",
+  "createcmpor.ponder.parallel_input_configure.text_3": "白名单中的每个物品都成为一个评估分支——例如粗铁、粗铜、粗金。",
+  "createcmpor.ponder.parallel_input_evaluate.header": "逐物品分支评估",
+  "createcmpor.ponder.parallel_input_evaluate.text_1": "在房间内搭好一条产线——例如这里的粉碎轮机组。",
+  "createcmpor.ponder.parallel_input_evaluate.text_2": "评估时每次只暴露一种白名单物品，送入同一条产线。",
+  "createcmpor.ponder.parallel_input_evaluate.text_3": "同一套产线为每个分支重复运行——产线被复用。",
+  "createcmpor.ponder.parallel_input_evaluating.header": "开始评估",
+  "createcmpor.ponder.parallel_input_evaluating.text_1": "手持评估启动棒右键 Compact Machines 机器，开始评估。",
+  "createcmpor.ponder.parallel_input_evaluating.text_2": "房间冻结，各分支在克隆副本上依次评估。",
+  "createcmpor.ponder.parallel_input_solidified.header": "生成多个工厂",
+  "createcmpor.ponder.parallel_input_solidified.text_1": "全部分支完成后，每个白名单物品固化为一个工厂方块。",
+  "createcmpor.ponder.parallel_input_solidified.text_2": "工厂在机器位置垂直向上堆叠——N 个物品，N 个工厂。"
 }
