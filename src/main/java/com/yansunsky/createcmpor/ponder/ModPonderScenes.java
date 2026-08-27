@@ -36,25 +36,34 @@ public final class ModPonderScenes {
                 CreateCMPOR.MOD_ID, "parallel_input_block");
 
         helper.forComponents(stressInput)
-                .addStoryBoard("stress_input/stress_input", StressInputScenes::stressInputBasics);
+                .addStoryBoard("stress_input/stress_input", StressInputScenes::stressInputBasics,
+                        AllPonderTags.SYSTEM);
         helper.forComponents(stressOutput)
-                .addStoryBoard("stress_output/stress_output", StressOutputScenes::stressOutputBasics);
+                .addStoryBoard("stress_output/stress_output", StressOutputScenes::stressOutputBasics,
+                        AllPonderTags.SYSTEM);
 
         helper.forComponents(inputBlock)
-                .addStoryBoard("input_block/input_block", InputBlockScenes::inputBlockBasics);
+                .addStoryBoard("input_block/input_block", InputBlockScenes::inputBlockBasics,
+                        AllPonderTags.SYSTEM);
         helper.forComponents(outputBlock)
-                .addStoryBoard("output_block/output_block", OutputBlockScenes::outputBlockBasics);
+                .addStoryBoard("output_block/output_block", OutputBlockScenes::outputBlockBasics,
+                        AllPonderTags.SYSTEM);
 
         // IO 拓展方块：6 面 IO → 扳手开接口（牺牲该面 IO）→ io_extension 拓展
         helper.forComponents(ioExtension)
-                .addStoryBoard("io_extension/io_extension", IOExtensionScenes::ioExtensionBasics);
+                .addStoryBoard("io_extension/io_extension", IOExtensionScenes::ioExtensionBasics,
+                        AllPonderTags.SYSTEM);
 
         // 并行空间输入方块：认识/配置 → 同一产线逐物品分支评估 → 评估过程 → 生成 N 个工厂
         helper.forComponents(parallelInput)
-                .addStoryBoard("parallel_input_block/parallel_input_block1", ParallelInputScenes::configure)
-                .addStoryBoard("parallel_input_block/parallel_input_block2", ParallelInputScenes::evaluateLine)
-                .addStoryBoard("parallel_input_block/parallel_input_block3", ParallelInputScenes::evaluating)
-                .addStoryBoard("parallel_input_block/parallel_input_block4", ParallelInputScenes::solidified);
+                .addStoryBoard("parallel_input_block/parallel_input_block1", ParallelInputScenes::configure,
+                        AllPonderTags.SYSTEM)
+                .addStoryBoard("parallel_input_block/parallel_input_block2", ParallelInputScenes::evaluateLine,
+                        AllPonderTags.SYSTEM)
+                .addStoryBoard("parallel_input_block/parallel_input_block3", ParallelInputScenes::evaluating,
+                        AllPonderTags.SYSTEM)
+                .addStoryBoard("parallel_input_block/parallel_input_block4", ParallelInputScenes::solidified,
+                        AllPonderTags.SYSTEM);
 
         // 工厂方块：完整生命周期（注册顺序即流程顺序，Ponder 内可上/下切换）
         ResourceLocation factoryBlock = ResourceLocation.fromNamespaceAndPath(
@@ -62,17 +71,17 @@ public final class ModPonderScenes {
         ResourceLocation launcherStick = ResourceLocation.fromNamespaceAndPath(
                 CreateCMPOR.MOD_ID, "launcher_stick");
         helper.forComponents(factoryBlock)
-                .addStoryBoard("factory_block/machine1", FactoryScenes::machine)
-                .addStoryBoard("factory_block/machine2", FactoryScenes::evaluatorStart)
-                .addStoryBoard("factory_block/machine4", FactoryScenes::solidified)
-                .addStoryBoard("factory_block/machine5", FactoryScenes::running)
-                .addStoryBoard("factory_block/machine6", FactoryScenes::reverted);
+                .addStoryBoard("factory_block/machine1", FactoryScenes::machine, AllPonderTags.SYSTEM)
+                .addStoryBoard("factory_block/machine2", FactoryScenes::evaluatorStart, AllPonderTags.SYSTEM)
+                .addStoryBoard("factory_block/machine4", FactoryScenes::solidified, AllPonderTags.SYSTEM)
+                .addStoryBoard("factory_block/machine5", FactoryScenes::running, AllPonderTags.SYSTEM)
+                .addStoryBoard("factory_block/machine6", FactoryScenes::reverted, AllPonderTags.SYSTEM);
         helper.forComponents(launcherStick)
-                .addStoryBoard("factory_block/machine1", FactoryScenes::machine)
-                .addStoryBoard("factory_block/machine2", FactoryScenes::evaluatorStart)
-                .addStoryBoard("factory_block/machine4", FactoryScenes::solidified)
-                .addStoryBoard("factory_block/machine5", FactoryScenes::running)
-                .addStoryBoard("factory_block/machine6", FactoryScenes::reverted);
+                .addStoryBoard("factory_block/machine1", FactoryScenes::machine, AllPonderTags.SYSTEM)
+                .addStoryBoard("factory_block/machine2", FactoryScenes::evaluatorStart, AllPonderTags.SYSTEM)
+                .addStoryBoard("factory_block/machine4", FactoryScenes::solidified, AllPonderTags.SYSTEM)
+                .addStoryBoard("factory_block/machine5", FactoryScenes::running, AllPonderTags.SYSTEM)
+                .addStoryBoard("factory_block/machine6", FactoryScenes::reverted, AllPonderTags.SYSTEM);
 
         // Compact Machines 房间机器：应用工厂方块的完整生命周期思索（玩家对着机器即可查看教程）
         // CM 7.0.81 新世界默认机器是 new_machine；machine 是旧注册名（旧存档兼容），两个都绑定
@@ -80,11 +89,11 @@ public final class ModPonderScenes {
             ResourceLocation cmMachine = ResourceLocation.fromNamespaceAndPath(
                     "compactmachines", machineId);
             helper.forComponents(cmMachine)
-                    .addStoryBoard("factory_block/machine1", FactoryScenes::machine)
-                    .addStoryBoard("factory_block/machine2", FactoryScenes::evaluatorStart)
-                    .addStoryBoard("factory_block/machine4", FactoryScenes::solidified)
-                    .addStoryBoard("factory_block/machine5", FactoryScenes::running)
-                    .addStoryBoard("factory_block/machine6", FactoryScenes::reverted);
+                    .addStoryBoard("factory_block/machine1", FactoryScenes::machine, AllPonderTags.SYSTEM)
+                    .addStoryBoard("factory_block/machine2", FactoryScenes::evaluatorStart, AllPonderTags.SYSTEM)
+                    .addStoryBoard("factory_block/machine4", FactoryScenes::solidified, AllPonderTags.SYSTEM)
+                    .addStoryBoard("factory_block/machine5", FactoryScenes::running, AllPonderTags.SYSTEM)
+                    .addStoryBoard("factory_block/machine6", FactoryScenes::reverted, AllPonderTags.SYSTEM);
         }
     }
 }

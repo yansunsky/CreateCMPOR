@@ -145,5 +145,7 @@
   "createcmpor.ponder.parallel_input_evaluating.text_2": "房间冻结，各分支在克隆副本上依次评估。",
   "createcmpor.ponder.parallel_input_solidified.header": "生成多个工厂",
   "createcmpor.ponder.parallel_input_solidified.text_1": "全部分支完成后，每个白名单物品固化为一个工厂方块。",
-  "createcmpor.ponder.parallel_input_solidified.text_2": "工厂在机器位置垂直向上堆叠——N 个物品，N 个工厂。"
+  "createcmpor.ponder.parallel_input_solidified.text_2": "工厂在机器位置垂直向上堆叠——N 个物品，N 个工厂。",
+  "createcmpor.ponder.tag.system": "CreateCMPOR 系统",
+  "createcmpor.ponder.tag.system.description": "平行房间评估与工厂复刻系统"
 }

@@ -145,5 +145,7 @@
   "createcmpor.ponder.parallel_input_evaluating.text_2": "The room freezes and each branch is evaluated one after another on the cloned replica.",
   "createcmpor.ponder.parallel_input_solidified.header": "Multiple Factories",
   "createcmpor.ponder.parallel_input_solidified.text_1": "Once all branches finish, one Factory block is solidified per whitelisted item.",
-  "createcmpor.ponder.parallel_input_solidified.text_2": "The factories are stacked vertically above the machine — N items, N factories."
+  "createcmpor.ponder.parallel_input_solidified.text_2": "The factories are stacked vertically above the machine — N items, N factories.",
+  "createcmpor.ponder.tag.system": "CreateCMPOR System",
+  "createcmpor.ponder.tag.system.description": "Parallel room evaluation and factory replication"
 }

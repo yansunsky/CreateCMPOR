@@ -31,6 +31,7 @@ public class CreateCMPORPonderPlugin implements PonderPlugin {
 
     @Override
     public void registerTags(PonderTagRegistrationHelper<ResourceLocation> helper) {
-        // 暂无自定义标签；后续需要分类时可在此注册
+        // 关联词条：把全部物品的教程场景挂到总词条（Ponder 索引分类页可见）
+        AllPonderTags.register(helper);
     }
 }
