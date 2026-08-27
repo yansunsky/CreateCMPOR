@@ -2,10 +2,13 @@
 
 > Create × CompactMachines: Parallel Room Evaluation System
 > Minecraft 1.21.1 · NeoForge 21.1.230 · Create 6.0.10-281 · CompactMachines 7.0.81
+> Current version: **0.3.8**
 
 ## Introduction
 
 CreateCMPOR is an addon that combines the **Stress system** of [Create](https://github.com/Creators-of-Create/Create) with the **Compact Machines** of [CompactMachines](https://www.curseforge.com/minecraft/mc-mods/compact-machines) into a "**parallel room evaluation → factory replication**" system: it automatically evaluates an entire production line inside a compact room, solidifies its input/output pattern into a standalone **Factory Block**, and reproduces the same throughput outside the compact space.
+
+This mod is a **remake of [CompactMachinesPOR](https://www.curseforge.com/minecraft/mc-mods/compactmachinespor)** (parallel room evaluation + factory blocks), reimplemented as a Create addon for Minecraft 1.21.1.
 
 Author: **yansunsky** (LGPL-3.0)
 
@@ -16,17 +19,22 @@ Author: **yansunsky** (LGPL-3.0)
 3. During evaluation, IO blocks activate automatically and real throughput is recorded:
    - Warmup (not counted) → baseline scan (S1) → sampling → final scan (S2), protected by an **S0 three-scan audit** against cheating.
 4. The output pattern is decided as **RATE** (stable continuous flow) or **REPLAY** (recorded pulse playback).
-5. The evaluator solidifies into a **Parallel Factory Block** that keeps reproducing the recorded pattern, connectable via hoppers and other logistics.
+5. The evaluator solidifies into a **Factory Block** that keeps reproducing the recorded pattern, connectable via hoppers and other logistics.
 6. Right-click the factory with the Launcher Stick to revert it to the original CompactMachines machine.
+
+### Parallel Space Input Block (multi-factory evaluation)
+
+Place a **Parallel Space Input Block** (`parallel_input_block`) inside the room and configure its whitelist with items just like the normal input block. A single evaluation then runs **one branch per whitelisted item** (each branch exposes only that item during sampling), and upon completion **N factory blocks are solidified**, stacked vertically above the machine position. Overlapping blocks are destroyed (with drops) — but any unbreakable block (e.g. bedrock) is **detected before the evaluation even starts** and blocks it, since unbreakable blocks cannot be moved in survival. Every factory in the group shows its **room code** and **sibling count** in the goggle tooltip, and right-clicking any member reverts the whole group (all other members vanish without drops).
 
 ## Blocks
 
 | Block | Description |
 |-------|-------------|
 | **Launcher Stick** (`launcher_stick`) | Right-click a room machine to start evaluation; right-click a factory to revert it. |
-| **Parallel Factory Block** (`factory_block`) | The result of evaluation. Six-face shaft openings (toggle per face with a Wrench); reproduces the line in RATE/REPLAY mode with its own input/output buffers. |
+| **Factory Block** (`factory_block`) | The result of evaluation. Six-face shaft openings (toggle per face with a Wrench); reproduces the line in RATE/REPLAY mode with its own input/output buffers. |
 | **IO Extension Block** (`io_extension`) | Connects to the Create stress network like a normal shaft. **Axial ends** are stress interface faces (attach to factory openings / shafts / other extensions); **non-axial sides** forward the factory's item/fluid/energy buffers (input + output) reachable along the axial chain (pointing directly at the factory's own buffers, no item duplication). If both axial ends connect to two different factory buffers, it self-destructs to prevent duplication exploits. |
-| **Stress Input Block** (`stress_input`) | Inside the room; activates during evaluation as a stress source to measure real stress consumption. |
+| **Parallel Space Input Block** (`parallel_input_block`) | Like the input block, but each whitelisted item becomes one evaluation branch, producing one factory per item (stacked vertically). |
+| **Stress Input Block** (`stress_input`) | Inside the room; activates during evaluation as a stress source to measure real stress consumption. Right-click with an empty hand (creative) or use the scroll wheel on the slider box to adjust speed and direction (-256 to +256 RPM, default 16). |
 | **Stress Output Block** (`stress_output`) | Inside the room; activates during evaluation as a passive observer of available network stress. |
 | **Input Block** (`input_block`) | Room port: right-click with an item/bucket to set a whitelist; feeds whitelisted items during evaluation. |
 | **Output Block** (`output_block`) | Room port: right-click with an item/bucket to set a whitelist; collects whitelisted products during evaluation. |
@@ -44,7 +52,7 @@ Author: **yansunsky** (LGPL-3.0)
 | `suspiciousBlocks` | `[]` | Block IDs forbidden from entering evaluation |
 | `suspiciousItems` | `[]` | Item IDs forbidden from entering evaluation |
 | `maxConcurrentEvaluations` | `4` | Max concurrent evaluation sessions cloning replicas |
-| `evaluateSeconds` | `300` | Evaluation duration (seconds) |
+| `evaluateSeconds` | `60` | Evaluation duration (seconds) |
 | `recordStart` | `60` | Warmup seconds at evaluation start (not counted) |
 | `evaluationMode` | `["AUTO"]` | Evaluation mode: AUTO / FORCE_RATE / FORCE_REPLAY |
 | `lossRate` | `0.95` | Output loss guardrail (0-1; default 5% deduction) |
@@ -92,11 +100,11 @@ Dependencies are fetched from Maven:
 
 ## References & License
 
-This mod was developed with reference to the following projects (design ideas only, reimplemented in our own structure, no code copied):
+This mod is **remade from [CompactMachinesPOR](https://www.curseforge.com/minecraft/mc-mods/compactmachinespor)** and developed with reference to the following projects (design ideas only, reimplemented in our own structure, no code copied):
 
+- **CompactMachinesPOR** — the direct predecessor; parallel room evaluation and factory block mechanics are rebuilt from it.
 - **Create** — stress system, shaft rendering, andesite casing & creative motor implementation; models/textures are referenced via the `create:` namespace rather than copied.
 - **CompactMachines** — compact rooms, machine blocks and room template mechanics.
-- **CompactMachinesPOR** — design ideas for parallel room evaluation and factory blocks.
 
 License:
 - **Code**: LGPL-3.0
