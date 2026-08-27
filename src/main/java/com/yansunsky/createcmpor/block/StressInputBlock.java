@@ -59,6 +59,12 @@ public class StressInputBlock extends DirectionalKineticBlock implements IBE<Str
     protected InteractionResult useWithoutItem(BlockState state, Level level, BlockPos pos, Player player,
                                                BlockHitResult hit) {
         if (!level.isClientSide()) {
+            // 仅前后两面（传动轴面 FACING 及其对称面）可右键激活；侧面被转速/方向注记框占用，忽略
+            Direction facing = state.getValue(FACING);
+            Direction clicked = hit.getDirection();
+            if (clicked != facing && clicked != facing.getOpposite()) {
+                return InteractionResult.PASS;
+            }
             if (!com.yansunsky.createcmpor.Config.DEV_MANUAL_ACTIVATION.get()) {
                 // 生产模式：右键激活为 debug 功能，静默不提示
                 return InteractionResult.PASS;

@@ -71,6 +71,7 @@ final class EvaluationAudit {
         }
         Set<Block> ownBlocks = Set.of(
                 ModBlocks.INPUT.get(), ModBlocks.OUTPUT.get(),
+                ModBlocks.PARALLEL_INPUT.get(),
                 ModBlocks.STRESS_INPUT.get(), ModBlocks.STRESS_OUTPUT.get(),
                 ModBlocks.IO_EXTENSION.get(),
                 ModBlocks.EVALUATOR.get(), ModBlocks.FACTORY.get());
