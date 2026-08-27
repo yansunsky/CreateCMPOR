@@ -63,11 +63,8 @@ public class StressOutputBlock extends DirectionalKineticBlock implements IBE<St
                                                BlockHitResult hit) {
         if (!level.isClientSide()) {
             if (!com.yansunsky.createcmpor.Config.DEV_MANUAL_ACTIVATION.get()) {
-                player.displayClientMessage(
-                        net.minecraft.network.chat.Component.translatable(
-                                "message.createcmpor.stress_output.auto_only"),
-                        true);
-                return InteractionResult.sidedSuccess(level.isClientSide());
+                // 生产模式：右键激活为 debug 功能，静默不提示
+                return InteractionResult.PASS;
             }
             boolean newActive = !state.getValue(ACTIVE);
             level.setBlock(pos, state.setValue(ACTIVE, newActive), Block.UPDATE_ALL);
