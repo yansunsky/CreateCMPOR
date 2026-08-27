@@ -75,13 +75,16 @@ public final class ModPonderScenes {
                 .addStoryBoard("factory_block/machine6", FactoryScenes::reverted);
 
         // Compact Machines 房间机器：应用工厂方块的完整生命周期思索（玩家对着机器即可查看教程）
-        ResourceLocation cmMachine = ResourceLocation.fromNamespaceAndPath(
-                "compactmachines", "machine");
-        helper.forComponents(cmMachine)
-                .addStoryBoard("factory_block/machine1", FactoryScenes::machine)
-                .addStoryBoard("factory_block/machine2", FactoryScenes::evaluatorStart)
-                .addStoryBoard("factory_block/machine4", FactoryScenes::solidified)
-                .addStoryBoard("factory_block/machine5", FactoryScenes::running)
-                .addStoryBoard("factory_block/machine6", FactoryScenes::reverted);
+        // CM 7.0.81 新世界默认机器是 new_machine；machine 是旧注册名（旧存档兼容），两个都绑定
+        for (String machineId : new String[] { "machine", "new_machine" }) {
+            ResourceLocation cmMachine = ResourceLocation.fromNamespaceAndPath(
+                    "compactmachines", machineId);
+            helper.forComponents(cmMachine)
+                    .addStoryBoard("factory_block/machine1", FactoryScenes::machine)
+                    .addStoryBoard("factory_block/machine2", FactoryScenes::evaluatorStart)
+                    .addStoryBoard("factory_block/machine4", FactoryScenes::solidified)
+                    .addStoryBoard("factory_block/machine5", FactoryScenes::running)
+                    .addStoryBoard("factory_block/machine6", FactoryScenes::reverted);
+        }
     }
 }
