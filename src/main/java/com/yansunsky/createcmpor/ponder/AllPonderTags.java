@@ -39,5 +39,25 @@ public final class AllPonderTags {
                 .title("CreateCMPOR System")
                 .description("Parallel room evaluation and factory replication")
                 .register();
+
+        // 物品级关联词条（Create 同款：HELPER.addToTag(tag).add(物品)）：
+        // 玩家悬停/查看物品的 Ponder 时能看到其关联的词条；仅场景挂词条（addStoryBoard 第 3 参数）
+        // 不足以在物品索引/悬停处显示——必须显式把物品挂到词条（PonderTagRegistry.getItems 来源）。
+        helper.addToTag(SYSTEM)
+                .add(loc(CreateCMPOR.MOD_ID, "stress_input"))
+                .add(loc(CreateCMPOR.MOD_ID, "stress_output"))
+                .add(loc(CreateCMPOR.MOD_ID, "input_block"))
+                .add(loc(CreateCMPOR.MOD_ID, "output_block"))
+                .add(loc(CreateCMPOR.MOD_ID, "io_extension"))
+                .add(loc(CreateCMPOR.MOD_ID, "parallel_input_block"))
+                .add(loc(CreateCMPOR.MOD_ID, "factory_block"))
+                .add(loc(CreateCMPOR.MOD_ID, "launcher_stick"))
+                // Compact Machines 房间机器（新世界默认 new_machine；machine 旧名兼容）
+                .add(loc("compactmachines", "new_machine"))
+                .add(loc("compactmachines", "machine"));
+    }
+
+    private static ResourceLocation loc(String namespace, String path) {
+        return ResourceLocation.fromNamespaceAndPath(namespace, path);
     }
 }
