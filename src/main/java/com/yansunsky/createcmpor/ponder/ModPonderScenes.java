@@ -32,6 +32,8 @@ public final class ModPonderScenes {
                 CreateCMPOR.MOD_ID, "output_block");
         ResourceLocation ioExtension = ResourceLocation.fromNamespaceAndPath(
                 CreateCMPOR.MOD_ID, "io_extension");
+        ResourceLocation parallelInput = ResourceLocation.fromNamespaceAndPath(
+                CreateCMPOR.MOD_ID, "parallel_input_block");
 
         helper.forComponents(stressInput)
                 .addStoryBoard("stress_input/stress_input", StressInputScenes::stressInputBasics);
@@ -47,6 +49,13 @@ public final class ModPonderScenes {
         helper.forComponents(ioExtension)
                 .addStoryBoard("io_extension/io_extension", IOExtensionScenes::ioExtensionBasics);
 
+        // 并行空间输入方块：认识/配置 → 同一产线逐物品分支评估 → 评估过程 → 生成 N 个工厂
+        helper.forComponents(parallelInput)
+                .addStoryBoard("parallel_input_block/parallel_input_block1", ParallelInputScenes::configure)
+                .addStoryBoard("parallel_input_block/parallel_input_block2", ParallelInputScenes::evaluateLine)
+                .addStoryBoard("parallel_input_block/parallel_input_block3", ParallelInputScenes::evaluating)
+                .addStoryBoard("parallel_input_block/parallel_input_block4", ParallelInputScenes::solidified);
+
         // 工厂方块：完整生命周期（注册顺序即流程顺序，Ponder 内可上/下切换）
         ResourceLocation factoryBlock = ResourceLocation.fromNamespaceAndPath(
                 CreateCMPOR.MOD_ID, "factory_block");
@@ -59,6 +68,16 @@ public final class ModPonderScenes {
                 .addStoryBoard("factory_block/machine5", FactoryScenes::running)
                 .addStoryBoard("factory_block/machine6", FactoryScenes::reverted);
         helper.forComponents(launcherStick)
+                .addStoryBoard("factory_block/machine1", FactoryScenes::machine)
+                .addStoryBoard("factory_block/machine2", FactoryScenes::evaluatorStart)
+                .addStoryBoard("factory_block/machine4", FactoryScenes::solidified)
+                .addStoryBoard("factory_block/machine5", FactoryScenes::running)
+                .addStoryBoard("factory_block/machine6", FactoryScenes::reverted);
+
+        // Compact Machines 房间机器：应用工厂方块的完整生命周期思索（玩家对着机器即可查看教程）
+        ResourceLocation cmMachine = ResourceLocation.fromNamespaceAndPath(
+                "compactmachines", "machine");
+        helper.forComponents(cmMachine)
                 .addStoryBoard("factory_block/machine1", FactoryScenes::machine)
                 .addStoryBoard("factory_block/machine2", FactoryScenes::evaluatorStart)
                 .addStoryBoard("factory_block/machine4", FactoryScenes::solidified)

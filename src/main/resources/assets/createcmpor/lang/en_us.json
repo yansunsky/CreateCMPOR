@@ -131,5 +131,19 @@
   "createcmpor.ponder.factory_running.text_2": "Use a Wrench to right-click any face of the factory to open a shaft face for mechanical stress.",
   "createcmpor.ponder.factory_reverted.header": "Restore the Room Machine",
   "createcmpor.ponder.factory_reverted.text_1": "Right-click the factory with the evaluation launcher to restore the original Compact Machines machine.",
-  "createcmpor.ponder.factory_reverted.text_2": "After restoration the room is back to normal and can be entered or evaluated again."
+  "createcmpor.ponder.factory_reverted.text_2": "After restoration the room is back to normal and can be entered or evaluated again.",
+  "createcmpor.ponder.parallel_input_configure.header": "Parallel Space Input Block",
+  "createcmpor.ponder.parallel_input_configure.text_1": "The Parallel Space Input block evaluates multiple items with a single evaluation.",
+  "createcmpor.ponder.parallel_input_configure.text_2": "Right-click with items or buckets to configure its whitelist, just like the Input block.",
+  "createcmpor.ponder.parallel_input_configure.text_3": "Each whitelisted item becomes one evaluation branch — e.g. raw iron, raw copper and raw gold.",
+  "createcmpor.ponder.parallel_input_evaluate.header": "Per-Item Branch Evaluation",
+  "createcmpor.ponder.parallel_input_evaluate.text_1": "Build one production line inside the room — here, a crushing wheel setup.",
+  "createcmpor.ponder.parallel_input_evaluate.text_2": "During evaluation, only ONE whitelisted item is exposed at a time and fed into the same line.",
+  "createcmpor.ponder.parallel_input_evaluate.text_3": "The line runs once per item — the same production line is reused for every branch.",
+  "createcmpor.ponder.parallel_input_evaluating.header": "Start Evaluation",
+  "createcmpor.ponder.parallel_input_evaluating.text_1": "Right-click the Compact Machines room machine with the Launcher Stick to start.",
+  "createcmpor.ponder.parallel_input_evaluating.text_2": "The room freezes and each branch is evaluated one after another on the cloned replica.",
+  "createcmpor.ponder.parallel_input_solidified.header": "Multiple Factories",
+  "createcmpor.ponder.parallel_input_solidified.text_1": "Once all branches finish, one Factory block is solidified per whitelisted item.",
+  "createcmpor.ponder.parallel_input_solidified.text_2": "The factories are stacked vertically above the machine — N items, N factories."
 }
