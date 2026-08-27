@@ -21,6 +21,9 @@ import java.util.UUID;
  * <p>背包物品只保留 {@code sophisticatedcore:storage_uuid}，内容在
  * {@code BackpackStorage.backpackContents} SavedData 中，故这里仅反射访问
  * 已在 ItemScan 项目验证过的公开 get() 与私有映射。</p>
+ *
+ * <p><b>只统计存储槽（inventory）</b>：升级槽（upgradeInventory）是配置型物品
+ * （升级组件），不是房间库存，不参与三扫描/净平衡（0.3.17 起）。</p>
  */
 final class SophisticatedBackpackContents {
     private static final String SOURCE = "sophisticated_backpack";
@@ -49,10 +52,10 @@ final class SophisticatedBackpackContents {
                         "sbp:" + uuid, List.of());
             }
             List<ContainerItemExpander.ContainedStack> result = new ArrayList<>();
+            // 升级槽（upgradeInventory）装的是配置型升级物品（磁铁/充电器/音栅等），
+            // 严格意义上不是房间库存，不参与三扫描/净平衡统计（S0 全空判定也不该被它污染）。
+            // 升级物品若放入普通存储槽仍会被 inventory 正常统计（精确识别槽位语义）。
             String error = readSlotSection(contents, "inventory", "backpack", registries, result);
-            if (error == null) {
-                error = readSlotSection(contents, "upgradeInventory", "upgrade", registries, result);
-            }
             if (error != null) {
                 return ContainerItemExpander.ReadResult.failed(SOURCE, error);
             }
