@@ -30,13 +30,15 @@ import java.util.Set;
  */
 final class EvaluationAudit {
     record InventorySnapshot(Map<ResourceLocation, Long> items,
-                             Map<ResourceLocation, Long> fluids, long energy) {
+                             Map<ResourceLocation, Long> fluids, long energy,
+                             long normalBurnTicks, long superBurnTicks) {
         static InventorySnapshot empty() {
-            return new InventorySnapshot(Map.of(), Map.of(), 0L);
+            return new InventorySnapshot(Map.of(), Map.of(), 0L, 0L, 0L);
         }
 
         boolean isEmpty() {
-            return items.isEmpty() && fluids.isEmpty() && energy == 0;
+            return items.isEmpty() && fluids.isEmpty() && energy == 0
+                    && normalBurnTicks == 0 && superBurnTicks == 0;
         }
     }
 
@@ -57,6 +59,8 @@ final class EvaluationAudit {
         Map<ResourceLocation, Long> items = new HashMap<>();
         Map<ResourceLocation, Long> fluids = new HashMap<>();
         long energy = 0;
+        long normalBurnTicks = 0;
+        long superBurnTicks = 0;
         var registries = level.registryAccess();
 
         Set<IItemHandler> seenItemHandlers = Collections.newSetFromMap(new IdentityHashMap<>());
@@ -84,6 +88,21 @@ final class EvaluationAudit {
                     BlockState state = level.getBlockState(pos);
                     if (state.isAir() || ownBlocks.contains(state.getBlock())) {
                         continue;
+                    }
+                    // 烈焰人燃烧室：累计剩余燃烧时间（分普通/超热两档，创造燃烧室跳过）。
+                    // 用于评估"预存热能"消耗——S1→S2 的净减少折成燃料成本（防预填燃料欺骗）。
+                    if (state.getBlock() instanceof com.simibubi.create.content.processing.burner.BlazeBurnerBlock) {
+                        if (level.getBlockEntity(pos)
+                                instanceof com.simibubi.create.content.processing.burner.BlazeBurnerBlockEntity burner
+                                && !burner.isCreative()) {
+                            int remaining = burner.getRemainingBurnTime();
+                            switch (burner.getActiveFuel()) {
+                                case SPECIAL -> superBurnTicks += remaining;
+                                case NORMAL -> normalBurnTicks += remaining;
+                                default -> {
+                                }
+                            }
+                        }
                     }
                     ResourceLocation blockId = net.minecraft.core.registries.BuiltInRegistries.BLOCK
                             .getKey(state.getBlock());
@@ -178,10 +197,11 @@ final class EvaluationAudit {
                     entity.getItem(), entity.getItem().getCount(), registries, items);
         }
 
-        if (items.isEmpty() && fluids.isEmpty() && energy == 0) {
+        if (items.isEmpty() && fluids.isEmpty() && energy == 0
+                && normalBurnTicks == 0 && superBurnTicks == 0) {
             return InventorySnapshot.empty();
         }
-        return new InventorySnapshot(items, fluids, energy);
+        return new InventorySnapshot(items, fluids, energy, normalBurnTicks, superBurnTicks);
     }
 
     /** 调试：打印 scan 统计到的每个条目来源（方块坐标 + 类型 + 内容），便于定位干扰模组。 */
@@ -215,9 +235,18 @@ final class EvaluationAudit {
         };
     }
 
-    /** RATE 审计结果：净消耗速率（net<0）与净产出速率（net>0）。 */
+    /** RATE 审计结果：净消耗速率（net<0）与净产出速率（net>0）；burnDemand* 为对外表现的燃烧需求（热值，tick/秒）。 */
     record RateAudit(Map<EvaluationTrace.FlowKey, Double> inputs,
-                     Map<EvaluationTrace.FlowKey, Double> outputs) {
+                     Map<EvaluationTrace.FlowKey, Double> outputs,
+                     double normalBurnDemandPerSecond, double superBurnDemandPerSecond) {
+    }
+
+    /** 燃烧室预存折算结果：折算的燃料物品输入（每秒）+ 对外表现的两档燃烧需求（tick/秒，0=物品流已覆盖或无需）。 */
+    record BurnerPreload(Map<ResourceLocation, Double> fuelInputsPerSecond,
+                         double normalDemandPerSecond, double superDemandPerSecond) {
+        static BurnerPreload none() {
+            return new BurnerPreload(Map.of(), 0, 0);
+        }
     }
 
     /**
@@ -245,7 +274,7 @@ final class EvaluationAudit {
                     outputs.put(entry.getKey(), (double) entry.getValue().outputTotal / elapsedTicks);
                 }
             }
-            return new RateAudit(inputs, outputs);
+            return new RateAudit(inputs, outputs, 0, 0);
         }
 
         Set<EvaluationTrace.FlowKey> outputTypes = new HashSet<>();
@@ -287,8 +316,131 @@ final class EvaluationAudit {
                 inputs.put(key, (double) (-net) / elapsedTicks);
             }
         }
-        return new RateAudit(inputs, outputs);
+
+        // 燃烧室预存热能折算（防预填燃料欺骗）：
+        // - 预存净消耗 = max(0, S1 - S2)（S2>S1 说明中途补充过 → 记 0，投喂照常走物品流）
+        // - 超热档：单独折算成烈焰蛋糕（3200 tick）加入工厂输入
+        // - 普通档：物品流有可燃物 → 折算成最高优先级代表燃料；无 → 对外表现"燃烧需求"
+        BurnerPreload burner = resolveBurnerPreload(baseline, end, trace, seconds);
+        for (Map.Entry<ResourceLocation, Double> entry : burner.fuelInputsPerSecond().entrySet()) {
+            inputs.merge(EvaluationTrace.FlowKey.item(entry.getKey()), entry.getValue(), Double::sum);
+        }
+        return new RateAudit(inputs, outputs, burner.normalDemandPerSecond(), burner.superDemandPerSecond());
     }
+
+    /**
+     * 燃烧室预存热能折算。
+     *
+     * <p><b>规则（用户 2026-08-27 确认）</b>：
+     * <ul>
+     *   <li>预存消耗 = {@code max(0, 基线档 - 终态档)}（分普通/超热两档；+差值表示中途补充 → 记为 0，投喂照常走物品流）</li>
+     *   <li>超热档：单独折算成烈焰蛋糕（burn_time=3200）加入工厂输入</li>
+     *   <li>普通档：物品流（trace 输入）有可燃物 → 折算成<b>最高优先级代表燃料</b>（煤炭&gt;木炭&gt;熔岩桶&gt;木板&gt;原木&gt;苔藓&gt;地毯&gt;其他）的消耗量；
+     *       物品流<b>没有</b>燃料 → 不折算物品，对外表现"燃烧需求"（玩家投任意燃料，工厂动态消耗）</li>
+     *   <li>物品流有可燃物时热值系统显示 0（成本已折算进燃料物品流）</li>
+     * </ul>
+     */
+    static BurnerPreload resolveBurnerPreload(InventorySnapshot base, InventorySnapshot end,
+                                              EvaluationTrace trace, double seconds) {
+        if (base == null || end == null) {
+            return BurnerPreload.none();
+        }
+        long preloadNormal = Math.max(0, base.normalBurnTicks() - end.normalBurnTicks());
+        long preloadSuper = Math.max(0, base.superBurnTicks() - end.superBurnTicks());
+        if (preloadNormal <= 0 && preloadSuper <= 0) {
+            return BurnerPreload.none();
+        }
+        double elapsedSeconds = Math.max(1, seconds);
+        Map<ResourceLocation, Double> fuelInputs = new HashMap<>();
+        double normalDemand = 0;
+
+        // 超热档：单独折算烈焰蛋糕（唯一超热燃料，burn_time=3200）
+        if (preloadSuper > 0) {
+            fuelInputs.merge(BLAZE_CAKE_ID, preloadSuper / elapsedSeconds / 3200.0, Double::sum);
+        }
+        // 普通档
+        if (preloadNormal > 0) {
+            ResourceLocation representative = highestPriorityBurnableInTrace(trace);
+            if (representative != null) {
+                double burnTime = burnTimeOf(representative, trace);
+                fuelInputs.merge(representative,
+                        preloadNormal / elapsedSeconds / Math.max(1, burnTime), Double::sum);
+                // 物品流有燃料 → 热值系统显示 0（demand = 0）
+            } else {
+                normalDemand = preloadNormal / elapsedSeconds; // 对外表现燃烧需求（tick/秒）
+            }
+        }
+        return new BurnerPreload(fuelInputs, normalDemand, 0);
+    }
+
+    /** 优先级代表燃料（物品流出现多种可燃物时选最高优先级）。煤炭>木炭>熔岩桶>木板>原木>苔藓>地毯>其他。 */
+    private static ResourceLocation highestPriorityBurnableInTrace(EvaluationTrace trace) {
+        // 收集 trace 物品输入中的可燃物（排除超热烈焰蛋糕——超热单独折算）
+        for (String id : PRIORITY_BURNER_FUELS) {
+            ResourceLocation candidate = ResourceLocation.tryParse(id);
+            if (candidate == null) {
+                continue;
+            }
+            if (hasItemFlowInput(trace, candidate)) {
+                return candidate;
+            }
+        }
+        // "其他"：任意可燃物（按优先级最低处理）
+        for (Map.Entry<EvaluationTrace.FlowKey, EvaluationTrace.Series> entry : trace.series().entrySet()) {
+            if (!"item".equals(entry.getKey().kind()) || entry.getValue().inputTotal <= 0) {
+                continue;
+            }
+            ResourceLocation id = entry.getKey().id();
+            if (BLAZE_CAKE_ID.equals(id)) {
+                continue; // 超热单独折算
+            }
+            if (burnTimeOf(id, trace) > 0) {
+                return id;
+            }
+        }
+        return null;
+    }
+
+    private static boolean hasItemFlowInput(EvaluationTrace trace, ResourceLocation id) {
+        EvaluationTrace.Series series = trace.series().get(EvaluationTrace.FlowKey.item(id));
+        return series != null && series.inputTotal > 0;
+    }
+
+    /** 物品燃料热值（tick；超热烈焰蛋糕=3200 走 datamap 语义）。 */
+    private static double burnTimeOf(ResourceLocation id, EvaluationTrace trace) {
+        net.minecraft.world.item.Item item = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(id);
+        if (item == null || item == net.minecraft.world.item.Items.AIR) {
+            return 0;
+        }
+        if (BLAZE_CAKE_ID.equals(id)) {
+            return 3200;
+        }
+        int burn = new ItemStack(item).getBurnTime(null);
+        return burn > 0 ? burn : 0;
+    }
+
+    private static final ResourceLocation BLAZE_CAKE_ID =
+            ResourceLocation.fromNamespaceAndPath("create", "blaze_cake");
+
+    /** 普通档优先级代表燃料（物品流存在时选它）。 */
+    private static final java.util.List<String> PRIORITY_BURNER_FUELS = java.util.List.of(
+            "minecraft:coal",
+            "minecraft:charcoal",
+            "minecraft:lava_bucket",
+            "minecraft:oak_planks", "minecraft:spruce_planks", "minecraft:birch_planks",
+            "minecraft:jungle_planks", "minecraft:acacia_planks", "minecraft:dark_oak_planks",
+            "minecraft:mangrove_planks", "minecraft:cherry_planks", "minecraft:bamboo_planks",
+            "minecraft:crimson_planks", "minecraft:warped_planks",
+            "minecraft:oak_log", "minecraft:spruce_log", "minecraft:birch_log",
+            "minecraft:jungle_log", "minecraft:acacia_log", "minecraft:dark_oak_log",
+            "minecraft:mangrove_log", "minecraft:cherry_log",
+            "minecraft:moss_block",
+            "minecraft:white_carpet", "minecraft:orange_carpet", "minecraft:magenta_carpet",
+            "minecraft:light_blue_carpet", "minecraft:yellow_carpet", "minecraft:lime_carpet",
+            "minecraft:pink_carpet", "minecraft:gray_carpet", "minecraft:light_gray_carpet",
+            "minecraft:cyan_carpet", "minecraft:purple_carpet", "minecraft:blue_carpet",
+            "minecraft:brown_carpet", "minecraft:green_carpet", "minecraft:red_carpet",
+            "minecraft:black_carpet");
 
     static double auditEnergyRate(InventorySnapshot baseline, InventorySnapshot end,
                                   EvaluationTrace.EnergySeries energy, double recordedRate,
