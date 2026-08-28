@@ -78,6 +78,7 @@
   "message.createcmpor.factory.group_rearrange": "Revert failed: %1$s sub-factories required (currently %2$s). Please rearrange the sub-factories.",
   "createcmpor.tooltip.factory.mode_rate": "Mode: RATE (stable throughput)",
   "createcmpor.tooltip.factory.burn_rate": "Burning: normal %1$s · superheated %2$s",
+  "createcmpor.tooltip.factory.item_shift_hint": "Hold Shift for full info",
   "createcmpor.tooltip.factory.mode_replay": "Mode: REPLAY (recorded playback)",
   "createcmpor.tooltip.factory.io_in_item": "Input: %1$s x%2$s/s",
   "createcmpor.tooltip.factory.io_in_fluid": "Input: %1$s x%2$s mB/s",
