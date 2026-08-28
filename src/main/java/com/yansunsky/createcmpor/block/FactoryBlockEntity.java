@@ -417,6 +417,11 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
                 && lastSuccess != lastSuccessReported) {
             lastSuccessReported = lastSuccess;
             updateGeneratedRotation();
+            // 客户端护目镜"应力/容量"行显示的是 lastCapacityProvided（经 write/read 的 Network.AddedCapacity 同步）。
+            // 强制 sendData 立即推给客户端（否则只在网络 sync/入网时更新——"创建时设定"旧值）。
+            if (level != null && !level.isClientSide) {
+                sendData();
+            }
         }
     }
 
