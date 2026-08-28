@@ -78,6 +78,7 @@
   "message.createcmpor.factory.group_rearrange": "还原失败：需要 %1$s 个子工厂（当前 %2$s 个），请重新排列子工厂。",
   "createcmpor.tooltip.factory.mode_rate": "模式：RATE（稳定速率）",
   "createcmpor.tooltip.factory.burn_rate": "燃烧：普通 %1$s · 超热 %2$s",
+  "createcmpor.tooltip.factory.item_shift_hint": "按住 Shift 查看完整信息",
   "createcmpor.tooltip.factory.mode_replay": "模式：REPLAY（录制回放）",
   "createcmpor.tooltip.factory.io_in_item": "输入：%1$s ×%2$s/秒",
   "createcmpor.tooltip.factory.io_in_fluid": "输入：%1$s ×%2$s mB/秒",

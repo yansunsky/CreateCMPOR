@@ -16,8 +16,9 @@ public class ModItems {
     public static final DeferredItem<BlockItem> IO_EXTENSION =
             ITEMS.registerSimpleBlockItem("io_extension", ModBlocks.IO_EXTENSION);
 
-    public static final DeferredItem<BlockItem> FACTORY =
-            ITEMS.registerSimpleBlockItem("factory_block", ModBlocks.FACTORY);
+    public static final DeferredItem<com.yansunsky.createcmpor.item.FactoryBlockItem> FACTORY =
+            ITEMS.register("factory_block", () -> new com.yansunsky.createcmpor.item.FactoryBlockItem(
+                    ModBlocks.FACTORY.get(), new Item.Properties()));
 
     public static final DeferredItem<BlockItem> INPUT =
             ITEMS.registerSimpleBlockItem("input_block", ModBlocks.INPUT);
