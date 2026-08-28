@@ -147,18 +147,20 @@ public class FactoryBlockItem extends BlockItem {
             if (replay) {
                 appendPattern(tooltip, itemKey, prefix + "item_patterns");
                 appendPattern(tooltip, fluidKey, prefix + "fluid_patterns");
-                long energy = tag.getIntArray(prefix + "energy_pattern").length == 0
-                        ? 0
-                        : average(tag.getIntArray(prefix + "energy_pattern"));
+                int[] energyPattern = tag.getIntArray(prefix + "energy_pattern");
+                double energy = average(energyPattern);
                 if (energy > 0) {
-                    tooltip.add(line(energyKey, value(energy, "每秒")));
+                    // 能量键只有 1 个参数（%1$s = FE/秒）
+                    tooltip.add(Component.translatable(energyKey, format1(energy))
+                            .withStyle(ChatFormatting.AQUA));
                 }
             } else {
                 appendRateMap(tooltip, itemKey, prefix + "item_rates");
                 appendRateMap(tooltip, fluidKey, prefix + "fluid_rates");
                 double energy = tag.getDouble(prefix + "energy_rate") * 20.0;
                 if (energy > 0) {
-                    tooltip.add(line(energyKey, value(energy, "每秒")));
+                    tooltip.add(Component.translatable(energyKey, format1(energy))
+                            .withStyle(ChatFormatting.AQUA));
                 }
             }
         }
@@ -173,7 +175,9 @@ public class FactoryBlockItem extends BlockItem {
                 if (perTick <= 0) {
                     continue;
                 }
-                tooltip.add(line(key, value(perTick * 20.0, "每秒", displayName(idKey))));
+                // 物品/流体键：%1$s=名称、%2$s=每秒数量（数字）
+                tooltip.add(Component.translatable(key, displayName(idKey), format1(perTick * 20.0))
+                        .withStyle(ChatFormatting.AQUA));
             }
         }
 
@@ -184,23 +188,18 @@ public class FactoryBlockItem extends BlockItem {
             CompoundTag map = tag.getCompound(nbtKey);
             for (String idKey : map.getAllKeys()) {
                 int[] pattern = map.getIntArray(idKey);
-                if (pattern.length == 0 || average(pattern) <= 0) {
+                double avg = average(pattern);
+                if (avg <= 0) {
                     continue;
                 }
-                tooltip.add(line(key, value((double) average(pattern), "每秒", displayName(idKey))));
+                tooltip.add(Component.translatable(key, displayName(idKey), format1(avg))
+                        .withStyle(ChatFormatting.AQUA));
             }
         }
 
-        private static Component line(String key, Object... args) {
-            return Component.translatable(key, args).withStyle(ChatFormatting.AQUA);
-        }
-
-        private static String value(double perSecond, String unit, Object name) {
-            return String.format(java.util.Locale.ROOT, "%s ×%.2f/%s", name, perSecond, unit);
-        }
-
-        private static String value(double perSecond, String unit) {
-            return String.format(java.util.Locale.ROOT, "%.2f/%s", perSecond, unit);
+        /** 每秒速率显示：%.2f 数字（占位符只接受数字，不拼单位——单位已写在 lang 串里）。 */
+        private static String format1(double value) {
+            return String.format(java.util.Locale.ROOT, "%.2f", value);
         }
 
         private static long average(int[] array) {
@@ -214,7 +213,7 @@ public class FactoryBlockItem extends BlockItem {
         private static Object displayName(String idKey) {
             ResourceLocation id = ResourceLocation.tryParse(idKey);
             return id == null ? idKey
-                    : BuiltInRegistries.ITEM.get(id).getDescription().getString();
+                    : BuiltInRegistries.ITEM.get(id).getDescription();
         }
     }
 
