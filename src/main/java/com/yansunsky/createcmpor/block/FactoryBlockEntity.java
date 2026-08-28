@@ -1095,7 +1095,7 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
                         .style(ChatFormatting.AQUA)
                         .forGoggles(tooltip, 1);
             });
-            outputFluids.forEach((id, container) -> {
+            outputFluids.forEach((id, container) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
                     .translate("tooltip.factory.io_out_fluid", fluidDisplayName(id),
                             ratePerSecond(outputFluidTickRates.get(id)))
                     .style(ChatFormatting.AQUA)
