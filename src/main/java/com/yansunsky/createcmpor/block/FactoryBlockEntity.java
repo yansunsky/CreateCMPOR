@@ -779,6 +779,8 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             // 燃烧模式：接受任意合格燃料（动态容器，容量 1024；燃料按热值由 tickBurner 消耗）
             if (acceptBurnFuel(stack)) {
                 ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
+                CreateCMPOR.LOGGER.info("[factory-burn] @{} 接受燃料插入 {} {}（slot {}，simulate {}）",
+                        worldPosition, id, stack.getCount(), slot, simulate);
                 Container container = inputItems.computeIfAbsent(id, k -> new Container(1024));
                 long space = container.capacity - container.amount;
                 int accepted = (int) Math.min(space, stack.getCount());
@@ -838,6 +840,8 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         public boolean isItemValid(int slot, ItemStack stack) {
             // 燃烧模式：接受任意合格燃料（动态容器，insertItem 分支接收）
             if (acceptBurnFuel(stack)) {
+                CreateCMPOR.LOGGER.info("[factory-burn] @{} isItemValid 燃料通过 {}（slot {}）",
+                        worldPosition, stack, slot);
                 return true;
             }
             List<Item> inputs = inputKeys();
