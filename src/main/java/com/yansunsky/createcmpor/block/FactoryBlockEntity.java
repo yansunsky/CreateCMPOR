@@ -836,6 +836,10 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
 
         @Override
         public boolean isItemValid(int slot, ItemStack stack) {
+            // 燃烧模式：接受任意合格燃料（动态容器，insertItem 分支接收）
+            if (acceptBurnFuel(stack)) {
+                return true;
+            }
             List<Item> inputs = inputKeys();
             return slot < inputs.size() && stack.is(inputs.get(slot));
         }
@@ -1027,11 +1031,13 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
                 .forGoggles(tooltip, 1);
         if (burnModeActive()) {
             // 燃烧：普通 X/s（橙红） · 超热 Y/s（蓝白）——对应 KINDLED 橙红火 / SEETHING 蓝白魂火
-            MutableComponent burnLine = Component.translatable("createcmpor.tooltip.factory.burn_rate",
-                    Component.literal(String.format(java.util.Locale.ROOT, "%.2f/s", normalBurnDemandPerSecond))
-                            .withStyle(ChatFormatting.GOLD),
-                    Component.literal(String.format(java.util.Locale.ROOT, "%.2f/s", superBurnDemandPerSecond))
-                            .withStyle(ChatFormatting.AQUA));
+            // 手动 5 空格缩进（复制 catnip LangBuilder.forGoggles 的字符串缩进：getIndents(font, 4+1)，默认字体＝5 空格）
+            MutableComponent burnLine = Component.literal("     ").append(
+                    Component.translatable("createcmpor.tooltip.factory.burn_rate",
+                            Component.literal(String.format(java.util.Locale.ROOT, "%.2f/s", normalBurnDemandPerSecond))
+                                    .withStyle(ChatFormatting.GOLD),
+                            Component.literal(String.format(java.util.Locale.ROOT, "%.2f/s", superBurnDemandPerSecond))
+                                    .withStyle(ChatFormatting.AQUA)));
             tooltip.add(burnLine);
         }
         appendIoLines(tooltip);
