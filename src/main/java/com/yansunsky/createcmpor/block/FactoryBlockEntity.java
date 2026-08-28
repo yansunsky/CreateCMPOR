@@ -410,6 +410,11 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         } else {
             tickRateContinuous();
         }
+        // 输出型工厂：容量随运转状态动态变化（lastSuccess 门控）——每 tick 主动向网络重报，
+        // 否则恢复供料/暂停变化不会触发 onSpeedChanged → 网络/客户端缓存旧容量（显示 0）。
+        if (FactoryStressAccess.get(this).isProvide() && hasNetwork() && isSource()) {
+            getOrCreateNetwork().updateCapacityFor(this, calculateAddedStressCapacity());
+        }
     }
 
     /** 工厂是否为输入型（需要外部应力驱动）。 */
