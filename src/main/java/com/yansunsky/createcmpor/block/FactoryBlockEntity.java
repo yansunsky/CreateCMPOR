@@ -128,6 +128,22 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         super(ModBlockEntities.FACTORY.get(), pos, state);
     }
 
+    /**
+     * 加载时把本工厂注册进组索引（幂等）：工厂被取下重放（任意位置）后，
+     * 索引位置跟随实际存在位置 —— 组还原数量校验不再依赖固化时坐标（无顺序/位置限制）。
+     * 每次 chunk 加载都会触发，索引 contains 判重保证幂等。
+     */
+    @Override
+    public void onLoad() {
+        super.onLoad();
+        if (level != null && !level.isClientSide && installed && roomCode != null && !roomCode.isBlank()) {
+            com.yansunsky.createcmpor.evaluation.FactoryIndexSavedData.get(
+                            level.getServer())
+                    .registerFactoryPosition(roomCode,
+                            net.minecraft.core.GlobalPos.of(level.dimension(), worldPosition));
+        }
+    }
+
     public String getRoomCode() {
         return roomCode;
     }

@@ -136,6 +136,8 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
         if (breakEvent.isCanceled()) {
             return InteractionResult.SUCCESS;
         }
+        // 取下前：从组索引移除本位置（放回任意位置后仍可组还原——索引跟随实际位置）
+        removeFromFactoryIndex(serverLevel, pos, level.getBlockEntity(pos));
         dropFactoryWithData(serverLevel, pos, level.getBlockEntity(pos));
         state.spawnAfterBreak(serverLevel, pos, context.getItemInHand(), false);
         level.destroyBlock(pos, false);
@@ -155,6 +157,7 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
         if (!(level instanceof ServerLevel serverLevel)) {
             return;
         }
+        removeFromFactoryIndex(serverLevel, pos, blockEntity);
         dropFactoryWithData(serverLevel, pos, blockEntity);
     }
 
@@ -168,6 +171,20 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
             BlockItem.setBlockEntityData(drop, blockEntity.getType(), tag);
         }
         Block.popResource(level, pos, drop);
+    }
+
+    /** 工厂被取下/破坏前：从组索引移除本位置（确保索引只记录实际存在的工厂，重放可组还原）。 */
+    private static void removeFromFactoryIndex(ServerLevel level, BlockPos pos,
+                                               @Nullable BlockEntity blockEntity) {
+        if (!(blockEntity instanceof FactoryBlockEntity factory)) {
+            return;
+        }
+        String room = factory.getRoomCode();
+        if (room == null || room.isBlank()) {
+            return;
+        }
+        com.yansunsky.createcmpor.evaluation.FactoryIndexSavedData.get(level.getServer())
+                .removeFactoryPosition(room, net.minecraft.core.GlobalPos.of(level.dimension(), pos));
     }
 
     /** 接口轴状态变化会改变动力学等价性（网络需重建）。 */

@@ -101,6 +101,32 @@ public final class FactoryIndexSavedData extends SavedData {
         }
     }
 
+    /**
+     * 增量注册单个工厂位置（幂等）：用于工厂被取下重放（任意位置）后保持索引与"实际存在的工厂"一致，
+     * 使组还原数量校验不再依赖固化时坐标（无顺序/位置限制，齐了即可还原）。
+     */
+    public void registerFactoryPosition(String roomCode, GlobalPos pos) {
+        List<GlobalPos> positions = factoryByRoom.computeIfAbsent(roomCode, k -> new ArrayList<>());
+        if (!positions.contains(pos)) {
+            positions.add(pos);
+            setDirty();
+        }
+    }
+
+    /** 增量移除单个工厂位置（工厂被破坏/取走时）；列表空则删除房间条目。 */
+    public void removeFactoryPosition(String roomCode, GlobalPos pos) {
+        List<GlobalPos> positions = factoryByRoom.get(roomCode);
+        if (positions == null) {
+            return;
+        }
+        if (positions.remove(pos)) {
+            if (positions.isEmpty()) {
+                factoryByRoom.remove(roomCode);
+            }
+            setDirty();
+        }
+    }
+
     /** 按房间号查工厂位置列表（第一个 = 主位置）；未命中返回 empty。 */
     public Optional<List<GlobalPos>> factoriesForRoom(String roomCode) {
         return Optional.ofNullable(factoryByRoom.get(roomCode));
