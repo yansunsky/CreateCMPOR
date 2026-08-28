@@ -20,7 +20,9 @@ final class EvaluationVerdict {
                   Map<EvaluationTrace.FlowKey, int[]> replayOut,
                   double inputEnergyRate, double outputEnergyRate,
                   int[] energyReplayIn, int[] energyReplayOut,
-                  StressProfile stressProfile, String detail) {
+                  StressProfile stressProfile,
+                  double normalBurnDemandPerSecond, double superBurnDemandPerSecond,
+                  String detail) {
         boolean rejected() {
             return VERDICT_REJECTED.equals(verdict);
         }
@@ -80,7 +82,9 @@ final class EvaluationVerdict {
                 replay.replayIn(), replay.replayOut(),
                 0, EvaluationTrace.total(replay.energyOut()) > 0
                         ? (double) EvaluationTrace.total(replay.energyOut()) / trace.seconds() : 0,
-                replay.energyIn(), replay.energyOut(), stressProfile, detail);
+                replay.energyIn(), replay.energyOut(), stressProfile,
+                replay.normalBurnDemandPerSecond(), replay.superBurnDemandPerSecond(),
+                detail);
     }
 
     private static Result rateResult(EvaluationTrace trace,
@@ -97,12 +101,14 @@ final class EvaluationVerdict {
                 base, s1, trace.energy(), outputEnergyRate, trace.seconds());
         return new Result(VERDICT_RATE, null, audited.inputs(), audited.outputs(),
                 Map.of(), Map.of(), inputEnergyRate, auditedEnergy,
-                null, null, stressProfile, "RATE：稳定速率拟合");
+                null, null, stressProfile,
+                audited.normalBurnDemandPerSecond(), audited.superBurnDemandPerSecond(),
+                "RATE：稳定速率拟合");
     }
 
     static Result reject(String reason, String detail) {
         return new Result(VERDICT_REJECTED, reason, Map.of(), Map.of(), Map.of(), Map.of(),
-                0, 0, null, null, StressProfile.EMPTY, detail);
+                0, 0, null, null, StressProfile.EMPTY, 0, 0, detail);
     }
 
     private static boolean isStable(int[] series) {

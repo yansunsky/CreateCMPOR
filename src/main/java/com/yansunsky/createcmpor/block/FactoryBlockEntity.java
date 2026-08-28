@@ -17,6 +17,7 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtUtils;
 import net.minecraft.nbt.Tag;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.item.Item;
@@ -84,6 +85,15 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
     private double inputEnergyFraction;
     private double outputEnergyFraction;
 
+    // ===== 燃烧热值（评估预存折算；>0 = "燃烧模式"玩家投任意燃料按热值动态消耗） =====
+    /** 普通热值需求（tick/秒；物品流无燃料时对外表现） */
+    private double normalBurnDemandPerSecond;
+    /** 超热热值需求（tick/秒） */
+    private double superBurnDemandPerSecond;
+    /** 燃烧累计 fraction（需求/燃料热值 → 每满 1 从输入缓存扣 1 个燃料） */
+    private double normalBurnFraction;
+    private double superBurnFraction;
+
     // RATE 连续流速率（每 tick），持久化
     private final Map<ResourceLocation, Double> inputItemTickRates = new LinkedHashMap<>();
     private final Map<ResourceLocation, Double> outputItemTickRates = new LinkedHashMap<>();
@@ -145,8 +155,13 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
     /** RATE 模式：输入容量 = 每秒速率 × 20 秒缓冲；输出 = 大容量暂存仓（连续产出积累）。 */
     public void installRates(Map<EvaluationTrace.FlowKey, Double> inputRates,
                              Map<EvaluationTrace.FlowKey, Double> outputRates,
-                             double inputEnergyRate, double outputEnergyRate) {
+                             double inputEnergyRate, double outputEnergyRate,
+                             double normalBurnDemandPerSecond, double superBurnDemandPerSecond) {
         replayMode = false;
+        this.normalBurnDemandPerSecond = normalBurnDemandPerSecond;
+        this.superBurnDemandPerSecond = superBurnDemandPerSecond;
+        this.normalBurnFraction = 0;
+        this.superBurnFraction = 0;
         inputItems.clear();
         outputItems.clear();
         inputFluids.clear();
@@ -205,8 +220,13 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
     /** REPLAY 模式：每秒 pattern → 容器容量（峰值秒 × 20 缓冲）。 */
     public void installPatterns(Map<EvaluationTrace.FlowKey, int[]> replayIn,
                                 Map<EvaluationTrace.FlowKey, int[]> replayOut,
-                                int[] energyIn, int[] energyOut) {
+                                int[] energyIn, int[] energyOut,
+                                double normalBurnDemandPerSecond, double superBurnDemandPerSecond) {
         replayMode = true;
+        this.normalBurnDemandPerSecond = normalBurnDemandPerSecond;
+        this.superBurnDemandPerSecond = superBurnDemandPerSecond;
+        this.normalBurnFraction = 0;
+        this.superBurnFraction = 0;
         inputItemPatterns.clear();
         outputItemPatterns.clear();
         inputFluidPatterns.clear();
@@ -361,6 +381,8 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         if (tickCount >= 20) {
             tickCount = 0;
         }
+        // 燃烧热值：每 tick 按需求从输入缓存动态消耗燃料（熔岩桶返还空桶到输出）
+        tickBurner();
         if (replayMode) {
             if (tickCount == 0) {
                 tickReplay();
@@ -377,7 +399,7 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
 
     /** RATE 连续流：每 tick 按速率累计，输入不足或输出满仓即卡住（背压，产物不丢弃）。 */
     private void tickRateContinuous() {
-        if (!inputsSatisfied() || !outputsHaveSpace()) {
+        if (!inputsSatisfied() || !burnerSatisfied() || !outputsHaveSpace()) {
             lastSuccess = false;
             return;
         }
@@ -501,6 +523,9 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
     }
 
     private boolean replayIsReady(int second) {
+        if (!burnerSatisfied()) {
+            return false;
+        }
         for (Map.Entry<ResourceLocation, int[]> entry : inputItemPatterns.entrySet()) {
             Container container = Objects.requireNonNull(inputItems.get(entry.getKey()));
             int need = entry.getValue()[second % entry.getValue().length];
@@ -570,6 +595,127 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         setChanged();
     }
 
+    // ===== 燃烧热值（评估预存折算）=====
+
+    /** 燃烧模式：普通或超热需求 > 0。 */
+    private boolean burnModeActive() {
+        return normalBurnDemandPerSecond > 0 || superBurnDemandPerSecond > 0;
+    }
+
+    /** 每 tick 按需求从输入缓存动态消耗燃料（需求/燃料热值 → fraction 满 1 扣 1 个）。 */
+    private void tickBurner() {
+        if (!burnModeActive()) {
+            return;
+        }
+        if (normalBurnDemandPerSecond > 0) {
+            consumeNormalBurnFuel();
+        }
+        if (superBurnDemandPerSecond > 0) {
+            consumeSuperBurnFuel();
+        }
+    }
+
+    private void consumeNormalBurnFuel() {
+        for (Map.Entry<ResourceLocation, Container> entry : inputItems.entrySet()) {
+            ResourceLocation id = entry.getKey();
+            if (BURN_BLAZE_CAKE.equals(id)) {
+                continue; // 烈焰蛋糕是超热燃料，归超热档
+            }
+            double heat = burnTimeOf(id);
+            if (heat <= 0) {
+                continue;
+            }
+            normalBurnFraction += normalBurnDemandPerSecond / 20.0 / heat;
+            long whole = (long) normalBurnFraction;
+            if (whole > 0) {
+                normalBurnFraction -= whole;
+                entry.getValue().amount = Math.max(0, entry.getValue().amount - whole);
+                if (BURN_LAVA_BUCKET.equals(id)) {
+                    returnEmptyBucket(entry.getKey(), whole);
+                }
+            }
+            break; // 一种燃料（LinkedHashMap 先入先烧）
+        }
+    }
+
+    private void consumeSuperBurnFuel() {
+        Container cake = inputItems.get(BURN_BLAZE_CAKE);
+        if (cake == null || cake.amount <= 0) {
+            return;
+        }
+        superBurnFraction += superBurnDemandPerSecond / 20.0 / 3200.0; // 烈焰蛋糕 3200 tick
+        long whole = (long) superBurnFraction;
+        if (whole > 0) {
+            superBurnFraction -= whole;
+            cake.amount = Math.max(0, cake.amount - whole);
+        }
+    }
+
+    /** 熔岩桶烧掉后返还空桶到输出缓存（玩家/漏斗可从输出侧取出；占输出容量）。 */
+    private void returnEmptyBucket(ResourceLocation burnedFuel, long count) {
+        Container bucket = outputItems.computeIfAbsent(BURN_BUCKET,
+                k -> new Container(ITEM_OUTPUT_BUFFER));
+        bucket.amount = Math.min(bucket.capacity, bucket.amount + count);
+    }
+
+    /** 燃烧满足：需求档对应燃料在缓存中（amount ≥ 1）才允许推进。 */
+    private boolean burnerSatisfied() {
+        if (!burnModeActive()) {
+            return true;
+        }
+        if (normalBurnDemandPerSecond > 0 && !hasBurnFuel(false)) {
+            return false;
+        }
+        return superBurnDemandPerSecond <= 0 || hasBurnFuel(true);
+    }
+
+    private boolean hasBurnFuel(boolean superHeated) {
+        if (superHeated) {
+            Container cake = inputItems.get(BURN_BLAZE_CAKE);
+            return cake != null && cake.amount >= 1;
+        }
+        for (Map.Entry<ResourceLocation, Container> entry : inputItems.entrySet()) {
+            if (!BURN_BLAZE_CAKE.equals(entry.getKey())
+                    && burnTimeOf(entry.getKey()) > 0
+                    && entry.getValue().amount >= 1) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 物品燃料热值（tick；超热烈焰蛋糕=3200）。 */
+    double burnTimeOf(ResourceLocation id) {
+        Item item = BuiltInRegistries.ITEM.get(id);
+        if (item == null || item == net.minecraft.world.item.Items.AIR) {
+            return 0;
+        }
+        if (BURN_BLAZE_CAKE.equals(id)) {
+            return 3200;
+        }
+        int burn = new ItemStack(item).getBurnTime(null);
+        return burn > 0 ? burn : 0;
+    }
+
+    /** 燃烧模式是否接受该物品为燃料（普通需求收普通可燃物；超热需求收烈焰蛋糕）。 */
+    private boolean acceptBurnFuel(ItemStack stack) {
+        if (!burnModeActive() || stack.isEmpty()) {
+            return false;
+        }
+        ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
+        if (BURN_BLAZE_CAKE.equals(id)) {
+            return superBurnDemandPerSecond > 0;
+        }
+        return normalBurnDemandPerSecond > 0 && burnTimeOf(id) > 0;
+    }
+
+    private static final ResourceLocation BURN_BLAZE_CAKE =
+            ResourceLocation.fromNamespaceAndPath("create", "blaze_cake");
+    private static final ResourceLocation BURN_LAVA_BUCKET =
+            ResourceLocation.fromNamespaceAndPath("minecraft", "lava_bucket");
+    private static final ResourceLocation BURN_BUCKET =
+            ResourceLocation.fromNamespaceAndPath("minecraft", "bucket");
+
     // ===== 能力 =====
 
     public IItemHandler getItemHandler() {
@@ -630,6 +776,19 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
 
         @Override
         public ItemStack insertItem(int slot, ItemStack stack, boolean simulate) {
+            // 燃烧模式：接受任意合格燃料（动态容器，容量 1024；燃料按热值由 tickBurner 消耗）
+            if (acceptBurnFuel(stack)) {
+                ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
+                Container container = inputItems.computeIfAbsent(id, k -> new Container(1024));
+                long space = container.capacity - container.amount;
+                int accepted = (int) Math.min(space, stack.getCount());
+                if (!simulate) {
+                    container.amount += accepted;
+                    setChanged();
+                }
+                return accepted >= stack.getCount() ? ItemStack.EMPTY
+                        : stack.copyWithCount(stack.getCount() - accepted);
+            }
             List<Item> inputs = inputKeys();
             if (slot >= inputs.size() || stack.isEmpty()) {
                 return stack;
@@ -866,6 +1025,15 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         net.createmod.catnip.lang.Lang.builder("createcmpor")
                 .translate(replayMode ? "tooltip.factory.mode_replay" : "tooltip.factory.mode_rate")
                 .forGoggles(tooltip, 1);
+        if (burnModeActive()) {
+            // 燃烧：普通 X/s（橙红） · 超热 Y/s（蓝白）——对应 KINDLED 橙红火 / SEETHING 蓝白魂火
+            MutableComponent burnLine = Component.translatable("tooltip.factory.burn_rate",
+                    Component.literal(String.format(java.util.Locale.ROOT, "%.2f/s", normalBurnDemandPerSecond))
+                            .withStyle(ChatFormatting.GOLD),
+                    Component.literal(String.format(java.util.Locale.ROOT, "%.2f/s", superBurnDemandPerSecond))
+                            .withStyle(ChatFormatting.AQUA));
+            tooltip.add(burnLine);
+        }
         appendIoLines(tooltip);
         return true;
     }
@@ -1009,6 +1177,8 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         loadRateMap(tag, "output_fluid_rates", outputFluidTickRates);
         inputEnergyTickRate = tag.getDouble("input_energy_rate");
         outputEnergyTickRate = tag.getDouble("output_energy_rate");
+        normalBurnDemandPerSecond = tag.getDouble("normal_burn_demand");
+        superBurnDemandPerSecond = tag.getDouble("super_burn_demand");
     }
 
     @Override
@@ -1047,6 +1217,8 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         saveRateMap(tag, "output_fluid_rates", outputFluidTickRates);
         tag.putDouble("input_energy_rate", inputEnergyTickRate);
         tag.putDouble("output_energy_rate", outputEnergyTickRate);
+        tag.putDouble("normal_burn_demand", normalBurnDemandPerSecond);
+        tag.putDouble("super_burn_demand", superBurnDemandPerSecond);
     }
 
     private static void loadRateMap(CompoundTag tag, String key,

@@ -406,10 +406,12 @@ public final class EvaluationCloneManager {
                 EvaluationVerdict.Result branchResult = results.get(i);
                 if (EvaluationVerdict.VERDICT_REPLAY.equals(branchResult.verdict())) {
                     factory.installPatterns(branchResult.replayIn(), branchResult.replayOut(),
-                            branchResult.energyReplayIn(), branchResult.energyReplayOut());
+                            branchResult.energyReplayIn(), branchResult.energyReplayOut(),
+                            branchResult.normalBurnDemandPerSecond(), branchResult.superBurnDemandPerSecond());
                 } else {
                     factory.installRates(branchResult.inputRates(), branchResult.outputRates(),
-                            branchResult.inputEnergyRate(), branchResult.outputEnergyRate());
+                            branchResult.inputEnergyRate(), branchResult.outputEnergyRate(),
+                            branchResult.normalBurnDemandPerSecond(), branchResult.superBurnDemandPerSecond());
                 }
                 factory.installRestoreData(session.originalState(), session.originalBlockEntityNbt(),
                         branchResult.stressProfile());
@@ -440,10 +442,12 @@ public final class EvaluationCloneManager {
             EvaluationVerdict.Result branchResult = results.get(i);
             if (EvaluationVerdict.VERDICT_REPLAY.equals(branchResult.verdict())) {
                 factory.installPatterns(branchResult.replayIn(), branchResult.replayOut(),
-                        branchResult.energyReplayIn(), branchResult.energyReplayOut());
+                        branchResult.energyReplayIn(), branchResult.energyReplayOut(),
+                        branchResult.normalBurnDemandPerSecond(), branchResult.superBurnDemandPerSecond());
             } else {
                 factory.installRates(branchResult.inputRates(), branchResult.outputRates(),
-                        branchResult.inputEnergyRate(), branchResult.outputEnergyRate());
+                        branchResult.inputEnergyRate(), branchResult.outputEnergyRate(),
+                        branchResult.normalBurnDemandPerSecond(), branchResult.superBurnDemandPerSecond());
             }
             factory.installRestoreData(session.originalState(), session.originalBlockEntityNbt(),
                     branchResult.stressProfile());
