@@ -20,7 +20,8 @@ import java.util.Set;
 final class EvaluationReplay {
     record ReplayResult(Map<EvaluationTrace.FlowKey, int[]> replayIn,
                         Map<EvaluationTrace.FlowKey, int[]> replayOut,
-                        int[] energyIn, int[] energyOut) {
+                        int[] energyIn, int[] energyOut,
+                        double normalBurnDemandPerSecond, double superBurnDemandPerSecond) {
     }
 
     private EvaluationReplay() {
@@ -40,7 +41,7 @@ final class EvaluationReplay {
             int[] energyIn = trace.energy().input == null ? new int[recordLength] : trace.energy().input.clone();
             int[] energyOut = trace.energy().output == null ? new int[recordLength] : trace.energy().output.clone();
             applyLossAndFilter(in, out, energyOut, recordLength);
-            return new ReplayResult(in, out, energyIn, energyOut);
+            return new ReplayResult(in, out, energyIn, energyOut, 0, 0);
         }
 
         Map<EvaluationTrace.FlowKey, int[]> in = new HashMap<>();
@@ -60,7 +61,27 @@ final class EvaluationReplay {
         netBalance(trace, s0, base, end, in, out, recordLength);
         energyNetBalance(trace, base, end, energyIn, energyOut, recordLength);
         applyLossAndFilter(in, out, energyOut, recordLength);
-        return new ReplayResult(in, out, energyIn, energyOut);
+
+        // 燃烧室预存折算（与 RATE 同规则）：预存折算燃料注入输入 pattern（int 粒度：总量取整放最后一秒桶），
+        // 需求（物品流无燃料时）由工厂对外表现。REPLAY 的 int pattern 无法表达 <1 的每秒折算，取整误差可接受。
+        EvaluationAudit.BurnerPreload burner =
+                EvaluationAudit.resolveBurnerPreload(base, end, trace, recordLength);
+        burner.fuelInputsPerSecond().forEach((id, perSecond) -> {
+            int total = (int) Math.round(perSecond * recordLength);
+            if (total <= 0) {
+                return;
+            }
+            int[] arr = in.computeIfAbsent(EvaluationTrace.FlowKey.item(id), k -> new int[recordLength]);
+            if (arr.length > 0 && perSecond < 1) {
+                arr[arr.length - 1] += total; // 少量折算放最后一秒桶
+            } else {
+                for (int i = 0; i < arr.length; i++) {
+                    arr[i] += (int) Math.floor(perSecond);
+                }
+            }
+        });
+        return new ReplayResult(in, out, energyIn, energyOut,
+                burner.normalDemandPerSecond(), burner.superDemandPerSecond());
     }
 
     /**
