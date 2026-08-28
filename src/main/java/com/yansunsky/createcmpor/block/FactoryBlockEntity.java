@@ -93,6 +93,8 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
     /** 燃烧累计 fraction（需求/燃料热值 → 每满 1 从输入缓存扣 1 个燃料） */
     private double normalBurnFraction;
     private double superBurnFraction;
+    /** 独立燃料仓（与输入/输出缓存解耦；burn 模式时 handler 末位追加 1 个燃料槽）。 */
+    private final Map<ResourceLocation, Container> burnerFuelItems = new LinkedHashMap<>();
 
     // RATE 连续流速率（每 tick），持久化
     private final Map<ResourceLocation, Double> inputItemTickRates = new LinkedHashMap<>();
@@ -162,6 +164,7 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         this.superBurnDemandPerSecond = superBurnDemandPerSecond;
         this.normalBurnFraction = 0;
         this.superBurnFraction = 0;
+        burnerFuelItems.clear();
         inputItems.clear();
         outputItems.clear();
         inputFluids.clear();
@@ -227,6 +230,7 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         this.superBurnDemandPerSecond = superBurnDemandPerSecond;
         this.normalBurnFraction = 0;
         this.superBurnFraction = 0;
+        burnerFuelItems.clear();
         inputItemPatterns.clear();
         outputItemPatterns.clear();
         inputFluidPatterns.clear();
@@ -616,7 +620,7 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
     }
 
     private void consumeNormalBurnFuel() {
-        for (Map.Entry<ResourceLocation, Container> entry : inputItems.entrySet()) {
+        for (Map.Entry<ResourceLocation, Container> entry : burnerFuelItems.entrySet()) {
             ResourceLocation id = entry.getKey();
             if (BURN_BLAZE_CAKE.equals(id)) {
                 continue; // 烈焰蛋糕是超热燃料，归超热档
@@ -630,16 +634,14 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             if (whole > 0) {
                 normalBurnFraction -= whole;
                 entry.getValue().amount = Math.max(0, entry.getValue().amount - whole);
-                if (BURN_LAVA_BUCKET.equals(id)) {
-                    returnEmptyBucket(entry.getKey(), whole);
-                }
+                // 熔岩桶：同 Create 燃烧室语义直接消耗（不返还桶——避免产物污染）
             }
             break; // 一种燃料（LinkedHashMap 先入先烧）
         }
     }
 
     private void consumeSuperBurnFuel() {
-        Container cake = inputItems.get(BURN_BLAZE_CAKE);
+        Container cake = burnerFuelItems.get(BURN_BLAZE_CAKE);
         if (cake == null || cake.amount <= 0) {
             return;
         }
@@ -651,14 +653,7 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         }
     }
 
-    /** 熔岩桶烧掉后返还空桶到输出缓存（玩家/漏斗可从输出侧取出；占输出容量）。 */
-    private void returnEmptyBucket(ResourceLocation burnedFuel, long count) {
-        Container bucket = outputItems.computeIfAbsent(BURN_BUCKET,
-                k -> new Container(ITEM_OUTPUT_BUFFER));
-        bucket.amount = Math.min(bucket.capacity, bucket.amount + count);
-    }
-
-    /** 燃烧满足：需求档对应燃料在缓存中（amount ≥ 1）才允许推进。 */
+    /** 燃烧满足：需求档对应燃料在独立燃料仓中（amount ≥ 1）才允许推进。 */
     private boolean burnerSatisfied() {
         if (!burnModeActive()) {
             return true;
@@ -671,10 +666,10 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
 
     private boolean hasBurnFuel(boolean superHeated) {
         if (superHeated) {
-            Container cake = inputItems.get(BURN_BLAZE_CAKE);
+            Container cake = burnerFuelItems.get(BURN_BLAZE_CAKE);
             return cake != null && cake.amount >= 1;
         }
-        for (Map.Entry<ResourceLocation, Container> entry : inputItems.entrySet()) {
+        for (Map.Entry<ResourceLocation, Container> entry : burnerFuelItems.entrySet()) {
             if (!BURN_BLAZE_CAKE.equals(entry.getKey())
                     && burnTimeOf(entry.getKey()) > 0
                     && entry.getValue().amount >= 1) {
@@ -711,10 +706,6 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
 
     private static final ResourceLocation BURN_BLAZE_CAKE =
             ResourceLocation.fromNamespaceAndPath("create", "blaze_cake");
-    private static final ResourceLocation BURN_LAVA_BUCKET =
-            ResourceLocation.fromNamespaceAndPath("minecraft", "lava_bucket");
-    private static final ResourceLocation BURN_BUCKET =
-            ResourceLocation.fromNamespaceAndPath("minecraft", "bucket");
 
     // ===== 能力 =====
 
@@ -753,35 +744,50 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
 
         @Override
         public int getSlots() {
-            return inputKeys().size() + outputKeys().size();
+            return inputKeys().size() + outputKeys().size() + (burnModeActive() ? 1 : 0);
+        }
+
+        /** 燃料槽索引（burn 模式追加在输入+输出之后；未激活返回 -1）。 */
+        private int fuelSlotIndex() {
+            return burnModeActive() ? inputKeys().size() + outputKeys().size() : -1;
         }
 
         @Override
         public ItemStack getStackInSlot(int slot) {
-            List<Item> inputs = inputKeys();
-            if (slot < inputs.size()) {
-                Container container = inputItems.get(BuiltInRegistries.ITEM.getKey(inputs.get(slot)));
-                long amount = container == null ? 0 : Math.min(container.amount, 64);
-                return new ItemStack(inputs.get(slot), (int) Math.max(1, amount));
+            // 燃料槽（burn 模式追加的末位槽）：返回燃料仓首个非空堆（空则 EMPTY）
+            int fuelSlot = fuelSlotIndex();
+            if (burnModeActive() && slot == fuelSlot) {
+                for (Map.Entry<ResourceLocation, Container> entry : burnerFuelItems.entrySet()) {
+                    if (entry.getValue().amount > 0) {
+                        return new ItemStack(BuiltInRegistries.ITEM.get(entry.getKey()),
+                                (int) Math.min(entry.getValue().amount, 64));
+                    }
+                }
+                return ItemStack.EMPTY;
             }
-            int outputIndex = slot - inputs.size();
+            List<Item> inputs = inputKeys();
+            Container inputContainer = slot < inputs.size()
+                    ? inputItems.get(BuiltInRegistries.ITEM.getKey(inputs.get(slot))) : null;
+            if (slot < inputs.size()) {
+                long amount = inputContainer == null ? 0 : Math.min(inputContainer.amount, 64);
+                return new ItemStack(inputs.get(slot), (int) amount); // 空槽返回 EMPTY（不再伪 1，便于 insertItemStacked 类自动化）
+            }
             List<Item> outputs = outputKeys();
-            if (outputIndex < outputs.size()) {
+            int outputIndex = slot - inputs.size();
+            if (outputIndex >= 0 && outputIndex < outputs.size()) {
                 Container container = outputItems.get(BuiltInRegistries.ITEM.getKey(outputs.get(outputIndex)));
                 long amount = container == null ? 0 : Math.min(container.amount, 64);
-                return new ItemStack(outputs.get(outputIndex), (int) Math.max(1, amount));
+                return new ItemStack(outputs.get(outputIndex), (int) amount); // 空槽返回 EMPTY
             }
             return ItemStack.EMPTY;
         }
 
         @Override
         public ItemStack insertItem(int slot, ItemStack stack, boolean simulate) {
-            // 燃烧模式：接受任意合格燃料（动态容器，容量 1024；燃料按热值由 tickBurner 消耗）
-            if (acceptBurnFuel(stack)) {
+            // 燃料槽：接受任意合格燃料进独立燃料仓（容量 1024/类；按热值由 tickBurner 消耗；与其他缓存解耦）
+            if (acceptBurnFuel(stack) && slot == fuelSlotIndex()) {
                 ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
-                CreateCMPOR.LOGGER.info("[factory-burn] @{} 接受燃料插入 {} {}（slot {}，simulate {}）",
-                        worldPosition, id, stack.getCount(), slot, simulate);
-                Container container = inputItems.computeIfAbsent(id, k -> new Container(1024));
+                Container container = burnerFuelItems.computeIfAbsent(id, k -> new Container(1024));
                 long space = container.capacity - container.amount;
                 int accepted = (int) Math.min(space, stack.getCount());
                 if (!simulate) {
@@ -813,6 +819,10 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
 
         @Override
         public ItemStack extractItem(int slot, int amount, boolean simulate) {
+            // 燃料槽只进不出（燃料在工厂内部燃烧；熔岩桶同 Create 燃烧室语义——直接消耗不返还）
+            if (burnModeActive() && slot == fuelSlotIndex()) {
+                return ItemStack.EMPTY;
+            }
             List<Item> inputs = inputKeys();
             int outputIndex = slot - inputs.size();
             List<Item> outputs = outputKeys();
@@ -838,10 +848,8 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
 
         @Override
         public boolean isItemValid(int slot, ItemStack stack) {
-            // 燃烧模式：接受任意合格燃料（动态容器，insertItem 分支接收）
-            if (acceptBurnFuel(stack)) {
-                CreateCMPOR.LOGGER.info("[factory-burn] @{} isItemValid 燃料通过 {}（slot {}）",
-                        worldPosition, stack, slot);
+            // 燃料槽：接受任意合格燃料
+            if (burnModeActive() && slot == fuelSlotIndex() && acceptBurnFuel(stack)) {
                 return true;
             }
             List<Item> inputs = inputKeys();
@@ -1163,6 +1171,7 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         installed = tag.getBoolean("installed");
         loadContainerMap(tag, "input_items", inputItems);
         loadContainerMap(tag, "output_items", outputItems);
+        loadContainerMap(tag, "burner_fuel_items", burnerFuelItems);
         loadContainerMap(tag, "input_fluids", inputFluids);
         loadContainerMap(tag, "output_fluids", outputFluids);
         inputEnergyCapacity = tag.getLong("input_energy_capacity");
@@ -1201,6 +1210,7 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         tag.putBoolean("installed", installed);
         saveContainerMap(tag, "input_items", inputItems);
         saveContainerMap(tag, "output_items", outputItems);
+        saveContainerMap(tag, "burner_fuel_items", burnerFuelItems);
         saveContainerMap(tag, "input_fluids", inputFluids);
         saveContainerMap(tag, "output_fluids", outputFluids);
         tag.putLong("input_energy_capacity", inputEnergyCapacity);
