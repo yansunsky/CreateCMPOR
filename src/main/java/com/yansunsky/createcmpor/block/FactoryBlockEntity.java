@@ -1027,7 +1027,7 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
                 .forGoggles(tooltip, 1);
         if (burnModeActive()) {
             // 燃烧：普通 X/s（橙红） · 超热 Y/s（蓝白）——对应 KINDLED 橙红火 / SEETHING 蓝白魂火
-            MutableComponent burnLine = Component.translatable("tooltip.factory.burn_rate",
+            MutableComponent burnLine = Component.translatable("createcmpor.tooltip.factory.burn_rate",
                     Component.literal(String.format(java.util.Locale.ROOT, "%.2f/s", normalBurnDemandPerSecond))
                             .withStyle(ChatFormatting.GOLD),
                     Component.literal(String.format(java.util.Locale.ROOT, "%.2f/s", superBurnDemandPerSecond))
