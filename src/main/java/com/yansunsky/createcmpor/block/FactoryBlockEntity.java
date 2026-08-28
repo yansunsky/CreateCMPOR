@@ -656,11 +656,16 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         }
     }
 
-    /** 熔岩桶烧完：返还空桶到输出缓存（玩家可从输出侧取出；不计产品速率、tooltip 隐藏；占输出容量——玩家不取则背压）。 */
+    /** 熔岩桶烧完：空桶以掉落物形式直接弹出到工厂位置（同玩家投桶拿回空桶的直觉；不占工厂输出缓存）。 */
     private void returnEmptyBucket(long count) {
-        Container bucket = outputItems.computeIfAbsent(BURN_BUCKET,
-                k -> new Container(ITEM_OUTPUT_BUFFER));
-        bucket.amount = Math.min(bucket.capacity, bucket.amount + count);
+        if (level == null || level.isClientSide() || count <= 0) {
+            return;
+        }
+        ItemStack buckets = new ItemStack(net.minecraft.world.item.Items.BUCKET, (int) Math.min(count, 64));
+        net.minecraft.world.entity.item.ItemEntity entity = new net.minecraft.world.entity.item.ItemEntity(
+                level, worldPosition.getX() + 0.5, worldPosition.getY() + 0.5, worldPosition.getZ() + 0.5, buckets);
+        entity.setDefaultPickUpDelay();
+        level.addFreshEntity(entity);
     }
 
     /** 燃烧满足：需求档对应燃料在独立燃料仓中（amount ≥ 1）才允许推进。 */
@@ -718,8 +723,6 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             ResourceLocation.fromNamespaceAndPath("create", "blaze_cake");
     private static final ResourceLocation BURN_LAVA_BUCKET =
             ResourceLocation.fromNamespaceAndPath("minecraft", "lava_bucket");
-    private static final ResourceLocation BURN_BUCKET =
-            ResourceLocation.fromNamespaceAndPath("minecraft", "bucket");
 
     // ===== 能力 =====
 
