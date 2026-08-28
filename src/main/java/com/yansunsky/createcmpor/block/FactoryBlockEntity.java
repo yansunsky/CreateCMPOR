@@ -1223,6 +1223,7 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         factoryCount = Math.max(1, tag.getInt("factory_count"));
         replayMode = tag.getBoolean("replay_mode");
         installed = tag.getBoolean("installed");
+        lastSuccess = tag.getBoolean("last_success");
         loadContainerMap(tag, "input_items", inputItems);
         loadContainerMap(tag, "output_items", outputItems);
         loadContainerMap(tag, "burner_fuel_items", burnerFuelItems);
@@ -1262,6 +1263,7 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         tag.putInt("factory_count", factoryCount);
         tag.putBoolean("replay_mode", replayMode);
         tag.putBoolean("installed", installed);
+        tag.putBoolean("last_success", lastSuccess);
         saveContainerMap(tag, "input_items", inputItems);
         saveContainerMap(tag, "output_items", outputItems);
         saveContainerMap(tag, "burner_fuel_items", burnerFuelItems);
@@ -1415,9 +1417,11 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         StressProfile profile = FactoryStressAccess.get(this);
         float capacity = 0;
         if (profile.isProvide() && Config.ENABLE_STRESS_OUTPUT.get()) {
-            float speed = Math.abs(getTheoreticalSpeed());
-            if (speed != 0) {
-                capacity = profile.outputSU() * (1.0f - Config.STRESS_LOSS_FACTOR.get().floatValue()) / speed;
+            // 水车式：容量固定（注册 outputSU 折算，不随运转状态变）——护目镜显示 = 容量×转速（转速才随激活开关）。
+            // 之前用 |getTheoreticalSpeed()| 折算且随 lastSuccess 变 → 客户端不同步/显示 0。
+            float nominalSpeed = Math.abs(profile.outputRPM());
+            if (nominalSpeed != 0) {
+                capacity = profile.outputSU() * (1.0f - Config.STRESS_LOSS_FACTOR.get().floatValue()) / nominalSpeed;
             }
         }
         this.lastCapacityProvided = capacity;
