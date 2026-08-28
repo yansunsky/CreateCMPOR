@@ -634,7 +634,10 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             if (whole > 0) {
                 normalBurnFraction -= whole;
                 entry.getValue().amount = Math.max(0, entry.getValue().amount - whole);
-                // 熔岩桶：同 Create 燃烧室语义直接消耗（不返还桶——避免产物污染）
+                // 熔岩桶：烧完返还空桶到输出缓存（同 Create 燃烧室：玩家投桶 → 拿回空桶）
+                if (BURN_LAVA_BUCKET.equals(id)) {
+                    returnEmptyBucket(whole);
+                }
             }
             break; // 一种燃料（LinkedHashMap 先入先烧）
         }
@@ -651,6 +654,13 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             superBurnFraction -= whole;
             cake.amount = Math.max(0, cake.amount - whole);
         }
+    }
+
+    /** 熔岩桶烧完：返还空桶到输出缓存（玩家可从输出侧取出；不计产品速率、tooltip 隐藏；占输出容量——玩家不取则背压）。 */
+    private void returnEmptyBucket(long count) {
+        Container bucket = outputItems.computeIfAbsent(BURN_BUCKET,
+                k -> new Container(ITEM_OUTPUT_BUFFER));
+        bucket.amount = Math.min(bucket.capacity, bucket.amount + count);
     }
 
     /** 燃烧满足：需求档对应燃料在独立燃料仓中（amount ≥ 1）才允许推进。 */
@@ -706,6 +716,10 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
 
     private static final ResourceLocation BURN_BLAZE_CAKE =
             ResourceLocation.fromNamespaceAndPath("create", "blaze_cake");
+    private static final ResourceLocation BURN_LAVA_BUCKET =
+            ResourceLocation.fromNamespaceAndPath("minecraft", "lava_bucket");
+    private static final ResourceLocation BURN_BUCKET =
+            ResourceLocation.fromNamespaceAndPath("minecraft", "bucket");
 
     // ===== 能力 =====
 
@@ -1071,12 +1085,17 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
                             ratePerSecond(inputFluidTickRates.get(id)))
                     .style(ChatFormatting.AQUA)
                     .forGoggles(tooltip, 1));
-            outputItems.forEach((id, container) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
-                    .translate("tooltip.factory.io_out_item", itemDisplayName(id),
-                            ratePerSecond(outputItemTickRates.get(id)))
-                    .style(ChatFormatting.AQUA)
-                    .forGoggles(tooltip, 1));
-            outputFluids.forEach((id, container) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
+            outputItems.forEach((id, container) -> {
+                if (!outputItemTickRates.containsKey(id)) {
+                    return; // 返还桶等非产品项（无速率）不显示为产物
+                }
+                net.createmod.catnip.lang.Lang.builder("createcmpor")
+                        .translate("tooltip.factory.io_out_item", itemDisplayName(id),
+                                ratePerSecond(outputItemTickRates.get(id)))
+                        .style(ChatFormatting.AQUA)
+                        .forGoggles(tooltip, 1);
+            });
+            outputFluids.forEach((id, container) -> {
                     .translate("tooltip.factory.io_out_fluid", fluidDisplayName(id),
                             ratePerSecond(outputFluidTickRates.get(id)))
                     .style(ChatFormatting.AQUA)
