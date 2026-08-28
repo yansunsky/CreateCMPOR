@@ -117,11 +117,7 @@ final class EvaluationStorageBridge {
         ListTag entities = inspectEntityRecord(records.pos(), records.entities());
         Optional<CompoundTag> poi = inspectPoiRecord(records.pos(), records.poi());
         inspectBlockPalette(source, records.pos(), chunk);
-        CompoundTag copy = chunk.copy();
-        // 副本初始化：烈焰人燃烧室（普通/超热）清除预存燃烧状态——防止"预填燃料免费加热"的评估欺骗。
-        // 源 hash 用原始 chunk（源侧）；staging 校验读回的已是清理后内容（stagingHash 语义不受影响）。
-        sanitizeBlazeBurnersForCopy(copy);
-        return new SourceChunk(records.pos(), copy, CanonicalNbtHasher.sha256(chunk),
+        return new SourceChunk(records.pos(), chunk.copy(), CanonicalNbtHasher.sha256(chunk),
                 chunk.getInt("DataVersion"), entities.copy(), poi);
     }
 
@@ -135,24 +131,6 @@ final class EvaluationStorageBridge {
      * blockstate 的 {@code blaze}(HeatLevel) 无需处理——BE tick 燃烧耗尽后自带
      * {@code updateBlockState()} 自愈（Create 源码 BlazeBurnerBlockEntity.tick）。</p>
      */
-    private static void sanitizeBlazeBurnersForCopy(CompoundTag chunk) {
-        if (!chunk.contains("block_entities", Tag.TAG_LIST)) {
-            return;
-        }
-        ListTag blockEntities = chunk.getList("block_entities", Tag.TAG_COMPOUND);
-        for (int i = 0; i < blockEntities.size(); i++) {
-            CompoundTag be = blockEntities.getCompound(i);
-            if (!"create:blaze_burner".equals(be.getString("id"))) {
-                continue;
-            }
-            if (be.getBoolean("isCreative")) {
-                continue; // 创造燃烧室保留（用户决策：只清普通/超热）
-            }
-            be.putInt("fuelLevel", 0);
-            be.putInt("burnTimeRemaining", 0);
-        }
-    }
-
     static CompletableFuture<Void> deleteRecords(ServerLevel level, List<ChunkPos> chunks) {
         CompletableFuture<?>[] futures = chunks.stream().flatMap(pos -> java.util.stream.Stream.of(
                         chunkStorage(level).write(pos, null),
