@@ -117,8 +117,40 @@ final class EvaluationStorageBridge {
         ListTag entities = inspectEntityRecord(records.pos(), records.entities());
         Optional<CompoundTag> poi = inspectPoiRecord(records.pos(), records.poi());
         inspectBlockPalette(source, records.pos(), chunk);
-        return new SourceChunk(records.pos(), chunk.copy(), CanonicalNbtHasher.sha256(chunk),
+        CompoundTag copy = chunk.copy();
+        // 副本初始化：烈焰人燃烧室（普通/超热）清除预存燃烧状态——防止"预填燃料免费加热"的评估欺骗。
+        // 源 hash 用原始 chunk（源侧）；staging 校验读回的已是清理后内容（stagingHash 语义不受影响）。
+        sanitizeBlazeBurnersForCopy(copy);
+        return new SourceChunk(records.pos(), copy, CanonicalNbtHasher.sha256(chunk),
                 chunk.getInt("DataVersion"), entities.copy(), poi);
+    }
+
+    /**
+     * 副本方块实体初始化（防评估欺诈骗局）：把 {@code create:blaze_burner} 的
+     * {@code fuelLevel}(activeFuel) 与 {@code burnTimeRemaining}(剩余燃烧 tick) 清零，
+     * 让评估期间燃烧室只能靠真实的燃料物品流维持（三扫描/IO 流量记录燃料消耗）。
+     *
+     * <p><b>只清普通/超热燃烧室</b>（用户决策）：{@code isCreative=true} 的创造燃烧室保留
+     * （创造模式下外部输入的物品本来也是"免费"的，且其 NBT 不写 fuelLevel/burnTimeRemaining）。
+     * blockstate 的 {@code blaze}(HeatLevel) 无需处理——BE tick 燃烧耗尽后自带
+     * {@code updateBlockState()} 自愈（Create 源码 BlazeBurnerBlockEntity.tick）。</p>
+     */
+    private static void sanitizeBlazeBurnersForCopy(CompoundTag chunk) {
+        if (!chunk.contains("block_entities", Tag.TAG_LIST)) {
+            return;
+        }
+        ListTag blockEntities = chunk.getList("block_entities", Tag.TAG_COMPOUND);
+        for (int i = 0; i < blockEntities.size(); i++) {
+            CompoundTag be = blockEntities.getCompound(i);
+            if (!"create:blaze_burner".equals(be.getString("id"))) {
+                continue;
+            }
+            if (be.getBoolean("isCreative")) {
+                continue; // 创造燃烧室保留（用户决策：只清普通/超热）
+            }
+            be.putInt("fuelLevel", 0);
+            be.putInt("burnTimeRemaining", 0);
+        }
     }
 
     static CompletableFuture<Void> deleteRecords(ServerLevel level, List<ChunkPos> chunks) {
