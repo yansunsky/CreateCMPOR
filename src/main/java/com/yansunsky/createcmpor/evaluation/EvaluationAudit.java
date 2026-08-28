@@ -320,8 +320,14 @@ final class EvaluationAudit {
         // 燃烧室预存热能折算（防预填燃料欺骗）：
         // - 预存净消耗 = max(0, S1 - S2)（S2>S1 说明中途补充过 → 记 0，投喂照常走物品流）
         // - 超热档：单独折算成烈焰蛋糕（3200 tick）加入工厂输入
-        // - 普通档：物品流有可燃物 → 折算成最高优先级代表燃料；无 → 对外表现"燃烧需求"
-        BurnerPreload burner = resolveBurnerPreload(baseline, end, trace, seconds);
+        // - 普通档：评估输入表有可燃物（IO 流 或 房间容器消耗）→ 折算成最高优先级代表燃料；无 → 对外表现"燃烧需求"
+        java.util.Set<ResourceLocation> itemInputIds = new HashSet<>();
+        inputs.keySet().forEach(key -> {
+            if ("item".equals(key.kind())) {
+                itemInputIds.add(key.id());
+            }
+        });
+        BurnerPreload burner = resolveBurnerPreload(baseline, end, itemInputIds, seconds);
         for (Map.Entry<ResourceLocation, Double> entry : burner.fuelInputsPerSecond().entrySet()) {
             inputs.merge(EvaluationTrace.FlowKey.item(entry.getKey()), entry.getValue(), Double::sum);
         }
@@ -341,7 +347,7 @@ final class EvaluationAudit {
      * </ul>
      */
     static BurnerPreload resolveBurnerPreload(InventorySnapshot base, InventorySnapshot end,
-                                              EvaluationTrace trace, double seconds) {
+                                              java.util.Collection<ResourceLocation> itemInputIds, double seconds) {
         if (base == null || end == null) {
             return BurnerPreload.none();
         }
@@ -358,11 +364,11 @@ final class EvaluationAudit {
         if (preloadSuper > 0) {
             fuelInputs.merge(BLAZE_CAKE_ID, preloadSuper / elapsedSeconds / 3200.0, Double::sum);
         }
-        // 普通档
+        // 普通档：以"评估输入表"（IO 流量 ∪ 房间容器消耗）判定燃料是否在物品流——不在才表现需求
         if (preloadNormal > 0) {
-            ResourceLocation representative = highestPriorityBurnableInTrace(trace);
+            ResourceLocation representative = highestPriorityBurnable(itemInputIds);
             if (representative != null) {
-                double burnTime = burnTimeOf(representative, trace);
+                double burnTime = burnTimeOf(representative);
                 fuelInputs.merge(representative,
                         preloadNormal / elapsedSeconds / Math.max(1, burnTime), Double::sum);
                 // 物品流有燃料 → 热值系统显示 0（demand = 0）
@@ -373,41 +379,31 @@ final class EvaluationAudit {
         return new BurnerPreload(fuelInputs, normalDemand, 0);
     }
 
-    /** 优先级代表燃料（物品流出现多种可燃物时选最高优先级）。煤炭>木炭>熔岩桶>木板>原木>苔藓>地毯>其他。 */
-    private static ResourceLocation highestPriorityBurnableInTrace(EvaluationTrace trace) {
-        // 收集 trace 物品输入中的可燃物（排除超热烈焰蛋糕——超热单独折算）
+    /** 优先级代表燃料（评估输入表出现多种可燃物时选最高优先级）。煤炭>木炭>熔岩桶>木板>原木>苔藓>地毯>其他。 */
+    private static ResourceLocation highestPriorityBurnable(java.util.Collection<ResourceLocation> inputItemIds) {
+        if (inputItemIds == null || inputItemIds.isEmpty()) {
+            return null;
+        }
         for (String id : PRIORITY_BURNER_FUELS) {
             ResourceLocation candidate = ResourceLocation.tryParse(id);
-            if (candidate == null) {
-                continue;
-            }
-            if (hasItemFlowInput(trace, candidate)) {
+            if (candidate != null && inputItemIds.contains(candidate)) {
                 return candidate;
             }
         }
         // "其他"：任意可燃物（按优先级最低处理）
-        for (Map.Entry<EvaluationTrace.FlowKey, EvaluationTrace.Series> entry : trace.series().entrySet()) {
-            if (!"item".equals(entry.getKey().kind()) || entry.getValue().inputTotal <= 0) {
-                continue;
-            }
-            ResourceLocation id = entry.getKey().id();
+        for (ResourceLocation id : inputItemIds) {
             if (BLAZE_CAKE_ID.equals(id)) {
                 continue; // 超热单独折算
             }
-            if (burnTimeOf(id, trace) > 0) {
+            if (burnTimeOf(id) > 0) {
                 return id;
             }
         }
         return null;
     }
 
-    private static boolean hasItemFlowInput(EvaluationTrace trace, ResourceLocation id) {
-        EvaluationTrace.Series series = trace.series().get(EvaluationTrace.FlowKey.item(id));
-        return series != null && series.inputTotal > 0;
-    }
-
     /** 物品燃料热值（tick；超热烈焰蛋糕=3200 走 datamap 语义）。 */
-    private static double burnTimeOf(ResourceLocation id, EvaluationTrace trace) {
+    private static double burnTimeOf(ResourceLocation id) {
         net.minecraft.world.item.Item item = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(id);
         if (item == null || item == net.minecraft.world.item.Items.AIR) {
             return 0;

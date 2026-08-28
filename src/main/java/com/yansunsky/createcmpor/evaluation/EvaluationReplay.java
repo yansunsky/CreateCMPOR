@@ -62,10 +62,16 @@ final class EvaluationReplay {
         energyNetBalance(trace, base, end, energyIn, energyOut, recordLength);
         applyLossAndFilter(in, out, energyOut, recordLength);
 
-        // 燃烧室预存折算（与 RATE 同规则）：预存折算燃料注入输入 pattern（int 粒度：总量取整放最后一秒桶），
-        // 需求（物品流无燃料时）由工厂对外表现。REPLAY 的 int pattern 无法表达 <1 的每秒折算，取整误差可接受。
+        // 燃烧室预存折算（与 RATE 同规则）：依据评估输入表（净平衡后的 in pattern 条目）判定燃料——
+        // 有则折代表物品（demand=0），无则对外表现燃烧需求；REPLAY int pattern 取整放最后一秒桶。
+        java.util.Set<ResourceLocation> itemInputIds = new java.util.HashSet<>();
+        in.keySet().forEach(key -> {
+            if ("item".equals(key.kind())) {
+                itemInputIds.add(key.id());
+            }
+        });
         EvaluationAudit.BurnerPreload burner =
-                EvaluationAudit.resolveBurnerPreload(base, end, trace, recordLength);
+                EvaluationAudit.resolveBurnerPreload(base, end, itemInputIds, recordLength);
         burner.fuelInputsPerSecond().forEach((id, perSecond) -> {
             int total = (int) Math.round(perSecond * recordLength);
             if (total <= 0) {
