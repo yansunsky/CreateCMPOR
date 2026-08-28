@@ -114,7 +114,7 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
     private int replayTick;
     private int replayCurrentSecond;
 
-    private boolean lastSuccess = true;
+    private boolean lastSuccess = false;
     private int tickCount;
 
     private CompoundTag restoreMachineState;
@@ -1373,7 +1373,8 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
     @Override
     public float getGeneratedSpeed() {
         StressProfile profile = FactoryStressAccess.get(this);
-        if (!profile.isProvide()) {
+        if (!profile.isProvide() || !lastSuccess) {
+            // 未在运转（缺料/燃料不足/输出满仓暂停）→ 不生成转速 → 不输出应力（网络无转速、下游机械停）
             return 0;
         }
         // 默认转速 = 评估时空间内应力输出方块的转速（outputRPM 来自 KineticNetwork 采样），
