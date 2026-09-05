@@ -90,6 +90,242 @@ final class EvaluationScheduler {
     static void cleanup(UUID sessionId, String roomCode) {
         STATES.remove(sessionId);
         EvaluationTrace.Hub.INSTANCE.remove(roomCode);
+        StressEvaluationRegistry.clear(roomCode);
+    }
+
+    /** 并行模式：所有分支达到 BLOCK_TICKING 后登记各自 scheduler state。 */
+    static void startParallel(MinecraftServer server, EvaluationSession session) {
+        for (EvaluationBranch branch : session.parallelBranches()) {
+            STATES.put(branch.branchId(), new State());
+        }
+        CreateCMPOR.LOGGER.info("评估会话 {} 进入并行评估：{} 个分支",
+                session.id(), session.parallelBranches().size());
+    }
+
+    /** 并行模式：每个 server tick 推进所有分支。 */
+    static void tickParallel(MinecraftServer server, EvaluationSavedData data, EvaluationSession session) {
+        boolean barrierApplied = false;
+        boolean allStartingReady = true;
+        for (EvaluationBranch branch : session.parallelBranches()) {
+            if (branch.result() != null) {
+                continue;
+            }
+            State state = STATES.computeIfAbsent(branch.branchId(), ignored -> new State());
+            if (state.phase != Phase.STARTING) {
+                continue;
+            }
+            if (!state.entityTickingApplied) {
+                EvaluationManifest manifest = branch.manifest();
+                ServerLevel target = server.getLevel(manifest.targetDimension());
+                if (target == null) {
+                    branch.setResult(EvaluationVerdict.reject(
+                            "目标维度未加载", manifest.targetDimension().location().toString()));
+                    continue;
+                }
+                EvaluationTicketManager.switchToEntityTicking(target, manifest);
+                state.entityTickingApplied = true;
+                barrierApplied = true;
+            }
+            ServerLevel target = server.getLevel(branch.manifest().targetDimension());
+            if (target == null) {
+                branch.setResult(EvaluationVerdict.reject(
+                        "目标维度未加载", branch.manifest().targetDimension().location().toString()));
+                allStartingReady = false;
+            } else if (!EvaluationTicketManager.allEntityTickingReady(target, branch.manifest())) {
+                allStartingReady = false;
+            }
+        }
+        if (barrierApplied || !allStartingReady) {
+            return;
+        }
+
+        boolean allDone = true;
+        boolean rejected = false;
+        for (EvaluationBranch branch : session.parallelBranches()) {
+            if (branch.result() != null) {
+                if (branch.result().rejected()) {
+                    rejected = true;
+                }
+                continue;
+            }
+            allDone = false;
+            tickParallelBranch(server, data, session, branch);
+            if (branch.result() != null && branch.result().rejected()) {
+                rejected = true;
+            }
+        }
+        if (rejected) {
+            EvaluationCloneManager.INSTANCE.requestCleanup(
+                    server, data, session, "message.createcmpor.evaluation.runtime_failed");
+            return;
+        }
+        if (!allDone) {
+            return;
+        }
+        session.branchResults().clear();
+        EvaluationVerdict.Result last = null;
+        for (EvaluationBranch branch : session.parallelBranches()) {
+            session.branchResults().add(branch.result());
+            last = branch.result();
+        }
+        session.setEvaluationResult(last);
+        session.setState(EvaluationSession.State.SOLIDIFYING);
+        data.changed();
+        EvaluationCloneManager.syncCritical(server, data);
+        notifyOwner(server, session, Component.literal("并行评估全部完成，开始固化"));
+    }
+
+    private static void tickParallelBranch(MinecraftServer server, EvaluationSavedData data,
+                                           EvaluationSession session, EvaluationBranch branch) {
+        State state = STATES.computeIfAbsent(branch.branchId(), ignored -> new State());
+        EvaluationManifest manifest = branch.manifest();
+        ServerLevel target = server.getLevel(manifest.targetDimension());
+        if (target == null) {
+            branch.setResult(EvaluationVerdict.reject("目标维度未加载", manifest.targetDimension().location().toString()));
+            return;
+        }
+        switch (state.phase) {
+            case STARTING -> tickParallelStarting(server, data, session, branch, target, state);
+            case WARMING -> tickParallelWarming(server, data, session, branch, target, state);
+            case SAMPLING -> tickParallelSampling(server, data, session, branch, target, state);
+            case FINISHING -> tickParallelFinishing(server, data, session, branch, target, state);
+            case VERDICTING -> tickParallelVerdicting(server, data, session, branch, target, state);
+        }
+    }
+
+    private static String parallelTraceKey(EvaluationBranch branch) {
+        return "branch:" + branch.branchId();
+    }
+
+    private static void tickParallelStarting(MinecraftServer server, EvaluationSavedData data,
+                                             EvaluationSession session, EvaluationBranch branch,
+                                             ServerLevel target, State state) {
+        EvaluationManifest manifest = branch.manifest();
+        if (!state.entityTickingApplied) {
+            EvaluationTicketManager.switchToEntityTicking(target, manifest);
+            state.entityTickingApplied = true;
+            return;
+        }
+        if (!EvaluationTicketManager.allEntityTickingReady(target, manifest)) {
+            session.tickState();
+            data.changed();
+            return;
+        }
+        RoomInstance room = requireRoom(server, session);
+        AABB bounds = room.boundaries().outerBounds();
+        state.s0 = EvaluationAudit.scan(target, bounds);
+        EvaluationAudit.logInventory("S0", state.s0);
+        String key = parallelTraceKey(branch);
+        int ioCount = activateIoBlocks(target, bounds, key, session, branch.index(), session.branchCount());
+        CreateCMPOR.LOGGER.info("评估会话 {} 分支 {}/{} 已激活 {} 个 IO 方块",
+                session.id(), branch.index() + 1, session.branchCount(), ioCount);
+
+        Map<EvaluationTrace.FlowKey, Long> floor = new HashMap<>();
+        for (ItemEntity itemEntity : target.getEntitiesOfClass(ItemEntity.class, bounds)) {
+            ResourceLocation id = BuiltInRegistries.ITEM.getKey(itemEntity.getItem().getItem());
+            floor.merge(EvaluationTrace.FlowKey.item(id), (long) itemEntity.getItem().getCount(), Long::sum);
+        }
+        state.floorItems = floor;
+        if (!floor.isEmpty()) {
+            CreateCMPOR.LOGGER.info("评估会话 {} 分支 {}/{} 地板掉落物 S0：{}",
+                    session.id(), branch.index() + 1, session.branchCount(), floor);
+        }
+
+        state.phaseStartTick = target.getGameTime();
+        int warmupSeconds = Config.RECORD_START.get();
+        if (warmupSeconds > 0) {
+            state.phase = Phase.WARMING;
+            if (branch.index() == 0) {
+                notifyEvaluatorCountdown(server, session, EvaluatorBlockEntity.EvaluationStage.WARMING, warmupSeconds);
+            }
+        } else {
+            beginParallelSampling(server, target, session, branch, state);
+        }
+        notifyOwner(server, session, Component.translatable(
+                "message.createcmpor.evaluation.evaluation_started",
+                Config.EVALUATE_SECONDS.get(), warmupSeconds));
+    }
+
+    private static void beginParallelSampling(MinecraftServer server, ServerLevel target,
+                                              EvaluationSession session, EvaluationBranch branch, State state) {
+        int seconds = Config.EVALUATE_SECONDS.get();
+        if (branch.index() == 0) {
+            notifyEvaluatorCountdown(server, session, EvaluatorBlockEntity.EvaluationStage.SAMPLING, seconds);
+        }
+        String key = parallelTraceKey(branch);
+        EvaluationTrace.Hub.INSTANCE.start(key, seconds, target.getGameTime());
+        EvaluationTrace.Hub.INSTANCE.setFloorItems(key, state.floorItems);
+        state.phaseStartTick = target.getGameTime();
+        state.phase = Phase.SAMPLING;
+    }
+
+    private static void tickParallelWarming(MinecraftServer server, EvaluationSavedData data,
+                                            EvaluationSession session, EvaluationBranch branch,
+                                            ServerLevel target, State state) {
+        int warmupSeconds = Config.RECORD_START.get();
+        if (target.getGameTime() - state.phaseStartTick < warmupSeconds * 20L) {
+            return;
+        }
+        RoomInstance room = requireRoom(server, session);
+        state.warmup = EvaluationAudit.scan(target, room.boundaries().outerBounds());
+        EvaluationAudit.logInventory("S_warmup", state.warmup);
+        beginParallelSampling(server, target, session, branch, state);
+    }
+
+    private static void tickParallelSampling(MinecraftServer server, EvaluationSavedData data,
+                                             EvaluationSession session, EvaluationBranch branch,
+                                             ServerLevel target, State state) {
+        int seconds = Config.EVALUATE_SECONDS.get();
+        if (target.getGameTime() - state.phaseStartTick < seconds * 20L) {
+            long elapsed = target.getGameTime() - state.phaseStartTick;
+            if (elapsed > 0 && elapsed % 100 == 0) {
+                CreateCMPOR.LOGGER.info("评估会话 {} 分支 {}/{} 采样诊断 [{}s/{}s]：{}",
+                        session.id(), branch.index() + 1, session.branchCount(), elapsed / 20, seconds,
+                        EvaluationTrace.Hub.INSTANCE.stats(parallelTraceKey(branch)));
+            }
+            session.tickState();
+            data.changed();
+            return;
+        }
+        state.phase = Phase.FINISHING;
+    }
+
+    private static void tickParallelFinishing(MinecraftServer server, EvaluationSavedData data,
+                                              EvaluationSession session, EvaluationBranch branch,
+                                              ServerLevel target, State state) {
+        RoomInstance room = requireRoom(server, session);
+        AABB bounds = room.boundaries().outerBounds();
+        deactivateIoBlocks(target, bounds);
+        state.s1 = EvaluationAudit.scan(target, bounds);
+        EvaluationAudit.logInventory("S1", state.s1);
+        state.stressProfile = StressEvaluationRegistry.consume(parallelTraceKey(branch));
+        if (!state.stressProfile.isEmpty()) {
+            CreateCMPOR.LOGGER.info("评估会话 {} 分支 {}/{} 应力评估结果：inputSU={} outputSU={}",
+                    session.id(), branch.index() + 1, session.branchCount(),
+                    state.stressProfile.inputSU(), state.stressProfile.outputSU());
+        }
+        state.phase = Phase.VERDICTING;
+    }
+
+    private static void tickParallelVerdicting(MinecraftServer server, EvaluationSavedData data,
+                                               EvaluationSession session, EvaluationBranch branch,
+                                               ServerLevel target, State state) {
+        EvaluationManifest manifest = branch.manifest();
+        EvaluationTrace trace = EvaluationTrace.Hub.INSTANCE.get(parallelTraceKey(branch));
+        EvaluationVerdict.Result result;
+        if (trace == null) {
+            result = EvaluationVerdict.reject("采样数据缺失", "trace_missing");
+        } else {
+            result = EvaluationVerdict.decide(
+                    trace, state.s0, state.s1, state.warmup, state.stressProfile);
+        }
+        EvaluationTicketManager.switchToBlockTicking(target, manifest);
+        branch.setResult(result);
+        session.setEvaluationResult(result);
+        CreateCMPOR.LOGGER.info("评估会话 {} 分支 {}/{} 结论 {}：{}",
+                session.id(), branch.index() + 1, session.branchCount(),
+                result.verdict(), result.detail());
+        cleanup(branch.branchId(), parallelTraceKey(branch));
     }
 
     private static void tickStarting(MinecraftServer server, EvaluationSavedData data,
@@ -251,6 +487,12 @@ final class EvaluationScheduler {
     }
 
     private static int activateIoBlocks(ServerLevel target, AABB bounds, String roomCode, EvaluationSession session) {
+        return activateIoBlocks(target, bounds, roomCode, session,
+                session.branchIndex(), session.branchCount());
+    }
+
+    private static int activateIoBlocks(ServerLevel target, AABB bounds, String roomCode,
+                                        EvaluationSession session, int branchIndex, int branchCount) {
         int[] count = new int[1];
         forEachBlock(target, bounds, (pos, state) -> {
             Block block = state.getBlock();
@@ -270,10 +512,9 @@ final class EvaluationScheduler {
                 target.setBlock(pos, state.setValue(BaseIOBlock.ACTIVE, true), Block.UPDATE_CLIENTS);
                 if (target.getBlockEntity(pos) instanceof ParallelInputBlockEntity entity) {
                     entity.setRoomCode(roomCode);
-                    entity.setBranchIndex(session.branchIndex());
-                    // 首个分支时读取配置物品数作为总分支数
-                    if (session.branchIndex() == 0 && session.branchCount() <= 1
-                            && entity.getBranchIndex() == 0) {
+                    entity.setBranchIndex(branchIndex);
+                    // 首个分支时读取配置物品数作为总分支数（兼容旧会话启动路径）
+                    if (branchIndex == 0 && branchCount <= 1 && entity.getBranchIndex() == 0) {
                         int itemCount = entity.configuredItemCount();
                         if (itemCount > 1) {
                             session.setBranchCount(itemCount);
@@ -302,6 +543,8 @@ final class EvaluationScheduler {
         forEachBlock(target, bounds, (pos, state) -> {
             Block block = state.getBlock();
             if (block == ModBlocks.INPUT.get() || block == ModBlocks.OUTPUT.get()) {
+                target.setBlock(pos, state.setValue(BaseIOBlock.ACTIVE, false), Block.UPDATE_CLIENTS);
+            } else if (block == ModBlocks.PARALLEL_INPUT.get()) {
                 target.setBlock(pos, state.setValue(BaseIOBlock.ACTIVE, false), Block.UPDATE_CLIENTS);
             } else if (block == ModBlocks.STRESS_INPUT.get()) {
                 target.setBlock(pos, state.setValue(StressInputBlock.ACTIVE, false), Block.UPDATE_CLIENTS);

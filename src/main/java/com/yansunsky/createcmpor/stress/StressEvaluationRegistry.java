@@ -50,6 +50,12 @@ public class StressEvaluationRegistry {
 //                sample.capacity(), sample.stress(), sample.virtualCapacity(), sample.speed());
     }
 
+    /** 显式清理：评估异常、取消或并行分支失败时移除未消费样本。 */
+    public static void clear(String roomCode) {
+        if (roomCode == null) return;
+        DATA.remove(roomCode);
+    }
+
     /**
      * 评估结束：按 Create KineticNetwork 分组聚合，计算工厂的 input/output 应力。
      *

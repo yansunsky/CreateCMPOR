@@ -16,13 +16,14 @@ import net.minecraft.world.level.material.MapColor;
 import net.minecraft.world.level.material.PushReaction;
 import org.jetbrains.annotations.Nullable;
 
-/** 评估期间替代原机器的不可破坏标记方块。 */
+/** 评估期间替代原机器的标记方块；可被破坏，破坏事件由 EvaluationManager 接管并恢复原机器。 */
 public class EvaluatorBlock extends BaseEntityBlock {
     public static final MapCodec<EvaluatorBlock> CODEC = simpleCodec(EvaluatorBlock::new);
     public static final BooleanProperty POWERED = BlockStateProperties.POWERED;
 
     public EvaluatorBlock() {
-        this(BlockBehaviour.Properties.of().mapColor(MapColor.COLOR_BLACK).strength(-1.0f, 3600000.0f)
+        // 普通硬度 = 可被生存模式破坏（破坏走还原流程）；抗爆保留极高值防止意外破坏
+        this(BlockBehaviour.Properties.of().mapColor(MapColor.COLOR_BLACK).strength(2.0f, 3600000.0f)
                 .pushReaction(PushReaction.BLOCK).noLootTable());
     }
 

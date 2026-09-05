@@ -25,10 +25,12 @@ public final class EvalWorldGuard {
     public static void onServerTick(ServerTickEvent.Post event) {
         ServerLevel evalWorld = event.getServer().getLevel(CreateCMPOR.EVAL_WORLD);
         if (evalWorld != null) {
-            for (ServerPlayer player : List.copyOf(evalWorld.players())) {
-                if (!player.hasPermissions(OP_PERMISSION_LEVEL)) {
-                    moveToOverworld(player, false);
-                }
+            ejectPlayersIfNeeded(evalWorld);
+        }
+        for (int index = 0; index < ParallelEvaluationWorlds.LANE_COUNT; index++) {
+            ServerLevel lane = event.getServer().getLevel(ParallelEvaluationWorlds.lane(index));
+            if (lane != null) {
+                ejectPlayersIfNeeded(lane);
             }
         }
 
@@ -51,8 +53,8 @@ public final class EvalWorldGuard {
         if (!(event.getEntity() instanceof ServerPlayer player) || player.hasPermissions(OP_PERMISSION_LEVEL)) {
             return;
         }
-        if (CreateCMPOR.EVAL_WORLD.equals(player.level().dimension())
-                || CreateCMPOR.EVAL_WORLD.equals(player.getRespawnDimension())) {
+        if (ParallelEvaluationWorlds.isAnyEvaluationWorld(player.level().dimension())
+                || ParallelEvaluationWorlds.isAnyEvaluationWorld(player.getRespawnDimension())) {
             moveToOverworld(player, true);
             return;
         }
@@ -63,6 +65,14 @@ public final class EvalWorldGuard {
                 player.server, GlobalPos.of(player.getRespawnDimension(), respawnPos)).isPresent();
         if (currentlyInFrozenRoom || frozenRespawnPoint) {
             moveToOverworld(player, true);
+        }
+    }
+
+    private static void ejectPlayersIfNeeded(ServerLevel level) {
+        for (ServerPlayer player : List.copyOf(level.players())) {
+            if (!player.hasPermissions(OP_PERMISSION_LEVEL)) {
+                moveToOverworld(player, false);
+            }
         }
     }
 

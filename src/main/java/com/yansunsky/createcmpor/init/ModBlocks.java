@@ -71,7 +71,7 @@ public class ModBlocks {
             BLOCKS.register("evaluator_block", () -> new EvaluatorBlock(
                     BlockBehaviour.Properties.of()
                              .mapColor(MapColor.COLOR_BLACK)
-                             .strength(-1.0f, 3600000.0f)
+                             .strength(2.0f, 3600000.0f) // 可被破坏；破坏事件走还原流程（EvaluationManager.onBlockBreak）
                              .pushReaction(PushReaction.BLOCK)
                              .noLootTable()));
 

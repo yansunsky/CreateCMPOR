@@ -9,6 +9,7 @@ import com.yansunsky.createcmpor.evaluation.EvaluationManager;
 import com.yansunsky.createcmpor.evaluation.EvaluationManifest;
 import com.yansunsky.createcmpor.evaluation.EvaluationSavedData;
 import com.yansunsky.createcmpor.evaluation.EvaluationSession;
+import com.yansunsky.createcmpor.evaluation.ParallelEvaluationWorlds;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
@@ -74,8 +75,8 @@ public final class EvalWorldCommands {
     private static int showRoomCode(CommandSourceStack source) throws CommandSyntaxException {
         ServerPlayer player = source.getPlayerOrException();
         if (!CompactDimension.LEVEL_KEY.equals(player.level().dimension())
-                && !CreateCMPOR.EVAL_WORLD.equals(player.level().dimension())) {
-            source.sendFailure(Component.literal("当前不在 CompactMachines 房间维度或 eval_world。"));
+                && !ParallelEvaluationWorlds.isAnyEvaluationWorld(player.level().dimension())) {
+            source.sendFailure(Component.literal("当前不在 CompactMachines 房间维度或任一评估维度。"));
             return 0;
         }
 
@@ -127,13 +128,24 @@ public final class EvalWorldCommands {
 
     private static int enterEval(CommandSourceStack source, String roomCode) throws CommandSyntaxException {
         ServerPlayer player = source.getPlayerOrException();
-        Optional<EvaluationSession> session = EvaluationManager.INSTANCE.sessionByRoom(source.getServer(), roomCode);
-        // 副本已发布即允许 OP 进入观察：PUBLISHED（未评估）或评估期/固化期状态
-        boolean copyLive = session.isPresent() && session.get().manifest() != null
-                && (session.get().state() == EvaluationSession.State.PUBLISHED
-                || session.get().state() == EvaluationSession.State.EVALUATING
-                || session.get().state() == EvaluationSession.State.EVALUATED
-                || session.get().state() == EvaluationSession.State.SOLIDIFYING);
+        Optional<EvaluationSession> sessionOpt = EvaluationManager.INSTANCE.sessionByRoom(source.getServer(), roomCode);
+        if (sessionOpt.isEmpty()) {
+            source.sendFailure(Component.translatable("message.createcmpor.evaluation.copy_not_ready"));
+            return 0;
+        }
+        EvaluationSession session = sessionOpt.get();
+        boolean copyLive;
+        if (!session.parallelBranches().isEmpty()) {
+            copyLive = session.state() == EvaluationSession.State.PARALLEL_PUBLISHED
+                    || session.state() == EvaluationSession.State.PARALLEL_EVALUATING
+                    || session.state() == EvaluationSession.State.SOLIDIFYING;
+        } else {
+            copyLive = session.manifest() != null
+                    && (session.state() == EvaluationSession.State.PUBLISHED
+                    || session.state() == EvaluationSession.State.EVALUATING
+                    || session.state() == EvaluationSession.State.EVALUATED
+                    || session.state() == EvaluationSession.State.SOLIDIFYING);
+        }
         if (!copyLive) {
             source.sendFailure(Component.translatable("message.createcmpor.evaluation.copy_not_ready"));
             return 0;
@@ -144,29 +156,53 @@ public final class EvalWorldCommands {
             return 0;
         }
 
-        ServerLevel evalWorld = source.getServer().getLevel(CreateCMPOR.EVAL_WORLD);
-        if (evalWorld == null) {
-            source.sendFailure(Component.literal("eval_world 未加载，请检查维度数据包。"));
+        net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> copyDimension =
+                session.liveCopyDimension();
+        ServerLevel target = copyDimension == null ? null : source.getServer().getLevel(copyDimension);
+        if (target == null) {
+            source.sendFailure(Component.literal("评估副本维度未加载：" + copyDimension));
             return 0;
         }
 
         Vec3 pos = roomOptional.get().boundaries().defaultSpawn();
-        evalWorld.getChunkAt(BlockPos.containing(pos));
-        player.teleportTo(evalWorld, pos.x(), pos.y(), pos.z(), player.getYRot(), player.getXRot());
-        source.sendSuccess(() -> Component.literal("已进入 eval_world 同坐标位置：" + roomCode), true);
+        target.getChunkAt(BlockPos.containing(pos));
+        player.teleportTo(target, pos.x(), pos.y(), pos.z(), player.getYRot(), player.getXRot());
+        source.sendSuccess(() -> Component.literal("已进入评估副本 " + target.dimension().location()
+                + " 同坐标位置：" + roomCode), true);
         return 1;
     }
 
     private static int diffRoom(CommandSourceStack source, String roomCode) {
-        Optional<EvaluationSession> session = EvaluationManager.INSTANCE.sessionByRoom(source.getServer(), roomCode);
-        if (session.isPresent() && session.get().manifest() != null) {
-            long mismatches = session.get().manifest().chunks().stream()
-                    .filter(chunk -> chunk.sourceHash().isBlank()
-                            || !chunk.sourceHash().equals(chunk.targetHash()))
-                    .count();
-            source.sendSuccess(() -> Component.literal("房间 " + roomCode + " 持久化区块差异="
-                    + mismatches + "/" + session.get().manifest().chunks().size()), false);
-            return 1;
+        Optional<EvaluationSession> sessionOpt = EvaluationManager.INSTANCE.sessionByRoom(source.getServer(), roomCode);
+        if (sessionOpt.isPresent()) {
+            EvaluationSession session = sessionOpt.get();
+            if (session.hasParallelBranches()) {
+                // 并行：分别统计每个 lane manifest 的源/目标摘要差异，不能拿 parent eval_world manifest 冒充已发布副本。
+                StringBuilder out = new StringBuilder("房间 " + roomCode + " 并行分支差异：");
+                java.util.List<EvaluationManifest> manifests = session.parallelBranchManifests();
+                for (int index = 0; index < manifests.size(); index++) {
+                    EvaluationManifest manifest = manifests.get(index);
+                    long mismatches = manifest.chunks().stream()
+                            .filter(chunk -> chunk.sourceHash().isBlank()
+                                    || !chunk.sourceHash().equals(chunk.targetHash()))
+                            .count();
+                    out.append(System.lineSeparator())
+                            .append("  分支 #").append(index + 1).append('/').append(manifests.size())
+                            .append(' ').append(manifest.targetDimension().location())
+                            .append("：差异 ").append(mismatches).append('/').append(manifest.chunks().size());
+                }
+                source.sendSuccess(() -> Component.literal(out.toString()), false);
+                return 1;
+            }
+            if (session.manifest() != null) {
+                long mismatches = session.manifest().chunks().stream()
+                        .filter(chunk -> chunk.sourceHash().isBlank()
+                                || !chunk.sourceHash().equals(chunk.targetHash()))
+                        .count();
+                source.sendSuccess(() -> Component.literal("房间 " + roomCode + " 持久化区块差异="
+                        + mismatches + "/" + session.manifest().chunks().size()), false);
+                return 1;
+            }
         }
         Optional<RoomInstance> roomOptional = CM_ADAPTER.getRoom(source.getServer(), roomCode);
         if (roomOptional.isEmpty()) {

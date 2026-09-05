@@ -18,6 +18,7 @@ import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.phys.AABB;
 
 import java.util.ArrayList;
@@ -87,6 +88,35 @@ final class EvaluationRailwayTransfer {
             }
         }
         return true;
+    }
+
+    /**
+     * 源房间是否存在铁路内容（决定退回串行分支）。
+     *
+     * <p>只检查源房间：车厢实体列表命中，或 Create 全局轨道图存在节点位于
+     * {@link CompactDimension#LEVEL_KEY}（compact_world）且落在源房间 outerBounds 内。
+     * 轨道图按维度+房间边界过滤，不受其他房间/目标 lane 影响。</p>
+     */
+    static boolean hasSourceRailway(MinecraftServer server, EvaluationSession session,
+                                    Map<ChunkPos, List<CompoundTag>> rewrittenEntities) {
+        for (List<CompoundTag> entities : rewrittenEntities.values()) {
+            for (CompoundTag entity : entities) {
+                if (EvaluationEntityInspector.CARRIAGE_CONTRAPTION_ID.equals(entity.getString("id"))) {
+                    return true;
+                }
+            }
+        }
+        RoomInstance room = requireRoom(server, session);
+        AABB bounds = room.boundaries().outerBounds();
+        for (TrackGraph graph : Create.RAILWAYS.trackNetworks.values()) {
+            for (TrackNodeLocation location : graph.getNodes()) {
+                if (CompactDimension.LEVEL_KEY.equals(location.getDimension())
+                        && bounds.contains(location.getLocation())) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** 发布后（loadChunksToFull 之后、车厢实体首次 tick 前）建图并复制 train。 */
