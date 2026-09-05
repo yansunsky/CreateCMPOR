@@ -170,10 +170,13 @@ public class ParallelInputBlockEntity extends BaseIOBlockEntity {
         return true;
     }
 
-    /** 分支模式下只返回对应物品；正常模式返回全部白名单物品。 */
+    /** 分支模式下只返回对应物品（越界返回空列表）；正常模式返回全部白名单物品。 */
     private java.util.List<ResourceLocation> branchItems() {
-        if (branchIndex >= 0 && branchIndex < items.size()) {
-            return java.util.List.of(items.get(branchIndex));
+        if (branchIndex >= 0) {
+            if (branchIndex < items.size()) {
+                return java.util.List.of(items.get(branchIndex));
+            }
+            return java.util.List.of();
         }
         return items;
     }

@@ -94,6 +94,32 @@ public final class EvaluationManifest {
                 false, false, false);
     }
 
+    /**
+     * 并行分支：复用已校验的源 staging，仅替换目标维度并清空目标发布状态。
+     * 分支继续从同一个 staging 目录读取，不重复克隆源磁盘。
+     */
+    public EvaluationManifest copyForBranchTarget(ResourceKey<Level> targetDimension) {
+        String targetLevelId = targetDimension.location().toString();
+        List<ChunkRecord> copies = new ArrayList<>();
+        for (ChunkRecord chunk : chunks) {
+            ChunkRecord copy = new ChunkRecord(chunk.chunkPos);
+            copy.sourceStatus = chunk.sourceStatus;
+            copy.stagingStatus = chunk.stagingStatus;
+            copy.publishStatus = PublishStatus.NONE;
+            copy.sourceHash = chunk.sourceHash;
+            copy.stagingHash = chunk.stagingHash;
+            copy.targetHash = "";
+            copy.dataVersion = chunk.dataVersion;
+            copy.hadSourceRecord = chunk.hadSourceRecord;
+            copy.hadTargetRecord = false;
+            copy.error = "";
+            copies.add(copy);
+        }
+        return new EvaluationManifest(sessionId, roomCode, sourceDimension, targetDimension,
+                sourceLevelId, targetLevelId, createdGameTime, sourceSnapshotTick,
+                stagingDirectory, copies, false, false, false);
+    }
+
     public UUID sessionId() {
         return sessionId;
     }

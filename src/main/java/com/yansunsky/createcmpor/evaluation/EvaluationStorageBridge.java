@@ -15,6 +15,8 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.chunk.status.ChunkType;
+import net.minecraft.world.level.chunk.ChunkAccess;
+import net.minecraft.world.level.chunk.storage.ChunkSerializer;
 import net.minecraft.world.level.chunk.storage.ChunkStorage;
 import net.minecraft.world.level.chunk.storage.EntityStorage;
 import net.minecraft.world.level.chunk.storage.RegionStorageInfo;
@@ -64,6 +66,25 @@ final class EvaluationStorageBridge {
         return chunks.stream().allMatch(pos -> isChunkIdle(level, pos));
     }
 
+    /**
+     * 只序列化并异步写入一个已经加载的区块。
+     * ChunkSerializer 必须在主线程调用；ChunkStorage.write 的实际磁盘 IO 由该维度 IOWorker 完成。
+     */
+    static CompletableFuture<Void> saveLoadedChunk(ServerLevel level, ChunkPos pos) {
+        ChunkAccess chunk = level.getChunkSource().getChunkNow(pos.x, pos.z);
+        if (chunk == null) {
+            return CompletableFuture.completedFuture(null);
+        }
+        level.getPoiManager().flush(pos);
+        CompoundTag tag = ChunkSerializer.write(level, chunk);
+        chunk.setUnsaved(false);
+        return chunkStorage(level).write(pos, tag).whenComplete((ignored, error) -> {
+            if (error != null) {
+                chunk.setUnsaved(true);
+            }
+        });
+    }
+
     static ChunkStorage openStaging(MinecraftServer server, EvaluationManifest manifest) {
         Path root = stagingRoot(server, manifest);
         try {
@@ -92,8 +113,8 @@ final class EvaluationStorageBridge {
     }
 
     static CompletableFuture<SourceRecords> readSourceRecords(ServerLevel level, ChunkPos pos) {
-        // 源冻结时已执行 ServerLevel.save(flush=true)；同一 worker 的 read 会优先返回 pendingWrites，
-        // 因此这里不需要 per-chunk synchronize，避免每个 chunk 都触发一次全量磁盘 flush。
+        // 源房间在 WAITING_UNLOAD 阶段由 vanilla ChunkMap 逐区块提交到同一 IOWorker；
+        // 这里的 read 会优先返回 pendingWrites，因此不需要再次 per-chunk synchronize/全量 flush。
         CompletableFuture<Optional<CompoundTag>> chunk = chunkStorage(level).read(pos);
         CompletableFuture<Optional<CompoundTag>> entities = entityStorage(level).read(pos);
         CompletableFuture<Optional<CompoundTag>> poi = poiStorage(level).read(pos);
@@ -138,12 +159,6 @@ final class EvaluationStorageBridge {
                         poiStorage(level).write(pos, null)))
                 .toArray(CompletableFuture[]::new);
         return CompletableFuture.allOf(futures);
-    }
-
-    static void flushAll(ServerLevel level) {
-        chunkStorage(level).flushWorker();
-        entityStorage(level).synchronize(true).join();
-        poiStorage(level).synchronize(true).join();
     }
 
     private static Path stagingRoot(MinecraftServer server, EvaluationManifest manifest) {
@@ -274,22 +289,22 @@ final class EvaluationStorageBridge {
     }
 
     /** 构造目标实体记录并写入目标实体存储（必须在目标 chunk 实体未加载的发布窗口内调用）。 */
-    static void writeEntities(ServerLevel target, ChunkPos pos, ListTag entities) {
+    static CompletableFuture<Void> writeEntities(ServerLevel target, ChunkPos pos, ListTag entities) {
         CompoundTag record = new CompoundTag();
         record.put("Position", new IntArrayTag(new int[]{pos.x, pos.z}));
         record.put("Entities", entities);
         net.minecraft.nbt.NbtUtils.addCurrentDataVersion(record);
-        entityStorage(target).write(pos, record).join();
+        return entityStorage(target).write(pos, record);
     }
 
     /** 把源 POI 记录原样写入目标 POI 存储（必须在目标 chunk 未加载的发布窗口内调用）。 */
-    static void writePoi(ServerLevel target, ChunkPos pos, CompoundTag poi) {
+    static CompletableFuture<Void> writePoi(ServerLevel target, ChunkPos pos, CompoundTag poi) {
         CompoundTag record = poi.copy();
         if (!record.contains("Position", Tag.TAG_INT_ARRAY)) {
             record.put("Position", new IntArrayTag(new int[]{pos.x, pos.z}));
         }
         net.minecraft.nbt.NbtUtils.addCurrentDataVersion(record);
-        poiStorage(target).write(pos, record).join();
+        return poiStorage(target).write(pos, record);
     }
 
     record SourceRecords(ChunkPos pos, Optional<CompoundTag> chunk,

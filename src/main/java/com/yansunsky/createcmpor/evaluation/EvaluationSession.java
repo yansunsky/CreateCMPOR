@@ -29,6 +29,10 @@ public final class EvaluationSession {
         RAILWAY_TRANSFER,
         PUBLISHING,
         PUBLISHED,
+        PARALLEL_PREPARING,
+        PARALLEL_PUBLISHING,
+        PARALLEL_PUBLISHED,
+        PARALLEL_EVALUATING,
         EVALUATING,
         EVALUATED,
         SOLIDIFYING,
@@ -60,6 +64,10 @@ public final class EvaluationSession {
     private final java.util.List<EvaluationVerdict.Result> branchResults = new java.util.ArrayList<>();
     /** 分支间清理标记：advanceBranch 后进入 CLEANING 是"正常分支间清理"；失败清理会清掉此标记。 */
     private boolean branchTransitionPending = false;
+    /** 并行评估退回串行的原因；null 表示源内容允许并行。 */
+    private String serialFallbackReason;
+    /** 真正并行模式下的独立分支事务；未初始化时为空。 */
+    private java.util.List<EvaluationBranch> parallelBranches = java.util.List.of();
 
     public EvaluationSession(UUID id, UUID owner, GlobalPos machinePos, String roomCode,
                              BlockState originalState, CompoundTag originalBlockEntityNbt) {
@@ -139,7 +147,7 @@ public final class EvaluationSession {
     }
 
     public boolean hasPhase4Manifest() {
-        return manifest != null;
+        return manifest != null || !parallelBranches.isEmpty();
     }
 
     public String rollbackMessageKey() {
@@ -201,6 +209,16 @@ public final class EvaluationSession {
         tag.putBoolean("clean_target_on_cancel", cleanTargetOnCancel);
         tag.putInt("branch_index", branchIndex);
         tag.putInt("branch_count", branchCount);
+        if (serialFallbackReason != null) {
+            tag.putString("serial_fallback_reason", serialFallbackReason);
+        }
+        if (!parallelBranches.isEmpty()) {
+            net.minecraft.nbt.ListTag branchTags = new net.minecraft.nbt.ListTag();
+            for (EvaluationBranch branch : parallelBranches) {
+                branchTags.add(branch.save());
+            }
+            tag.put("parallel_branches", branchTags);
+        }
         return tag;
     }
 
@@ -245,6 +263,18 @@ public final class EvaluationSession {
         session.cleanTargetOnCancel = tag.getBoolean("clean_target_on_cancel");
         session.branchIndex = tag.getInt("branch_index");
         session.branchCount = Math.max(1, tag.getInt("branch_count"));
+        session.serialFallbackReason = tag.contains("serial_fallback_reason")
+                ? tag.getString("serial_fallback_reason")
+                : null;
+        if (tag.contains("parallel_branches", net.minecraft.nbt.Tag.TAG_LIST)) {
+            net.minecraft.nbt.ListTag branchTags = tag.getList(
+                    "parallel_branches", net.minecraft.nbt.Tag.TAG_COMPOUND);
+            java.util.List<EvaluationBranch> branches = new java.util.ArrayList<>();
+            for (int index = 0; index < branchTags.size(); index++) {
+                branches.add(EvaluationBranch.load(branchTags.getCompound(index), registries));
+            }
+            session.setParallelBranches(branches);
+        }
         return session;
     }
 
@@ -264,6 +294,50 @@ public final class EvaluationSession {
     }
 
     // ===== 多分支评估（并行空间输入方块）=====
+
+    /** 并行评估是否被允许；一旦因特殊内容退回串行，整场保持串行。 */
+    public boolean parallelAllowed() {
+        return serialFallbackReason == null;
+    }
+
+    public String serialFallbackReason() {
+        return serialFallbackReason;
+    }
+
+    public void setSerialFallbackReason(String serialFallbackReason) {
+        this.serialFallbackReason = serialFallbackReason;
+    }
+
+    /** 并行分支是否已建立。 */
+    public boolean hasParallelBranches() {
+        return !parallelBranches.isEmpty();
+    }
+
+    public java.util.List<EvaluationBranch> parallelBranches() {
+        return parallelBranches;
+    }
+
+    /** 并行分支的 manifest（命令/诊断用；返回公开类型，避免命令层触达包内分支类型）。 */
+    public java.util.List<EvaluationManifest> parallelBranchManifests() {
+        return parallelBranches.stream().map(EvaluationBranch::manifest).toList();
+    }
+
+    /** 调试命令：返回当前可观察副本的目标维度；并行时选第一个已 ready 分支，否则 0 号分支。 */
+    public ResourceKey<Level> liveCopyDimension() {
+        if (!parallelBranches.isEmpty()) {
+            for (EvaluationBranch branch : parallelBranches) {
+                if (branch.manifest().targetReady()) {
+                    return branch.manifest().targetDimension();
+                }
+            }
+            return parallelBranches.getFirst().manifest().targetDimension();
+        }
+        return manifest == null ? null : manifest.targetDimension();
+    }
+
+    public void setParallelBranches(java.util.List<EvaluationBranch> parallelBranches) {
+        this.parallelBranches = parallelBranches == null ? java.util.List.of() : parallelBranches;
+    }
 
     public int branchIndex() {
         return branchIndex;

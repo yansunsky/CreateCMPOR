@@ -1,0 +1,12 @@
+{
+  "type": "createcmpor:eval_world",
+  "generator": {
+    "type": "minecraft:flat",
+    "settings": {
+      "biome": "compactmachines:machine",
+      "features": false,
+      "lakes": false,
+      "layers": []
+    }
+  }
+}

@@ -65,6 +65,10 @@ public final class EvaluationCloneManager {
                 case RAILWAY_TRANSFER -> tickRailwayTransfer(server, data, session);
                 case PUBLISHING -> tickPublishing(server, data, session);
                 case PUBLISHED -> tickPublished(server, data, session);
+                case PARALLEL_PREPARING -> tickParallelPreparing(server, data, session);
+                case PARALLEL_PUBLISHING -> tickParallelPublishing(server, data, session);
+                case PARALLEL_PUBLISHED -> tickParallelPublished(server, data, session);
+                case PARALLEL_EVALUATING -> EvaluationScheduler.tickParallel(server, data, session);
                 case EVALUATING -> EvaluationScheduler.tick(server, data, session);
                 case EVALUATED -> {
                     // Phase 7 固化接管前保持等待（正常不会停留此状态）
@@ -193,8 +197,24 @@ public final class EvaluationCloneManager {
                     EvaluationEntityInspector.inspectAll(runtime.sourceEntities);
             runtime.rewrittenEntities = entities.rewrittenByChunk();
             manifest.setEntityCount(entities.totalEntities());
+            String fallbackReason = EvaluationModePolicy.serialFallbackReason(
+                    runtime.sourceTags, runtime.rewrittenEntities);
+            // 铁路回退增强：内容扫描未命中但源房间存在铁路（车厢实体或源房间轨道图节点）时，
+            // 同样退回串行分支（铁轨网络是全局 SavedData，并行 lane 无法隔离）。
+            if (fallbackReason == null && EvaluationRailwayTransfer.hasSourceRailway(
+                    server, session, runtime.rewrittenEntities)) {
+                fallbackReason = "create_railway";
+            }
+            if (fallbackReason != null && session.parallelAllowed()) {
+                session.setSerialFallbackReason(fallbackReason);
+                CreateCMPOR.LOGGER.info("评估会话 {} 检测到并行不安全内容（{}），本场退回串行分支",
+                        session.id(), fallbackReason);
+                notifyOwner(server, session, Component.literal("检测到 " + fallbackReason
+                        + "，本场评估退回串行模式"));
+            }
             data.changed();
-            runtime.staging.flushWorker();
+            // staging 写入 future 已在逐区块操作中完成；同一 IOWorker 的 read 会看到 pending write，
+            // 不在 ServerTick 上额外 flush/等待整个 staging worker。
             session.setState(EvaluationSession.State.STAGING_WRITTEN);
             data.changed();
             syncCriticalState(server, data);
@@ -304,6 +324,17 @@ public final class EvaluationCloneManager {
         EvaluationManifest manifest = requireManifest(session);
         ServerLevel target = requireTarget(server, manifest);
         RuntimeState runtime = runtime(server, session);
+        if (shouldUseParallel(session)) {
+            initializeParallelBranches(server, data, session);
+            return;
+        }
+        if (session.branchCount() > ParallelEvaluationWorlds.LANE_COUNT
+                && session.parallelAllowed()) {
+            session.setSerialFallbackReason("parallel_lanes_exceeded");
+            CreateCMPOR.LOGGER.info("评估会话 {} 分支数 {} 超过并行 lane {}，退回串行分支",
+                    session.id(), session.branchCount(), ParallelEvaluationWorlds.LANE_COUNT);
+            data.changed();
+        }
         if (publishingSession == null) {
             publishingSession = session.id();
         } else if (!publishingSession.equals(session.id())) {
@@ -350,6 +381,174 @@ public final class EvaluationCloneManager {
         runtime.clearOperation();
     }
 
+    private static boolean shouldUseParallel(EvaluationSession session) {
+        return session.branchCount() > 1
+                && session.parallelAllowed()
+                && session.parallelBranches().isEmpty()
+                && session.branchCount() <= ParallelEvaluationWorlds.LANE_COUNT;
+    }
+
+    private void initializeParallelBranches(MinecraftServer server, EvaluationSavedData data,
+                                            EvaluationSession session) {
+        EvaluationManifest base = requireManifest(session);
+        List<EvaluationBranch> branches = new ArrayList<>();
+        for (int index = 0; index < session.branchCount(); index++) {
+            EvaluationManifest branchManifest = base.copyForBranchTarget(
+                    ParallelEvaluationWorlds.lane(index));
+            branches.add(new EvaluationBranch(index, UUID.randomUUID(), branchManifest));
+        }
+        session.setParallelBranches(branches);
+        session.setState(EvaluationSession.State.PARALLEL_PREPARING);
+        data.changed();
+        syncCriticalState(server, data);
+        CreateCMPOR.LOGGER.info("评估会话 {} 建立并行分支：{} 个独立 lane",
+                session.id(), branches.size());
+        notifyOwner(server, session, Component.literal("检测到并行输入，使用并行评估（"
+                + branches.size() + " 个独立空间）"));
+    }
+
+    private void tickParallelPreparing(MinecraftServer server, EvaluationSavedData data,
+                                       EvaluationSession session) {
+        if (session.parallelBranches().isEmpty()) {
+            requestCleanup(server, data, session, "message.createcmpor.evaluation.clone_failed");
+            return;
+        }
+        RuntimeState source = runtime(server, session);
+        for (EvaluationBranch branch : session.parallelBranches()) {
+            RuntimeState branchRuntime = runtimeSharing(branch.branchId(), source);
+            if (branchRuntime.rewrittenEntities.isEmpty()) {
+                branchRuntime.rewrittenEntities = new LinkedHashMap<>(source.rewrittenEntities);
+            }
+            if (branchRuntime.sourcePoi.isEmpty()) {
+                branchRuntime.sourcePoi.putAll(source.sourcePoi);
+            }
+        }
+        session.setState(EvaluationSession.State.PARALLEL_PUBLISHING);
+        data.changed();
+        syncCriticalState(server, data);
+    }
+
+    private void tickParallelPublishing(MinecraftServer server, EvaluationSavedData data,
+                                        EvaluationSession session) {
+        if (session.parallelBranches().isEmpty()) {
+            requestCleanup(server, data, session, "message.createcmpor.evaluation.clone_failed");
+            return;
+        }
+        boolean allPublished = true;
+        for (EvaluationBranch branch : session.parallelBranches()) {
+            if (branch.phase() == EvaluationBranch.Phase.STAGED) {
+                branch.setPhase(EvaluationBranch.Phase.PUBLISHING);
+            }
+            if (branch.phase() == EvaluationBranch.Phase.PUBLISHING) {
+                tickParallelPublishBranch(server, data, session, branch);
+                allPublished = false;
+            } else if (branch.phase() != EvaluationBranch.Phase.PUBLISHED
+                    && branch.phase() != EvaluationBranch.Phase.EVALUATING) {
+                allPublished = false;
+            }
+        }
+        if (!allPublished) {
+            return;
+        }
+        session.setState(EvaluationSession.State.PARALLEL_PUBLISHED);
+        data.changed();
+        syncCriticalState(server, data);
+        notifyOwner(server, session, Component.literal("并行副本全部发布完成"));
+    }
+
+    private void tickParallelPublishBranch(MinecraftServer server, EvaluationSavedData data,
+                                           EvaluationSession session, EvaluationBranch branch) {
+        EvaluationManifest manifest = branch.manifest();
+        ServerLevel target = requireTarget(server, manifest);
+        RuntimeState runtime = runtime(server, branch.branchId(), manifest);
+        if (!manifest.targetWriteIntent()) {
+            List<ChunkPos> targets = chunkPositions(manifest);
+            if (runtime.footprintIndex >= targets.size()) {
+                manifest.setTargetWriteIntent(true);
+                data.changed();
+                syncCriticalState(server, data);
+                runtime.clearOperation();
+                return;
+            }
+            ChunkPos pos = targets.get(runtime.footprintIndex);
+            if (!EvaluationStorageBridge.isChunkIdle(target, pos)) {
+                throw new TargetConflictException("并行目标 chunk 已加载或仍在卸载：" + pos);
+            }
+            if (runtime.operation == Operation.NONE) {
+                runtime.chunk = pos;
+                runtime.storedFuture = EvaluationStorageBridge.readStoredRecords(target, pos);
+                runtime.operation = Operation.TARGET_CONFLICT_CHECK;
+                return;
+            }
+            if (!runtime.storedFuture.isDone()) {
+                return;
+            }
+            EvaluationStorageBridge.StoredRecords records = runtime.storedFuture.join();
+            if (!records.allAbsent()) {
+                throw new TargetConflictException("并行目标存储已存在未知记录：" + pos);
+            }
+            runtime.footprintIndex++;
+            runtime.clearOperation();
+            return;
+        }
+
+        EvaluationManifest.ChunkRecord unwritten = manifest.chunks().stream()
+                .filter(chunk -> chunk.publishStatus() == EvaluationManifest.PublishStatus.NONE)
+                .findFirst().orElse(null);
+        if (unwritten != null) {
+            tickTargetWrite(server, data, session, target, manifest, runtime, unwritten);
+            return;
+        }
+        EvaluationManifest.ChunkRecord unverified = manifest.chunks().stream()
+                .filter(chunk -> chunk.publishStatus() == EvaluationManifest.PublishStatus.WRITTEN)
+                .findFirst().orElse(null);
+        if (unverified != null) {
+            tickTargetVerify(server, data, session, target, manifest, runtime, unverified);
+            return;
+        }
+
+        EvaluationTicketManager.add(target, manifest);
+        manifest.setTicketsAdded(true);
+        syncCriticalState(server, data);
+        loadChunksToFull(server, session, target, manifest);
+        EvaluationTicketManager.setChunksForced(target, manifest, true);
+        runtime.clearOperation();
+        branch.setPhase(EvaluationBranch.Phase.PUBLISHED);
+        CreateCMPOR.LOGGER.info("评估会话 {} 并行分支 {}/{} 已发布到 {}",
+                session.id(), branch.index() + 1, session.branchCount(), manifest.targetDimension().location());
+    }
+
+    private void tickParallelPublished(MinecraftServer server, EvaluationSavedData data,
+                                       EvaluationSession session) {
+        boolean allReady = true;
+        for (EvaluationBranch branch : session.parallelBranches()) {
+            EvaluationManifest manifest = branch.manifest();
+            ServerLevel target = requireTarget(server, manifest);
+            if (branch.targetReady()) {
+                continue;
+            }
+            if (EvaluationTicketManager.allReady(target, manifest)) {
+                manifest.setTargetReady(true);
+                branch.setTargetReady(true);
+                branch.setPhase(EvaluationBranch.Phase.EVALUATING);
+                data.changed();
+                syncCriticalState(server, data);
+                CreateCMPOR.LOGGER.info("评估会话 {} 并行分支 {}/{} 达到 BLOCK_TICKING",
+                        session.id(), branch.index() + 1, session.branchCount());
+            } else {
+                allReady = false;
+            }
+        }
+        if (!allReady) {
+            return;
+        }
+        session.setState(EvaluationSession.State.PARALLEL_EVALUATING);
+        data.changed();
+        syncCriticalState(server, data);
+        EvaluationScheduler.startParallel(server, session);
+        notifyOwner(server, session, Component.literal("并行副本全部就绪，开始评估"));
+    }
+
     private void tickRailwayTransfer(MinecraftServer server, EvaluationSavedData data,
                                      EvaluationSession session) {
         EvaluationManifest manifest = requireManifest(session);
@@ -393,7 +592,7 @@ public final class EvaluationCloneManager {
         for (int i = 0; i < count; i++) {
             BlockPos pos = basePos.offset(0, i, 0);
             if (i == 0) {
-                // 主位置是评估方块（EvaluatorBlock，不可破坏标记方块）的安装位置：
+                // 主位置是评估方块（EvaluatorBlock）的安装位置：
                 // 直接替换为工厂，不参与破坏检测（评估开始前已对上方 N-1 格做过预检测）。
                 machineLevel.removeBlockEntity(pos);
                 machineLevel.setBlockAndUpdate(pos,
@@ -477,19 +676,14 @@ public final class EvaluationCloneManager {
                 .filter(chunk -> chunk.publishStatus() == EvaluationManifest.PublishStatus.NONE)
                 .findFirst().orElse(null);
         if (unwritten != null) {
-            tickTargetWrite(server, data, session, target, runtime, unwritten);
-            return;
-        }
-        if (!runtime.targetFlushed) {
-            EvaluationStorageBridge.flushAll(target);
-            runtime.targetFlushed = true;
+            tickTargetWrite(server, data, session, target, manifest, runtime, unwritten);
             return;
         }
         EvaluationManifest.ChunkRecord unverified = manifest.chunks().stream()
                 .filter(chunk -> chunk.publishStatus() == EvaluationManifest.PublishStatus.WRITTEN)
                 .findFirst().orElse(null);
         if (unverified != null) {
-            tickTargetVerify(server, data, session, target, runtime, unverified);
+            tickTargetVerify(server, data, session, target, manifest, runtime, unverified);
             return;
         }
 
@@ -531,7 +725,8 @@ public final class EvaluationCloneManager {
     }
 
     private void tickTargetWrite(MinecraftServer server, EvaluationSavedData data,
-                                 EvaluationSession session, ServerLevel target, RuntimeState runtime,
+                                 EvaluationSession session, ServerLevel target,
+                                 EvaluationManifest manifest, RuntimeState runtime,
                                  EvaluationManifest.ChunkRecord record) {
         if (runtime.operation == Operation.NONE) {
             runtime.chunk = record.chunkPos();
@@ -556,27 +751,39 @@ public final class EvaluationCloneManager {
         if (!runtime.writeFuture.isDone()) {
             return;
         }
+        // ChunkStorage.write 已完成，不再同步等待实体/POI worker；把辅助写入提交后分帧检查。
         runtime.writeFuture.join();
-        // 同窗口写入改写后的实体记录（目标 chunk 实体尚未加载，emptyChunks 无缓存）
-        List<CompoundTag> entities = runtime.rewrittenEntities.get(runtime.chunk);
-        if (entities != null && !entities.isEmpty()) {
-            ListTag entityList = new ListTag();
-            entities.forEach(entityList::add);
-            EvaluationStorageBridge.writeEntities(target, runtime.chunk, entityList);
+        if (runtime.auxiliaryWriteFuture == null) {
+            List<CompletableFuture<Void>> auxiliaryWrites = new ArrayList<>();
+            // 同窗口写入改写后的实体记录（目标 chunk 实体尚未加载，emptyChunks 无缓存）
+            List<CompoundTag> entities = runtime.rewrittenEntities.get(runtime.chunk);
+            if (entities != null && !entities.isEmpty()) {
+                ListTag entityList = new ListTag();
+                entities.forEach(entityList::add);
+                auxiliaryWrites.add(EvaluationStorageBridge.writeEntities(target, runtime.chunk, entityList));
+            }
+            // 同窗口写入源 POI 记录（目标 chunk 未加载，POI 存储无缓存）
+            CompoundTag poi = runtime.sourcePoi.get(runtime.chunk);
+            if (poi != null) {
+                auxiliaryWrites.add(EvaluationStorageBridge.writePoi(target, runtime.chunk, poi));
+            }
+            runtime.auxiliaryWriteFuture = CompletableFuture.allOf(
+                    auxiliaryWrites.toArray(CompletableFuture[]::new));
+            return;
         }
-        // 同窗口写入源 POI 记录（目标 chunk 未加载，POI 存储无缓存）
-        CompoundTag poi = runtime.sourcePoi.get(runtime.chunk);
-        if (poi != null) {
-            EvaluationStorageBridge.writePoi(target, runtime.chunk, poi);
+        if (!runtime.auxiliaryWriteFuture.isDone()) {
+            return;
         }
+        runtime.auxiliaryWriteFuture.join();
         record.setPublishStatus(EvaluationManifest.PublishStatus.WRITTEN);
         data.changed();
-        notifyCloneProgress(server, session, requireManifest(session));
+        notifyCloneProgress(server, session, manifest);
         runtime.clearOperation();
     }
 
     private void tickTargetVerify(MinecraftServer server, EvaluationSavedData data,
-                                  EvaluationSession session, ServerLevel target, RuntimeState runtime,
+                                  EvaluationSession session, ServerLevel target,
+                                  EvaluationManifest manifest, RuntimeState runtime,
                                   EvaluationManifest.ChunkRecord record) {
         if (runtime.operation == Operation.NONE) {
             runtime.chunk = record.chunkPos();
@@ -629,7 +836,7 @@ public final class EvaluationCloneManager {
         record.setTargetHash(hash);
         record.setPublishStatus(EvaluationManifest.PublishStatus.VERIFIED);
         data.changed();
-        notifyCloneProgress(server, session, requireManifest(session));
+        notifyCloneProgress(server, session, manifest);
         runtime.clearOperation();
     }
 
@@ -662,6 +869,10 @@ public final class EvaluationCloneManager {
 
     private void tickCleaning(MinecraftServer server, EvaluationSavedData data,
                               EvaluationSession session) {
+        if (session.hasParallelBranches()) {
+            tickParallelCleaning(server, data, session);
+            return;
+        }
         EvaluationManifest manifest = requireManifest(session);
         ServerLevel target = requireTarget(server, manifest);
         RuntimeState runtime = runtime(server, session);
@@ -691,7 +902,6 @@ public final class EvaluationCloneManager {
                 return;
             }
             if (runtime.operation == Operation.NONE) {
-                EvaluationStorageBridge.flushAll(target);
                 runtime.writeFuture = EvaluationStorageBridge.deleteRecords(target, chunks);
                 runtime.operation = Operation.CLEANUP_DELETE;
                 return;
@@ -701,7 +911,6 @@ public final class EvaluationCloneManager {
                     return;
                 }
                 runtime.writeFuture.join();
-                EvaluationStorageBridge.flushAll(target);
                 runtime.operation = Operation.CLEANUP_VERIFY;
                 runtime.footprintIndex = 0;
                 return;
@@ -727,7 +936,6 @@ public final class EvaluationCloneManager {
             }
             data.remove(session.id());
             server.overworld().getDataStorage().save();
-            net.neoforged.neoforge.common.IOUtilities.waitUntilIOWorkerComplete();
             EvaluationCloneManager.INSTANCE.afterSessionRemoved(server, data);
             var owner = server.getPlayerList().getPlayer(session.owner());
             if (owner != null) {
@@ -757,6 +965,86 @@ public final class EvaluationCloneManager {
         syncCriticalState(server, data);
     }
 
+    private void tickParallelCleaning(MinecraftServer server, EvaluationSavedData data,
+                                      EvaluationSession session) {
+        boolean allBranchesCleaned = true;
+        for (EvaluationBranch branch : session.parallelBranches()) {
+            EvaluationManifest manifest = branch.manifest();
+            RuntimeState branchRuntime = runtime(server, branch.branchId(), manifest);
+            ServerLevel target = requireTarget(server, manifest);
+            if (!branch.ticketsRemoved()) {
+                EvaluationTicketManager.remove(target, manifest);
+                EvaluationTicketManager.setChunksForced(target, manifest, false);
+                manifest.setTicketsAdded(false);
+                manifest.setTargetReady(false);
+                branch.setTicketsRemoved(true);
+                syncCriticalState(server, data);
+                allBranchesCleaned = false;
+                continue;
+            }
+            if (!branchRuntime.evaluationCleaned) {
+                EvaluationScheduler.cleanup(branch.branchId(), "branch:" + branch.branchId());
+                branchRuntime.evaluationCleaned = true;
+            }
+            if (manifest.targetWriteIntent() || session.cleanTargetOnCancel()) {
+                if (!branch.targetCleaned()) {
+                    List<ChunkPos> chunks = chunkPositions(manifest);
+                    if (!EvaluationStorageBridge.areChunksIdle(target, chunks)) {
+                        allBranchesCleaned = false;
+                        continue;
+                    }
+                    if (branchRuntime.operation != Operation.NONE
+                            && branchRuntime.operation != Operation.CLEANUP_DELETE
+                            && branchRuntime.operation != Operation.CLEANUP_VERIFY) {
+                        branchRuntime.clearOperation();
+                        branchRuntime.footprintIndex = 0;
+                    }
+                    if (branchRuntime.operation == Operation.NONE) {
+                        branchRuntime.writeFuture = EvaluationStorageBridge.deleteRecords(target, chunks);
+                        branchRuntime.operation = Operation.CLEANUP_DELETE;
+                        allBranchesCleaned = false;
+                        continue;
+                    }
+                    if (branchRuntime.operation == Operation.CLEANUP_DELETE) {
+                        if (!branchRuntime.writeFuture.isDone()) {
+                            allBranchesCleaned = false;
+                            continue;
+                        }
+                        branchRuntime.writeFuture.join();
+                        branchRuntime.operation = Operation.CLEANUP_VERIFY;
+                        branchRuntime.footprintIndex = 0;
+                        allBranchesCleaned = false;
+                        continue;
+                    }
+                    if (branchRuntime.footprintIndex < chunks.size()) {
+                        tickCleanupVerify(target, branchRuntime, chunks.get(branchRuntime.footprintIndex));
+                        allBranchesCleaned = false;
+                        continue;
+                    }
+                    manifest.setTargetWriteIntent(false);
+                    for (EvaluationManifest.ChunkRecord chunk : manifest.chunks()) {
+                        chunk.setPublishStatus(EvaluationManifest.PublishStatus.CLEANED);
+                    }
+                    branch.setTargetCleaned(true);
+                    branch.setPhase(EvaluationBranch.Phase.CLEANED);
+                    syncCriticalState(server, data);
+                }
+            }
+        }
+        if (!allBranchesCleaned) {
+            return;
+        }
+        for (EvaluationBranch branch : session.parallelBranches()) {
+            closeRuntime(branch.branchId());
+        }
+        session.clearCleanTargetOnCancel();
+        session.setParallelBranches(List.of());
+        // 分支清理完成：立即持久化“无分支 + 主 eval 副本未写”的状态，
+        // 避免父 manifest 清理与 journal 重启恢复读到残留分支。
+        data.changed();
+        syncCriticalState(server, data);
+    }
+
     private void tickCleanupVerify(ServerLevel target, RuntimeState runtime, ChunkPos pos) {
         if (runtime.storedFuture == null) {
             runtime.chunk = pos;
@@ -777,8 +1065,17 @@ public final class EvaluationCloneManager {
     }
 
     private RuntimeState runtime(MinecraftServer server, EvaluationSession session) {
-        return runtimes.computeIfAbsent(session.id(), ignored ->
-                new RuntimeState(EvaluationStorageBridge.openStaging(server, requireManifest(session))));
+        return runtime(server, session.id(), requireManifest(session));
+    }
+
+    private RuntimeState runtime(MinecraftServer server, UUID key, EvaluationManifest manifest) {
+        return runtimes.computeIfAbsent(key, ignored ->
+                new RuntimeState(EvaluationStorageBridge.openStaging(server, manifest)));
+    }
+
+    /** 并行分支复用父会话 staging 句柄；分支 runtime 不拥有该句柄，closeRuntime 不会关闭它。 */
+    private RuntimeState runtimeSharing(UUID key, RuntimeState source) {
+        return runtimes.computeIfAbsent(key, ignored -> new RuntimeState(source.staging, false));
     }
 
     private boolean isQueueHead(EvaluationSavedData data, EvaluationSession session) {
@@ -789,9 +1086,12 @@ public final class EvaluationCloneManager {
 
     private int activeCount(EvaluationSavedData data) {
         // PUBLISHED 之后副本加载与克隆并发无关（由 ticket 维持），释放槽位让排队会话前进。
+        // 并行分支的 PARALLEL_PREPARING/PARALLEL_PUBLISHING 仍在做与串行 PUBLISHING 同级的
+        // 克隆/发布 IO，必须占用克隆槽；PARALLEL_PUBLISHED 起已全部发布完成，同样释放槽位。
         return (int) data.sessions().stream().filter(session -> switch (session.state()) {
             case STAGING_SOURCE, STAGING_WRITTEN, STAGING_VERIFIED,
-                    RAILWAY_TRANSFER, PUBLISHING, CLEANING -> true;
+                    RAILWAY_TRANSFER, PUBLISHING, CLEANING,
+                    PARALLEL_PREPARING, PARALLEL_PUBLISHING -> true;
             default -> false;
         }).count();
     }
@@ -892,7 +1192,7 @@ public final class EvaluationCloneManager {
             publishingSession = null;
         }
         RuntimeState runtime = runtimes.remove(sessionId);
-        if (runtime == null) {
+        if (runtime == null || !runtime.ownsStaging) {
             return;
         }
         try {
@@ -916,6 +1216,8 @@ public final class EvaluationCloneManager {
 
     private static final class RuntimeState {
         private final ChunkStorage staging;
+        /** 是否拥有 staging 句柄：父会话/独立 runtime=true；并行分支共享父句柄=false。 */
+        private final boolean ownsStaging;
         private final Map<ChunkPos, ListTag> sourceEntities = new LinkedHashMap<>();
         private final Map<ChunkPos, CompoundTag> sourcePoi = new LinkedHashMap<>();
         /** 探针：写 staging 时的源区块 tag（diff 排查摘要不一致）。 */
@@ -927,6 +1229,7 @@ public final class EvaluationCloneManager {
         private CompletableFuture<Optional<CompoundTag>> tagFuture;
         private CompletableFuture<EvaluationStorageBridge.StoredRecords> storedFuture;
         private CompletableFuture<Void> writeFuture;
+        private CompletableFuture<Void> auxiliaryWriteFuture;
         private int footprintIndex;
         private boolean targetFlushed;
         private boolean ticketsRemoved;
@@ -934,7 +1237,12 @@ public final class EvaluationCloneManager {
         private boolean evaluationCleaned;
 
         private RuntimeState(ChunkStorage staging) {
+            this(staging, true);
+        }
+
+        private RuntimeState(ChunkStorage staging, boolean ownsStaging) {
             this.staging = staging;
+            this.ownsStaging = ownsStaging;
         }
 
         private void clearOperation() {
@@ -944,6 +1252,7 @@ public final class EvaluationCloneManager {
             tagFuture = null;
             storedFuture = null;
             writeFuture = null;
+            auxiliaryWriteFuture = null;
         }
     }
 

@@ -26,7 +26,6 @@ import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
-import net.neoforged.neoforge.common.IOUtilities;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -34,6 +33,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 
 /** 管理 Phase 3 的持久化冻结事务。 */
 public final class EvaluationManager {
@@ -44,6 +45,7 @@ public final class EvaluationManager {
     private static final int PLAYER_EXIT_FALLBACK_TICKS = 40;
     private static final String LAUNCHER_TRANSACTIONS_TAG = "createcmpor_launcher_transactions";
     private final Map<UUID, EvictionAttempt> playersBeingEvicted = new HashMap<>();
+    private final Map<UUID, CompletableFuture<Void>> rollbackWrites = new HashMap<>();
 
     private EvaluationManager() {
     }
@@ -69,7 +71,7 @@ public final class EvaluationManager {
 
         // 预检测：工厂将占用的位置（机器位置向上 N 格）必须是可破坏方块（生存可清理）。
         // 不可破坏方块（如基岩）无法被生存模式移动，评估固化必然失败 → 评估开始前就阻止。
-        // 主位置（i=0）是评估方块的安装位置（EvaluatorBlock 不可破坏标记），无条件排除。
+        // 主位置（i=0）是评估方块（EvaluatorBlock）的安装位置，固化时直接替换为工厂，无条件排除。
         String blocked = precheckFactorySpace(server, machinePos, roomCode);
         if (blocked != null) {
             return StartResult.failure(Component.literal(blocked));
@@ -84,6 +86,7 @@ public final class EvaluationManager {
             session = new EvaluationSession(session.id(), session.owner(), session.machinePos(), session.roomCode(),
                     session.originalState(), session.originalBlockEntityNbt(), false);
         }
+        session.setBranchCount(parallelBranchCount(server, roomCode));
         data.put(session);
         try {
             flushTransactions(server);
@@ -109,8 +112,8 @@ public final class EvaluationManager {
      * 无并行方块则为 1）必须全部是可破坏方块。不可破坏方块（destroySpeed < 0，如基岩）无法被
      * 生存模式移动，固化必然失败 → 在评估开始前就阻止，让玩家先清理。
      *
-     * <p>主位置（i = 0，机器位置本身）无条件排除：评估期间它被不可破坏的评估方块（EvaluatorBlock）
-     * 替代，固化时直接替换为工厂，不参与破坏检测。</p>
+     * <p>主位置（i = 0，机器位置本身）无条件排除：评估期间它是评估方块（EvaluatorBlock）的安装位置，
+     * 固化时直接替换为工厂，不参与破坏检测。</p>
      *
      * @return 第一个不可破坏方块的位置描述；全部可破坏（或无可检测问题）返回 null
      */
@@ -119,36 +122,10 @@ public final class EvaluationManager {
         if (machineLevel == null) {
             return null;
         }
-        // 与 activateIoBlocks 一致：房间内第一个并行空间输入方块的配置物品数 = 分支数
-        int[] factoryCount = {1};
-        CompactMachines.room(server, roomCode).ifPresent(room -> {
-            AABB bounds = room.boundaries().outerBounds();
-            int startX = (int) Math.floor(bounds.minX);
-            int startY = (int) Math.floor(bounds.minY);
-            int startZ = (int) Math.floor(bounds.minZ);
-            int endX = (int) Math.floor(bounds.maxX - 1.0E-5);
-            int endY = (int) Math.floor(bounds.maxY - 1.0E-5);
-            int endZ = (int) Math.floor(bounds.maxZ - 1.0E-5);
-            outer:
-            for (int x = startX; x <= endX; x++) {
-                for (int y = startY; y <= endY; y++) {
-                    for (int z = startZ; z <= endZ; z++) {
-                        BlockPos pos = new BlockPos(x, y, z);
-                        if (room.level().getBlockState(pos).is(ModBlocks.PARALLEL_INPUT.get())) {
-                            if (room.level().getBlockEntity(pos)
-                                    instanceof com.yansunsky.createcmpor.block.ParallelInputBlockEntity parallel
-                                    && parallel.configuredItemCount() > 1) {
-                                factoryCount[0] = parallel.configuredItemCount();
-                            }
-                            break outer;
-                        }
-                    }
-                }
-            }
-        });
+        int factoryCount = parallelBranchCount(server, roomCode);
 
         BlockPos base = machinePos.pos();
-        for (int i = 0; i < factoryCount[0]; i++) {
+        for (int i = 0; i < factoryCount; i++) {
             if (i == 0) {
                 continue; // 主位置是评估方块安装位置，无条件排除
             }
@@ -165,9 +142,41 @@ public final class EvaluationManager {
         return null;
     }
 
+    /** 房间内所有并行空间输入方块配置物品数的最大值；无并行方块为 1。 */
+    private static int parallelBranchCount(MinecraftServer server, String roomCode) {
+        int[] factoryCount = {1};
+        CompactMachines.room(server, roomCode).ifPresent(room -> {
+            AABB bounds = room.boundaries().outerBounds();
+            int startX = (int) Math.floor(bounds.minX);
+            int startY = (int) Math.floor(bounds.minY);
+            int startZ = (int) Math.floor(bounds.minZ);
+            int endX = (int) Math.floor(bounds.maxX - 1.0E-5);
+            int endY = (int) Math.floor(bounds.maxY - 1.0E-5);
+            int endZ = (int) Math.floor(bounds.maxZ - 1.0E-5);
+            for (int x = startX; x <= endX; x++) {
+                for (int y = startY; y <= endY; y++) {
+                    for (int z = startZ; z <= endZ; z++) {
+                        BlockPos pos = new BlockPos(x, y, z);
+                        if (room.level().getBlockState(pos).is(ModBlocks.PARALLEL_INPUT.get())
+                                && room.level().getBlockEntity(pos)
+                                instanceof com.yansunsky.createcmpor.block.ParallelInputBlockEntity parallel) {
+                            int count = parallel.configuredItemCount();
+                            if (count > factoryCount[0]) {
+                                factoryCount[0] = count;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        return factoryCount[0];
+    }
+
     public boolean isRoomLocked(MinecraftServer server, String roomCode) {
         return EvaluationSavedData.get(server).sessionByRoom(roomCode).isPresent();
-    }    public boolean isMachineLocked(MinecraftServer server, GlobalPos machinePos) {
+    }
+
+    public boolean isMachineLocked(MinecraftServer server, GlobalPos machinePos) {
         return EvaluationSavedData.get(server).sessionByMachine(machinePos).isPresent();
     }
 
@@ -199,6 +208,7 @@ public final class EvaluationManager {
 
     public void onServerStarted(ServerStartedEvent event) {
         playersBeingEvicted.clear();
+        rollbackWrites.clear();
         MinecraftServer server = event.getServer();
         EvaluationSavedData data = EvaluationSavedData.get(server);
         EvaluationCloneManager.INSTANCE.onServerStarted(server, data);
@@ -227,44 +237,68 @@ public final class EvaluationManager {
         deliverPendingLaunchers(player, data);
     }
 
+    /**
+     * 评估方块被玩家破坏：把「破坏」接管为还原流程而不是普通移除。
+     *
+     * <ul>
+     *   <li>存在活跃会话：只有会话发起人（owner）或管理员（op）能破坏；破坏 = 主动取消评估，
+     *       走 failSession 状态机回滚（清理副本/票据后恢复原机器并退还启动棒）。</li>
+     *   <li>孤立评估方块（无会话，如服务器重启后恢复中断残留）：优先用方块实体自带的原机器镜像
+     *       直接恢复（{@link #restoreOrphanEvaluator}），任何玩家破坏都会触发；镜像缺失时允许直接移除。</li>
+     *   <li>曾进入 Phase 4 且已失去会话/清理 journal 的孤立方块仍保留管理员门禁
+     *       （见 orphan_cleanup_required），防止在残留副本状态不明时误恢复。</li>
+     * </ul>
+     */
     public void onBlockBreak(BlockEvent.BreakEvent event) {
         if (!event.getState().is(ModBlocks.EVALUATOR.get())) {
             return;
         }
         event.setCanceled(true);
-        if (!(event.getPlayer() instanceof ServerPlayer player)
-                || !(player.hasPermissions(2) && player.isCreative())) {
-            event.getPlayer().displayClientMessage(
-                    Component.translatable("message.createcmpor.evaluation.protected"), true);
+        if (!(event.getPlayer() instanceof ServerPlayer player)) {
             return;
         }
+        boolean operator = player.hasPermissions(2);
+
         EvaluationSavedData data = EvaluationSavedData.get(player.server);
         GlobalPos machinePos = GlobalPos.of(player.level().dimension(), event.getPos());
         Optional<EvaluationSession> session = data.sessionByMachine(machinePos);
         if (session.isPresent()) {
-            failSession(player.server, data, session.get(),
-                    "message.createcmpor.evaluation.admin_rollback");
-            return;
-        }
-        if (event.getLevel() instanceof ServerLevel level
-                && level.getBlockEntity(event.getPos()) instanceof EvaluatorBlockEntity evaluator) {
-            if (evaluator.isPhase4CleanupRequired()) {
+            if (!operator && !session.get().owner().equals(player.getUUID())) {
                 player.displayClientMessage(
-                        Component.translatable("message.createcmpor.evaluation.orphan_cleanup_required"), false);
+                        Component.translatable("message.createcmpor.evaluation.protected"), true);
                 return;
             }
-            if (restoreOrphanEvaluator(level, evaluator)) {
-                queueOrphanLauncherReturn(player.server, evaluator);
-                player.displayClientMessage(
-                        Component.translatable("message.createcmpor.evaluation.orphan_restored"), false);
-            } else {
-                event.setCanceled(false);
-                player.displayClientMessage(
-                        Component.translatable("message.createcmpor.evaluation.orphan_removed"), false);
-            }
-        } else {
-            event.setCanceled(false);
+            failSession(player.server, data, session.get(),
+                    "message.createcmpor.evaluation.cancelled_by_break");
+            return;
         }
+
+        if (!(event.getLevel() instanceof ServerLevel level)
+                || !(level.getBlockEntity(event.getPos()) instanceof EvaluatorBlockEntity evaluator)) {
+            // 无方块实体（无镜像可恢复）：允许直接移除残留标记
+            event.setCanceled(false);
+            return;
+        }
+        if (evaluator.isPhase4CleanupRequired()) {
+            if (!operator) {
+                player.displayClientMessage(
+                        Component.translatable("message.createcmpor.evaluation.protected"), true);
+                return;
+            }
+            player.displayClientMessage(
+                    Component.translatable("message.createcmpor.evaluation.orphan_cleanup_required"), false);
+            return;
+        }
+        if (restoreOrphanEvaluator(level, evaluator)) {
+            queueOrphanLauncherReturn(player.server, evaluator);
+            player.displayClientMessage(
+                    Component.translatable("message.createcmpor.evaluation.orphan_restored"), false);
+            return;
+        }
+        // 镜像缺失且无法恢复：允许直接移除残留标记（原机器只能重建）
+        event.setCanceled(false);
+        player.displayClientMessage(
+                Component.translatable("message.createcmpor.evaluation.orphan_removed"), false);
     }
 
     private void tickSession(MinecraftServer server, EvaluationSavedData data, EvaluationSession session) {
@@ -284,8 +318,10 @@ public final class EvaluationManager {
             case SAVING_SOURCE -> tickSaving(server, data, session);
             case WAITING_UNLOAD -> tickWaitingForUnload(server, data, session);
             case FROZEN, QUEUED, STAGING_SOURCE, STAGING_WRITTEN, STAGING_VERIFIED,
-                    RAILWAY_TRANSFER, PUBLISHING, PUBLISHED, EVALUATING, EVALUATED,
-                    SOLIDIFYING, CLEANING ->
+                    RAILWAY_TRANSFER, PUBLISHING, PUBLISHED,
+                    PARALLEL_PREPARING, PARALLEL_PUBLISHING, PARALLEL_PUBLISHED,
+                    PARALLEL_EVALUATING,
+                    EVALUATING, EVALUATED, SOLIDIFYING, CLEANING ->
                     EvaluationCloneManager.INSTANCE.tick(server, data, session);
             case ROLLING_BACK -> rollback(server, data, session,
                     Component.translatable(session.rollbackMessageKey()));
@@ -327,8 +363,8 @@ public final class EvaluationManager {
                     Component.translatable("message.createcmpor.evaluation.room_missing", session.roomCode()));
             return;
         }
-        room.level().save(null, true, false);
-        IOUtilities.waitUntilIOWorkerComplete();
+        // 源房间的 dirty chunk 会在 WAITING_UNLOAD 的正常卸载流程中逐区块提交到 vanilla IOWorker。
+        // 这里不再调用 ServerLevel.save(true) 或等待全局 IO，避免把整维保存压在服务器 tick 上。
         transition(data, session, EvaluationSession.State.WAITING_UNLOAD);
     }
 
@@ -340,9 +376,8 @@ public final class EvaluationManager {
                     Component.translatable("message.createcmpor.evaluation.room_missing", session.roomCode()));
             return;
         }
-        boolean anyLoaded = CompactMachines.roomChunks(session.roomCode()).stream()
-                .anyMatch(chunkPos -> room.level().getChunkSource().hasChunk(chunkPos.x, chunkPos.z));
-        if (!anyLoaded) {
+        List<ChunkPos> roomChunks = CompactMachines.roomChunks(session.roomCode()).stream().toList();
+        if (EvaluationStorageBridge.areChunksIdle(room.level(), roomChunks)) {
             transition(data, session, EvaluationSession.State.FROZEN);
             notifyOwner(server, session, Component.translatable("message.createcmpor.evaluation.frozen"));
             CreateCMPOR.LOGGER.info("房间 {} 已冻结，会话 {}", session.roomCode(), session.id());
@@ -482,21 +517,41 @@ public final class EvaluationManager {
             session.resetStateTicks();
         }
         ServerLevel machineLevel = server.getLevel(session.machinePos().dimension());
-        if (machineLevel != null) {
-            try {
-                restoreMachine(machineLevel, session);
-                machineLevel.getChunkSource().save(true);
-            } catch (RuntimeException exception) {
-                CreateCMPOR.LOGGER.error("恢复会话 {} 的原机器失败，将在 100 tick 后重试", session.id(), exception);
-                session.tickState();
-                data.changed();
-                return;
-            }
-        } else {
+        if (machineLevel == null) {
             CreateCMPOR.LOGGER.error("无法恢复会话 {}：机器维度 {} 未加载",
                     session.id(), session.machinePos().dimension().location());
             return;
         }
+        CompletableFuture<Void> restoreWrite = rollbackWrites.get(session.id());
+        if (restoreWrite == null) {
+            try {
+                restoreMachine(machineLevel, session);
+                restoreWrite = EvaluationStorageBridge.saveLoadedChunk(
+                        machineLevel, new ChunkPos(session.machinePos().pos()));
+                rollbackWrites.put(session.id(), restoreWrite);
+            } catch (RuntimeException exception) {
+                CreateCMPOR.LOGGER.error("恢复会话 {} 的原机器失败，将在下一 tick 重试", session.id(), exception);
+                session.tickState();
+                data.changed();
+                return;
+            }
+            return;
+        }
+        if (!restoreWrite.isDone()) {
+            session.tickState();
+            data.changed();
+            return;
+        }
+        try {
+            restoreWrite.join();
+        } catch (CompletionException exception) {
+            rollbackWrites.remove(session.id());
+            CreateCMPOR.LOGGER.error("保存会话 {} 的还原结果失败，将重试", session.id(), exception.getCause());
+            session.tickState();
+            data.changed();
+            return;
+        }
+        rollbackWrites.remove(session.id());
 
         if (session.launcherReturnEligible()) {
             data.addPendingLauncherReturn(session.id(), session.owner());
@@ -535,9 +590,9 @@ public final class EvaluationManager {
                 || !session.id().equals(evaluator.getSessionId())) {
             throw new IllegalStateException("无法在 EvaluatorBlockEntity 上登记 Phase 4 清理责任");
         }
+        // critical journal 已在进入 Phase 4 前同步写入；Evaluator 只需标脏，
+        // 不再在 ServerTick 中执行整维 save/IO wait。
         evaluator.markPhase4CleanupRequired();
-        machineLevel.save(null, true, false);
-        IOUtilities.waitUntilIOWorkerComplete();
     }
 
     private void failSession(MinecraftServer server, EvaluationSavedData data,
@@ -615,8 +670,8 @@ public final class EvaluationManager {
     }
 
     private static void flushTransactions(MinecraftServer server) {
+        // SavedData 文件很小，保留同步写；禁止在 ServerTick 上等待全局 IOWorker。
         server.overworld().getDataStorage().save();
-        IOUtilities.waitUntilIOWorkerComplete();
     }
 
     public record StartResult(boolean successful, EvaluationSession session, Component message) {
