@@ -111,7 +111,6 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
     private int[] inputEnergyPattern = new int[0];
     private int[] outputEnergyPattern = new int[0];
     private int patternLength;
-    private int replayTick;
     private int replayCurrentSecond;
 
     private boolean lastSuccess = false;
@@ -290,7 +289,6 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         outputEnergyCapacity = maxInt(outputEnergyPattern) * BUFFER_SECONDS;
         inputEnergyAmount = 0;
         outputEnergyAmount = 0;
-        replayTick = 0;
         replayCurrentSecond = 0;
         installed = true;
         setChanged();
@@ -543,12 +541,12 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         return outputEnergyCapacity <= 0 || outputEnergyAmount < outputEnergyCapacity;
     }
 
+    /**
+     * REPLAY 回放推进：外层 {@link #tick()} 的 tickCount 每 20 tick（1 秒）才调用本方法一次，
+     * pattern 每个元素 = 该"秒"应兑现的量，因此这里每次都直接兑现当前秒槽并推进到下一秒。
+     * （注意：不得在本方法内再叠一层 20 tick 计数——那会让每秒的兑现变成每 20 秒一次，产出只有理论的 1/20。）
+     */
     private void tickReplay() {
-        replayTick++;
-        if (replayTick < 20) {
-            return;
-        }
-        replayTick = 0;
         if (replayIsReady(replayCurrentSecond)) {
             replayApply(replayCurrentSecond);
             replayCurrentSecond = (replayCurrentSecond + 1) % patternLength;
