@@ -67,6 +67,138 @@ final class EvaluationStorageBridge {
     }
 
     /**
+     * 失败探针：源房间区块 idle 状态详查（谁在持有/哪个票据在拉加载）。
+     * 逐区块输出五个 idle 子条件 + ChunkHolder 的 ticketLevel/fullStatus/ticking + DistanceManager 上的票据清单。
+     * 只在失败路径调用（一次性），用于定位"冻结后 ~1 tick 内复载源区块"的机制。
+     */
+    static String sourceIdleDiagnostics(ServerLevel level, List<ChunkPos> chunks) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("dim=").append(level.dimension().location())
+                .append(", players=").append(level.players().size())
+                .append(", roomChunks=").append(chunks.size()).append('\n');
+        int shown = 0;
+        for (ChunkPos pos : chunks) {
+            long key = pos.toLong();
+            var map = level.getChunkSource().chunkMap;
+            var visible = map.getVisibleChunkIfPresent(key);
+            var updating = map.getUpdatingChunkIfPresent(key);
+            boolean pendingUnload = map.pendingUnloads.containsKey(key);
+            var loaded = level.getChunkSource().getChunkNow(pos.x, pos.z);
+            boolean entitiesLoaded = level.areEntitiesLoaded(key);
+            boolean idle = visible == null && updating == null && !pendingUnload
+                    && loaded == null && !entitiesLoaded;
+            sb.append("  ").append(pos).append(" idle=").append(idle)
+                    .append(" {visible=").append(visible != null)
+                    .append(", updating=").append(updating != null)
+                    .append(", pendingUnload=").append(pendingUnload)
+                    .append(", chunkNow=").append(loaded != null)
+                    .append(", entities=").append(entitiesLoaded).append('}');
+            if (visible != null) {
+                sb.append(" holder{ticketLevel=").append(visible.getTicketLevel())
+                        .append(", status=").append(visible.getFullStatus())
+                        .append(", ticking=").append(visible.getTickingChunk() != null).append('}');
+            }
+            sb.append(" tickets=[").append(chunkTicketNames(level, key)).append(']').append('\n');
+            if (++shown >= 24) {
+                sb.append("  ... 仅显示前 24 个 / 共 ").append(chunks.size()).append(" 个区块\n");
+                break;
+            }
+        }
+        return sb.toString();
+    }
+
+    /** 玩家对话框用的简洁诊断（中文）：统计非 idle 区块、出现的区块票据类型与维度玩家数。 */
+    static String chatSourceIdleSummary(ServerLevel level, List<ChunkPos> chunks, String phase) {
+        java.util.LinkedHashSet<String> ticketTypes = new java.util.LinkedHashSet<>();
+        java.util.List<ChunkPos> nonIdle = new java.util.ArrayList<>();
+        for (ChunkPos pos : chunks) {
+            long key = pos.toLong();
+            var map = level.getChunkSource().chunkMap;
+            boolean idle = map.getVisibleChunkIfPresent(key) == null
+                    && map.getUpdatingChunkIfPresent(key) == null
+                    && !map.pendingUnloads.containsKey(key)
+                    && level.getChunkSource().getChunkNow(pos.x, pos.z) == null
+                    && !level.areEntitiesLoaded(key);
+            if (!idle) {
+                nonIdle.add(pos);
+                for (var ticket : ticketsAt(level, key)) {
+                    ticketTypes.add(ticket.getType().toString());
+                }
+            }
+        }
+        StringBuilder sb = new StringBuilder("【诊断·").append(phase).append("】");
+        if (nonIdle.isEmpty()) {
+            sb.append("此刻源区块已全部恢复卸载，复载为瞬时现象，未留下票据/持有者线索。");
+            return sb.toString();
+        }
+        sb.append("源区块 ").append(nonIdle.size()).append('/').append(chunks.size()).append(" 未保持卸载");
+        for (int i = 0; i < Math.min(nonIdle.size(), 3); i++) {
+            sb.append(i == 0 ? "，例如 " : ", ").append(nonIdle.get(i));
+        }
+        sb.append("；区块票据类型: ").append(ticketTypes.isEmpty() ? "无" : String.join(", ", ticketTypes))
+                .append("；该维度玩家数: ").append(level.players().size())
+                .append("。详见服务端日志。");
+        return sb.toString();
+    }
+
+    /**
+     * DistanceManager.tickets 为包私有字段（新增 AT 在 IDEA 编译模型里不总是即时生效，
+     * 会报 "tickets 不为 public，无法从外部软件包访问"）。这里用反射读取，Gradle/IDEA 均无需 AT 即可编译。
+     * final Long2ObjectOpenHashMap<SortedArraySet<Ticket<?>>>；Long2ObjectMap 实现 java.util.Map，故可安全转型。
+     */
+    private static final java.lang.reflect.Field TICKETS_FIELD = findTicketsField();
+
+    private static java.lang.reflect.Field findTicketsField() {
+        try {
+            java.lang.reflect.Field field = net.minecraft.server.level.DistanceManager.class.getDeclaredField("tickets");
+            field.setAccessible(true);
+            return field;
+        } catch (NoSuchFieldException | RuntimeException exception) {
+            CreateCMPOR.LOGGER.warn("无法反射 DistanceManager.tickets，探针将不显示区块票据类型", exception);
+            return null;
+        }
+    }
+
+    /** 反射读取该区块在 DistanceManager 上的全部 Ticket（可能为空；失败也返回空，不抛异常）。 */
+    private static java.util.List<net.minecraft.server.level.Ticket<?>> ticketsAt(ServerLevel level, long key) {
+        java.util.List<net.minecraft.server.level.Ticket<?>> result = new java.util.ArrayList<>();
+        try {
+            if (TICKETS_FIELD == null) {
+                return result;
+            }
+            Object mapObj = TICKETS_FIELD.get(level.getChunkSource().chunkMap.getDistanceManager());
+            if (!(mapObj instanceof java.util.Map<?, ?> ticketMap)) {
+                return result;
+            }
+            Object setObj = ticketMap.get(key);
+            if (setObj instanceof Iterable<?> iterable) {
+                for (Object obj : iterable) {
+                    if (obj instanceof net.minecraft.server.level.Ticket<?> ticket) {
+                        result.add(ticket);
+                    }
+                }
+            }
+        } catch (IllegalAccessException | RuntimeException ignored) {
+            // 探针尽力而为：反射失败仅导致票据列缺失，不影响主流程
+        }
+        return result;
+    }
+
+    private static String chunkTicketNames(ServerLevel level, long key) {
+        StringBuilder sb = new StringBuilder();
+        for (var ticket : ticketsAt(level, key)) {
+            if (!sb.isEmpty()) {
+                sb.append(", ");
+            }
+            sb.append(ticket.getType()).append('@').append(ticket.getTicketLevel());
+            if (ticket.isForceTicks()) {
+                sb.append("(forceTick)");
+            }
+        }
+        return sb.toString();
+    }
+
+    /**
      * 只序列化并异步写入一个已经加载的区块。
      * ChunkSerializer 必须在主线程调用；ChunkStorage.write 的实际磁盘 IO 由该维度 IOWorker 完成。
      */

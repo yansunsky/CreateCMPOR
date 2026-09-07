@@ -387,6 +387,9 @@ public final class EvaluationManager {
         session.tickState();
         data.changed();
         if (session.stateTicks() >= UNLOAD_TIMEOUT_TICKS) {
+            CreateCMPOR.LOGGER.warn("评估会话 {} 等待源房间 {} 卸载超时（持续被外部票据加载）。诊断：\n{}",
+                    session.id(), session.roomCode(),
+                    EvaluationStorageBridge.sourceIdleDiagnostics(room.level(), roomChunks));
             rollback(server, data, session,
                     Component.translatable("message.createcmpor.evaluation.unload_timeout"));
         }
