@@ -56,6 +56,17 @@ public class Config {
     public static final ModConfigSpec.DoubleValue STRESS_STABILITY_RELAXATION;
     public static final ModConfigSpec.BooleanValue ENABLE_FACTORY_REVERT;
 
+    /**
+     * 源房间冻结成功后其区块又被其他机制重新加载时，是否跳过 idle 复检直接继续评估。
+     * Whether to skip the idle re-check and continue when the frozen source room's chunks get re-loaded.
+     * <ul>
+     * <li>{@code false}（默认，严格）：卸载后源区块再次加载即安全取消（原设计，零修改快照保证）。</li>
+     * <li>{@code true}（有风险）：卸载确认成功后，即使源区块被其他模组/机制复载也继续克隆评估——
+     * 快照可能不再是严格冻结态（源若在评估期间持续 tick 可能被修改），仅当环境无法让房间保持卸载时用于解除阻塞。</li>
+     * </ul>
+     */
+    public static final ModConfigSpec.BooleanValue CONTINUE_ON_SOURCE_RELOADED;
+
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
 
@@ -184,6 +195,15 @@ public class Config {
                         "是否允许启动棒把工厂还原为原 CompactMachines 机器（新版无库存复制风险，默认开启）。",
                         "Allow the launcher stick to revert the factory back to the original CompactMachines machine (no item duplication risk in the new version; enabled by default).")
                 .define("enableFactoryRevert", true);
+        CONTINUE_ON_SOURCE_RELOADED = builder
+                .comment(
+                        "源房间冻结成功后其区块又被其他机制重新加载时，是否跳过 idle 复检直接继续评估。",
+                        "If the frozen source room's chunks get re-loaded again, skip the idle re-check and continue the evaluation anyway.",
+                        "true：卸载确认成功后即使源区块被复载也继续（快照可能非严格冻结；仅当环境无法让房间保持卸载时用于解除阻塞）。",
+                        "true: after a successful unload, continue even if source chunks are re-loaded (snapshot may not be strictly frozen; use only when the environment refuses to keep the room unloaded).",
+                        "false（默认，严格）：卸载后源区块再次加载立即安全取消。",
+                        "false (default, strict): cancel safely as soon as source chunks load again after unload.")
+                .define("continueOnSourceReloaded", false);
         builder.pop();
 
         SPEC = builder.build();

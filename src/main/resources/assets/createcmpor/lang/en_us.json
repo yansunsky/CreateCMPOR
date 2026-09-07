@@ -61,6 +61,7 @@
   "message.createcmpor.evaluation.railway_crosses_boundary": "The room's railway connects outside the room. Evaluation was safely cancelled.",
   "message.createcmpor.evaluation.railway_cross_dimension": "The carriage has cross-dimension position data. Evaluation was safely cancelled.",
   "message.createcmpor.evaluation.source_not_idle": "The source chunks did not remain unloaded, so evaluation was safely cancelled.",
+  "message.createcmpor.evaluation.source_reload_forced": "[WARN] Source room chunks were re-loaded after freeze; continueOnSourceReloaded=true is set, so evaluation continues anyway (snapshot may not be strictly frozen; results may be affected).",
   "message.createcmpor.evaluation.source_locked": "The source room is frozen and cannot be loaded.",
   "message.createcmpor.evaluation.copy_not_ready": "The eval_world replica has not finished publishing and loading.",
   "message.createcmpor.evaluation.orphan_cleanup_required": "This orphan evaluator entered Phase 4. Direct restore is blocked because its cleanup journal is missing; inspect the server log first.",

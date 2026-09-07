@@ -61,6 +61,7 @@
   "message.createcmpor.evaluation.railway_crosses_boundary": "房间内铁路连接到房间外，评估已安全取消。",
   "message.createcmpor.evaluation.railway_cross_dimension": "车厢存在跨维度位置数据，评估已安全取消。",
   "message.createcmpor.evaluation.source_not_idle": "原房间区块未保持卸载，评估已安全取消。",
+  "message.createcmpor.evaluation.source_reload_forced": "【警告】原房间区块在冻结后被复载；已按配置 continueOnSourceReloaded=true 继续评估（快照可能非严格冻结，结果可能受影响）。",
   "message.createcmpor.evaluation.source_locked": "原房间处于冻结事务中，禁止重新加载。",
   "message.createcmpor.evaluation.copy_not_ready": "eval_world 副本尚未完成发布和加载。",
   "message.createcmpor.evaluation.orphan_cleanup_required": "该孤立评估方块曾进入 Phase 4；缺少清理 journal 时禁止直接恢复，请先检查服务端日志。",

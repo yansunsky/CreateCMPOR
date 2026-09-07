@@ -20,10 +20,12 @@ import org.jetbrains.annotations.Nullable;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -35,6 +37,8 @@ public final class EvaluationCloneManager {
     private final Map<UUID, RuntimeState> runtimes = new HashMap<>();
     @Nullable
     private UUID publishingSession;
+    /** 已提示过"源区块复载但按配置继续"的会话（避免逐 tick 刷屏）。 */
+    private final Set<UUID> sourceReloadForcedWarned = new HashSet<>();
     private int maxConcurrentEvaluations = Config.MAX_CONCURRENT_EVALUATIONS.get();
 
     private EvaluationCloneManager() {
@@ -107,6 +111,7 @@ public final class EvaluationCloneManager {
 
     void requestCleanup(MinecraftServer server, EvaluationSavedData data, EvaluationSession session,
                         String messageKey) {
+        sourceReloadForcedWarned.remove(session.id());
         session.setRollbackMessageKey(messageKey);
         // 失败清理：不再是正常分支间过渡，清除标记防止 CLEANING 完成后误入下一分支
         session.clearBranchTransitionPending();
@@ -136,9 +141,18 @@ public final class EvaluationCloneManager {
             return;
         }
         List<ChunkPos> chunks = CompactMachines.roomChunks(session.roomCode()).stream().toList();
-        if (chunks.isEmpty() || !EvaluationStorageBridge.areChunksIdle(room.level(), chunks)) {
+        if (chunks.isEmpty()) {
+            CreateCMPOR.LOGGER.warn("评估会话 {} 源房间 {} 区块集合为空，无法克隆", session.id(), session.roomCode());
             requestCleanup(server, data, session, "message.createcmpor.evaluation.source_not_idle");
             return;
+        }
+        if (!EvaluationStorageBridge.areChunksIdle(room.level(), chunks)) {
+            logSourceNotIdle(server, session, room.level(), chunks, "FROZEN");
+            if (!Config.CONTINUE_ON_SOURCE_RELOADED.get()) {
+                requestCleanup(server, data, session, "message.createcmpor.evaluation.source_not_idle");
+                return;
+            }
+            warnSourceReloadForced(server, session);
         }
         EvaluationManifest manifest = EvaluationManifest.create(session.id(), session.roomCode(),
                 room.levelKey(), target.dimension(), room.level().getGameTime(), chunks);
@@ -180,11 +194,19 @@ public final class EvaluationCloneManager {
                                    EvaluationSession session) {
         EvaluationManifest manifest = requireManifest(session);
         RoomInstance room = requireRoom(server, session);
-        if (!sameRoomChunks(session, manifest)
-                || !EvaluationStorageBridge.areChunksIdle(room.level(), manifest.chunks().stream()
-                .map(EvaluationManifest.ChunkRecord::chunkPos).toList())) {
+        if (!sameRoomChunks(session, manifest)) {
             requestCleanup(server, data, session, "message.createcmpor.evaluation.source_not_idle");
             return;
+        }
+        List<ChunkPos> stagingChunks = manifest.chunks().stream()
+                .map(EvaluationManifest.ChunkRecord::chunkPos).toList();
+        if (!EvaluationStorageBridge.areChunksIdle(room.level(), stagingChunks)) {
+            logSourceNotIdle(server, session, room.level(), stagingChunks, "STAGING_SOURCE");
+            if (!Config.CONTINUE_ON_SOURCE_RELOADED.get()) {
+                requestCleanup(server, data, session, "message.createcmpor.evaluation.source_not_idle");
+                return;
+            }
+            warnSourceReloadForced(server, session);
         }
 
         RuntimeState runtime = runtime(server, session);
@@ -1163,6 +1185,27 @@ public final class EvaluationCloneManager {
         if (owner != null) {
             owner.displayClientMessage(message, false);
         }
+    }
+
+    /** 源区块 idle 复检失败探针：全量诊断进服务端日志，简短摘要发到发起人对话框。 */
+    private void logSourceNotIdle(MinecraftServer server, EvaluationSession session,
+                                  ServerLevel level, List<ChunkPos> chunks, String phase) {
+        CreateCMPOR.LOGGER.warn("评估会话 {} 阶段 {}：源房间 {} 区块未保持卸载。诊断：\n{}",
+                session.id(), phase, session.roomCode(),
+                EvaluationStorageBridge.sourceIdleDiagnostics(level, chunks));
+        notifyOwner(server, session, Component.literal(
+                EvaluationStorageBridge.chatSourceIdleSummary(level, chunks, phase)));
+    }
+
+    /** continueOnSourceReloaded=true 时，首次（每会话）提示一次风险。 */
+    private void warnSourceReloadForced(MinecraftServer server, EvaluationSession session) {
+        if (!sourceReloadForcedWarned.add(session.id())) {
+            return;
+        }
+        CreateCMPOR.LOGGER.warn("评估会话 {} 源区块复载，但 continueOnSourceReloaded=true：继续克隆（快照可能非严格冻结）",
+                session.id());
+        notifyOwner(server, session,
+                Component.translatable("message.createcmpor.evaluation.source_reload_forced"));
     }
 
     private static void notifyCloneProgress(MinecraftServer server, EvaluationSession session,
