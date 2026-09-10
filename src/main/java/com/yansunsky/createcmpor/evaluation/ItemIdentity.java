@@ -38,7 +38,9 @@ public final class ItemIdentity {
             return "";
         }
         ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
-        if (stack.getComponentsPatch().isEmpty()) {
+        if (stack.getComponentsPatch().isEmpty() || registries == null) {
+            // 无组件，或拿不到注册表（理论上仅客户端早退等异常路径）→ 退化为纯 id，
+            // 行为与旧版一致，不会因无法编码组件而抛异常。
             return of(id);
         }
         Tag saved = stack.copyWithCount(1).saveOptional(registries);
