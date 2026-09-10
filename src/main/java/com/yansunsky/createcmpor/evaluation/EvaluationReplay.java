@@ -113,9 +113,12 @@ final class EvaluationReplay {
         });
 
         Set<EvaluationTrace.FlowKey> keys = new HashSet<>(trace.series().keySet());
-        base.items().keySet().forEach(id -> keys.add(EvaluationTrace.FlowKey.item(id)));
+        // 库存快照键 = 身份签名（id + 组件摘要），回填时保持一致
+        base.items().keySet().forEach(sig ->
+                keys.add(EvaluationTrace.FlowKey.item(ItemIdentity.idOf(sig), sig)));
         base.fluids().keySet().forEach(id -> keys.add(EvaluationTrace.FlowKey.fluid(id)));
-        end.items().keySet().forEach(id -> keys.add(EvaluationTrace.FlowKey.item(id)));
+        end.items().keySet().forEach(sig ->
+                keys.add(EvaluationTrace.FlowKey.item(ItemIdentity.idOf(sig), sig)));
         end.fluids().keySet().forEach(id -> keys.add(EvaluationTrace.FlowKey.fluid(id)));
 
         for (EvaluationTrace.FlowKey key : keys) {
@@ -124,13 +127,13 @@ final class EvaluationReplay {
             long ioIn = series == null ? 0L : series.inputTotal;
             boolean item = "item".equals(key.kind());
             long baseCount = item
-                    ? base.items().getOrDefault(key.id(), 0L)
+                    ? base.items().getOrDefault(key.signature(), 0L)
                     : base.fluids().getOrDefault(key.id(), 0L);
             long endCount = item
-                    ? end.items().getOrDefault(key.id(), 0L)
+                    ? end.items().getOrDefault(key.signature(), 0L)
                     : end.fluids().getOrDefault(key.id(), 0L);
             long s0Count = s0 == null ? 0L : (item
-                    ? s0.items().getOrDefault(key.id(), 0L)
+                    ? s0.items().getOrDefault(key.signature(), 0L)
                     : s0.fluids().getOrDefault(key.id(), 0L));
             long net = (endCount - baseCount) + ioOut - ioIn;
 
@@ -140,19 +143,19 @@ final class EvaluationReplay {
             if (intermediate) {
                 in.remove(key);
                 out.remove(key);
-                CreateCMPOR.LOGGER.info("回放-中间产物忽略: {}", key.id());
+                CreateCMPOR.LOGGER.info("回放-中间产物忽略: {}", key.signature());
                 continue;
             }
             if (isOutputType && net > 0) {
                 in.remove(key);
                 int[] outPattern = out.computeIfAbsent(key, ignored -> new int[recordLength]);
                 distribute(outPattern, net, recordLength);
-                CreateCMPOR.LOGGER.info("回放-净产物: {} net={}", key.id(), net);
+                CreateCMPOR.LOGGER.info("回放-净产物: {} net={}", key.signature(), net);
             } else if (net < 0) {
                 out.remove(key);
                 int[] inPattern = in.computeIfAbsent(key, ignored -> new int[recordLength]);
                 distribute(inPattern, -net, recordLength);
-                CreateCMPOR.LOGGER.info("回放-净原料: {} net={}", key.id(), net);
+                CreateCMPOR.LOGGER.info("回放-净原料: {} net={}", key.signature(), net);
             } else {
                 in.remove(key);
                 out.remove(key);
@@ -209,7 +212,7 @@ final class EvaluationReplay {
             long total = EvaluationTrace.total(entry.getValue());
             if (total < (long) (recordLength * intermediateRatio) && total < recordLength) {
                 in.remove(entry.getKey());
-                CreateCMPOR.LOGGER.info("回放-中间产物过滤: {} total={}", entry.getKey().id(), total);
+                CreateCMPOR.LOGGER.info("回放-中间产物过滤: {} total={}", entry.getKey().signature(), total);
             }
         }
     }

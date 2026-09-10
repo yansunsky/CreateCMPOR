@@ -1,5 +1,6 @@
 package com.yansunsky.createcmpor.evaluation;
 
+import net.minecraft.core.HolderLookup;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
 
@@ -19,13 +20,27 @@ import java.util.concurrent.ConcurrentHashMap;
  * 工厂，使产物能按真实形态重建（否则"水瓶"会被还原成无组件的"不可合成药水"）。</p>
  */
 public final class EvaluationTrace {
-    public record FlowKey(String kind, ResourceLocation id) {
+    /**
+     * 物品/流体身份键：{@code kind} + {@code id} + {@code signature}。
+     *
+     * <p>{@code signature} = {@link ItemIdentity} 的"id + 组件摘要"（无组件时等于 id 字符串）。
+     * 有了它，水瓶与同 id 的其他药水是两条独立通道：既不会被"同 id 进出净额"抵消，
+     * 也不会在工厂里被合并成单槽。</p>
+     */
+    public record FlowKey(String kind, ResourceLocation id, String signature) {
+        /** 无组件物品键（旧档 / 无 stack 场景）。 */
         public static FlowKey item(ResourceLocation id) {
-            return new FlowKey("item", id);
+            return new FlowKey("item", id, ItemIdentity.of(id));
+        }
+
+        /** 带组件签名的物品键（signature 由 {@link ItemIdentity#of(ItemStack, HolderLookup.Provider)} 得出）。 */
+        public static FlowKey item(ResourceLocation id, String signature) {
+            String sig = signature == null || signature.isEmpty() ? ItemIdentity.of(id) : signature;
+            return new FlowKey("item", id != null ? id : ItemIdentity.idOf(sig), sig);
         }
 
         public static FlowKey fluid(ResourceLocation id) {
-            return new FlowKey("fluid", id);
+            return new FlowKey("fluid", id, ItemIdentity.of(id));
         }
     }
 

@@ -191,10 +191,14 @@ public abstract class BaseIOBlockEntity extends RoomCodeBlockEntity {
         }
         ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
         boolean input = isInputSide();
+        // 身份签名 = id + 组件摘要：让"水瓶"与同 id 的其他药水成为两条独立通道
+        // （否则同 id 进出会在净平衡里互相抵消、固化后整条通道消失）。
+        String signature = com.yansunsky.createcmpor.evaluation.ItemIdentity.of(
+                stack, getLevel().registryAccess());
         // 组件保真：把本次真实物品的形态（count=1、含 DataComponents）一并上报，
         // 固化后工厂据此重建产物（否则带组件物品会退化成无组件原型，如水瓶→不可合成药水）。
         com.yansunsky.createcmpor.evaluation.EvaluationTrace.Hub.INSTANCE.record(
-                roomCode, com.yansunsky.createcmpor.evaluation.EvaluationTrace.FlowKey.item(id),
+                roomCode, com.yansunsky.createcmpor.evaluation.EvaluationTrace.FlowKey.item(id, signature),
                 stack.getCount(), input, getLevel().getGameTime(), stack.copyWithCount(1));
     }
 
