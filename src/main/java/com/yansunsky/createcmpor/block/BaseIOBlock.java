@@ -78,13 +78,11 @@ public abstract class BaseIOBlock extends BaseEntityBlock {
             ResourceLocation itemId = BuiltInRegistries.ITEM.getKey(stack.getItem());
             name = stack.getHoverName().copy().withStyle(ChatFormatting.GRAY);
             type = Component.translatable("chat.createcmpor.item").withStyle(ChatFormatting.WHITE);
-            if (ioBe.items.contains(itemId)) {
-                ioBe.items.remove(itemId);
-                action = Component.translatable("chat.createcmpor.removed").withStyle(ChatFormatting.WHITE);
-            } else {
-                ioBe.items.add(itemId);
-                action = Component.translatable("chat.createcmpor.added").withStyle(ChatFormatting.WHITE);
-            }
+            // 登记真实形态（含 DataComponents）：输入侧虚拟物品按登记形态提供，
+            // 避免带组件物品退化成无组件原型（如水瓶 → 不可合成的药水）。
+            boolean added = ioBe.toggleItemFilter(itemId, stack);
+            action = Component.translatable(added
+                    ? "chat.createcmpor.added" : "chat.createcmpor.removed").withStyle(ChatFormatting.WHITE);
         }
 
         ioBe.setChanged();

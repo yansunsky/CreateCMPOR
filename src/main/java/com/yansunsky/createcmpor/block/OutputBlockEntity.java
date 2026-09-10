@@ -21,7 +21,7 @@ public class OutputBlockEntity extends BaseIOBlockEntity {
         @Override
         public @NotNull ItemStack getStackInSlot(int slot) {
             if (items.isEmpty() || slot < 0 || slot >= items.size()) return ItemStack.EMPTY;
-            return new ItemStack(BuiltInRegistries.ITEM.get(items.get(slot)), 1);
+            return filterStack(items.get(slot), 1);
         }
 
         @Override

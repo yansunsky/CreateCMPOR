@@ -24,7 +24,9 @@ import net.neoforged.neoforge.fluids.capability.IFluidHandler;
 import net.neoforged.neoforge.items.IItemHandler;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Persisted IO filters and capability shells used by the later evaluator.
@@ -33,15 +35,52 @@ import java.util.List;
 public abstract class BaseIOBlockEntity extends RoomCodeBlockEntity {
     protected final List<ResourceLocation> items = new ArrayList<>();
     protected final List<ResourceLocation> fluids = new ArrayList<>();
+    /**
+     * 白名单物品的登记形态模板（count=1、含 DataComponents）。
+     * <p>1.20.5+ 大量物品差异（药水内容、附魔、自定义名等）由组件承载，仅凭 item id
+     * 会让输入侧虚拟物品退化成无组件原型（如水瓶 → 不可合成的药水）。右键登记白名单时
+     * 记录真实形态，抽取时按模板提供；旧档/无组件物品缺失该条目时回退纯 id 构造。</p>
+     */
+    protected final Map<ResourceLocation, ItemStack> itemTemplates = new LinkedHashMap<>();
 
     protected BaseIOBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState state) {
         super(type, pos, state);
+    }
+
+    /** 按白名单模板构造物品堆（模板缺失回退纯 id；count ≤0 返回空）。 */
+    public ItemStack filterStack(ResourceLocation id, int count) {
+        if (count <= 0 || id == null) {
+            return ItemStack.EMPTY;
+        }
+        ItemStack template = itemTemplates.get(id);
+        ItemStack base = template == null || template.isEmpty()
+                ? new ItemStack(BuiltInRegistries.ITEM.get(id)) : template;
+        return base.copyWithCount(count);
+    }
+
+    /**
+     * 登记/移除物品白名单（右键 IO 方块）：按 id 切换，并记录/清除真实形态模板。
+     *
+     * @return true = 本次为新增；false = 本次为移除
+     */
+    public boolean toggleItemFilter(ResourceLocation id, ItemStack stack) {
+        if (items.contains(id)) {
+            items.remove(id);
+            itemTemplates.remove(id);
+            return false;
+        }
+        items.add(id);
+        if (stack != null && !stack.isEmpty()) {
+            itemTemplates.put(id, stack.copyWithCount(1));
+        }
+        return true;
     }
 
     @Override
     protected void loadCommon(CompoundTag tag) {
         super.loadCommon(tag);
         items.clear();
+        itemTemplates.clear();
         if (tag.contains("items", Tag.TAG_LIST)) {
             ListTag list = tag.getList("items", Tag.TAG_STRING);
             for (int i = 0; i < list.size(); i++) {
@@ -64,6 +103,26 @@ public abstract class BaseIOBlockEntity extends RoomCodeBlockEntity {
         }
     }
 
+    /** 含注册表的载入：额外恢复白名单物品形态模板。 */
+    @Override
+    protected void loadCommon(CompoundTag tag, HolderLookup.Provider registries) {
+        loadCommon(tag);
+        if (tag.contains("item_templates", Tag.TAG_COMPOUND)) {
+            CompoundTag templates = tag.getCompound("item_templates");
+            for (String idKey : templates.getAllKeys()) {
+                ResourceLocation id = ResourceLocation.tryParse(idKey);
+                if (id == null || !BuiltInRegistries.ITEM.containsKey(id)) {
+                    continue;
+                }
+                CompoundTag stackTag = templates.getCompound(idKey);
+                ItemStack stack = ItemStack.parseOptional(registries, stackTag);
+                if (!stack.isEmpty()) {
+                    itemTemplates.put(id, stack.copyWithCount(1));
+                }
+            }
+        }
+    }
+
     @Override
     protected void saveCommon(CompoundTag tag) {
         super.saveCommon(tag);
@@ -74,6 +133,21 @@ public abstract class BaseIOBlockEntity extends RoomCodeBlockEntity {
         ListTag fluidTag = new ListTag();
         fluids.forEach(id -> fluidTag.add(StringTag.valueOf(id.toString())));
         tag.put("fluids", fluidTag);
+    }
+
+    /** 含注册表的保存：额外写入白名单物品形态模板（旧档无该键，读侧保持兼容）。 */
+    @Override
+    protected void saveCommon(CompoundTag tag, HolderLookup.Provider registries) {
+        saveCommon(tag);
+        CompoundTag templates = new CompoundTag();
+        itemTemplates.forEach((id, stack) -> {
+            if (!stack.isEmpty()) {
+                templates.put(id.toString(), stack.copyWithCount(1).saveOptional(registries));
+            }
+        });
+        if (!templates.isEmpty()) {
+            tag.put("item_templates", templates);
+        }
     }
 
     public abstract IItemHandler getItemHandler();
@@ -117,9 +191,11 @@ public abstract class BaseIOBlockEntity extends RoomCodeBlockEntity {
         }
         ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
         boolean input = isInputSide();
+        // 组件保真：把本次真实物品的形态（count=1、含 DataComponents）一并上报，
+        // 固化后工厂据此重建产物（否则带组件物品会退化成无组件原型，如水瓶→不可合成药水）。
         com.yansunsky.createcmpor.evaluation.EvaluationTrace.Hub.INSTANCE.record(
                 roomCode, com.yansunsky.createcmpor.evaluation.EvaluationTrace.FlowKey.item(id),
-                stack.getCount(), input, getLevel().getGameTime());
+                stack.getCount(), input, getLevel().getGameTime(), stack.copyWithCount(1));
     }
 
     protected void handle(FluidStack stack) {

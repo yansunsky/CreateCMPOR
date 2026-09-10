@@ -65,10 +65,43 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         long capacity;
         long amount;
         double fraction;
+        /**
+         * 物品形态模板（count=1、含 DataComponents）。
+         * 由评估采样（{@code EvaluationTrace} 的组件模板）或首次投入的真实物品得出，
+         * 用于重建产物——否则带组件物品会退化成无组件原型（如水瓶 → 不可合成的药水）。
+         */
+        ItemStack template = ItemStack.EMPTY;
 
         Container(long capacity) {
             this.capacity = capacity;
         }
+
+        /** 记录首个非空模板（后续变体不覆盖；id 粒度合并语义下取先见者）。 */
+        void applyTemplate(ItemStack stack) {
+            if (template.isEmpty() && stack != null && !stack.isEmpty()) {
+                template = stack.copyWithCount(1);
+            }
+        }
+    }
+
+    /** 按容器模板 + 物品 id 回退构造物品堆；数量 ≤0 返回空。 */
+    private static ItemStack stackOf(Container container, Item item, int count) {
+        if (count <= 0) {
+            return ItemStack.EMPTY;
+        }
+        ItemStack base = container != null && !container.template.isEmpty()
+                ? container.template : new ItemStack(item);
+        return base.copyWithCount(count);
+    }
+
+    /** 从模板表取模板（表为空返回 EMPTY）。 */
+    private static ItemStack templateOf(Map<EvaluationTrace.FlowKey, ItemStack> templates,
+                                        EvaluationTrace.FlowKey key) {
+        if (templates == null) {
+            return ItemStack.EMPTY;
+        }
+        ItemStack template = templates.get(key);
+        return template == null ? ItemStack.EMPTY : template;
     }
 
     private boolean replayMode;
@@ -172,6 +205,8 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
     /** RATE 模式：输入容量 = 每秒速率 × 20 秒缓冲；输出 = 大容量暂存仓（连续产出积累）。 */
     public void installRates(Map<EvaluationTrace.FlowKey, Double> inputRates,
                              Map<EvaluationTrace.FlowKey, Double> outputRates,
+                             Map<EvaluationTrace.FlowKey, ItemStack> inputItemTemplates,
+                             Map<EvaluationTrace.FlowKey, ItemStack> outputItemTemplates,
                              double inputEnergyRate, double outputEnergyRate,
                              double normalBurnDemandPerSecond, double superBurnDemandPerSecond) {
         replayMode = false;
@@ -190,7 +225,9 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
                 continue;
             }
             if ("item".equals(entry.getKey().kind())) {
-                inputItems.put(entry.getKey().id(), new Container(capacity));
+                Container container = new Container(capacity);
+                container.applyTemplate(templateOf(inputItemTemplates, entry.getKey()));
+                inputItems.put(entry.getKey().id(), container);
             } else {
                 inputFluids.put(entry.getKey().id(), new Container(capacity));
             }
@@ -199,9 +236,12 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             if (entry.getValue() <= 0) {
                 continue;
             }
-            long buffer = "item".equals(entry.getKey().kind()) ? ITEM_OUTPUT_BUFFER : FLUID_OUTPUT_BUFFER;
-            if ("item".equals(entry.getKey().kind())) {
-                outputItems.put(entry.getKey().id(), new Container(buffer));
+            boolean item = "item".equals(entry.getKey().kind());
+            long buffer = item ? ITEM_OUTPUT_BUFFER : FLUID_OUTPUT_BUFFER;
+            if (item) {
+                Container container = new Container(buffer);
+                container.applyTemplate(templateOf(outputItemTemplates, entry.getKey()));
+                outputItems.put(entry.getKey().id(), container);
             } else {
                 outputFluids.put(entry.getKey().id(), new Container(buffer));
             }
@@ -238,6 +278,8 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
     /** REPLAY 模式：每秒 pattern → 容器容量（峰值秒 × 20 缓冲）。 */
     public void installPatterns(Map<EvaluationTrace.FlowKey, int[]> replayIn,
                                 Map<EvaluationTrace.FlowKey, int[]> replayOut,
+                                Map<EvaluationTrace.FlowKey, ItemStack> inputItemTemplates,
+                                Map<EvaluationTrace.FlowKey, ItemStack> outputItemTemplates,
                                 int[] energyIn, int[] energyOut,
                                 double normalBurnDemandPerSecond, double superBurnDemandPerSecond) {
         replayMode = true;
@@ -277,14 +319,30 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         outputItems.clear();
         inputFluids.clear();
         outputFluids.clear();
-        inputItemPatterns.forEach((id, pattern) -> inputItems.put(id,
-                new Container(maxInt(pattern) * BUFFER_SECONDS)));
-        outputItemPatterns.forEach((id, pattern) -> outputItems.put(id,
-                new Container(Math.max(ITEM_OUTPUT_BUFFER, maxInt(pattern) * BUFFER_SECONDS))));
-        inputFluidPatterns.forEach((id, pattern) -> inputFluids.put(id,
-                new Container(maxInt(pattern) * BUFFER_SECONDS)));
-        outputFluidPatterns.forEach((id, pattern) -> outputFluids.put(id,
-                new Container(Math.max(FLUID_OUTPUT_BUFFER, maxInt(pattern) * BUFFER_SECONDS))));
+        for (Map.Entry<EvaluationTrace.FlowKey, int[]> entry : replayIn.entrySet()) {
+            boolean item = "item".equals(entry.getKey().kind());
+            long capacity = maxInt(entry.getValue()) * BUFFER_SECONDS;
+            if (item) {
+                Container container = new Container(capacity);
+                container.applyTemplate(templateOf(inputItemTemplates, entry.getKey()));
+                inputItems.put(entry.getKey().id(), container);
+            } else {
+                inputFluids.put(entry.getKey().id(), new Container(capacity));
+            }
+        }
+        for (Map.Entry<EvaluationTrace.FlowKey, int[]> entry : replayOut.entrySet()) {
+            boolean item = "item".equals(entry.getKey().kind());
+            long capacity = item
+                    ? Math.max(ITEM_OUTPUT_BUFFER, maxInt(entry.getValue()) * BUFFER_SECONDS)
+                    : Math.max(FLUID_OUTPUT_BUFFER, maxInt(entry.getValue()) * BUFFER_SECONDS);
+            if (item) {
+                Container container = new Container(capacity);
+                container.applyTemplate(templateOf(outputItemTemplates, entry.getKey()));
+                outputItems.put(entry.getKey().id(), container);
+            } else {
+                outputFluids.put(entry.getKey().id(), new Container(capacity));
+            }
+        }
         inputEnergyCapacity = maxInt(inputEnergyPattern) * BUFFER_SECONDS;
         outputEnergyCapacity = maxInt(outputEnergyPattern) * BUFFER_SECONDS;
         inputEnergyAmount = 0;
@@ -769,21 +827,21 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
     }
 
     private final class ItemHandler implements IItemHandler {
-        private List<Item> inputKeys() {
-            List<Item> keys = new ArrayList<>();
+        private List<ResourceLocation> inputIds() {
+            List<ResourceLocation> keys = new ArrayList<>();
             inputItems.keySet().forEach(id -> {
                 if (BuiltInRegistries.ITEM.containsKey(id)) {
-                    keys.add(BuiltInRegistries.ITEM.get(id));
+                    keys.add(id);
                 }
             });
             return keys;
         }
 
-        private List<Item> outputKeys() {
-            List<Item> keys = new ArrayList<>();
+        private List<ResourceLocation> outputIds() {
+            List<ResourceLocation> keys = new ArrayList<>();
             outputItems.keySet().forEach(id -> {
                 if (BuiltInRegistries.ITEM.containsKey(id)) {
-                    keys.add(BuiltInRegistries.ITEM.get(id));
+                    keys.add(id);
                 }
             });
             return keys;
@@ -791,12 +849,12 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
 
         @Override
         public int getSlots() {
-            return inputKeys().size() + outputKeys().size() + (burnModeActive() ? 1 : 0);
+            return inputIds().size() + outputIds().size() + (burnModeActive() ? 1 : 0);
         }
 
         /** 燃料槽索引（burn 模式追加在输入+输出之后；未激活返回 -1）。 */
         private int fuelSlotIndex() {
-            return burnModeActive() ? inputKeys().size() + outputKeys().size() : -1;
+            return burnModeActive() ? inputIds().size() + outputIds().size() : -1;
         }
 
         @Override
@@ -806,25 +864,26 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             if (burnModeActive() && slot == fuelSlot) {
                 for (Map.Entry<ResourceLocation, Container> entry : burnerFuelItems.entrySet()) {
                     if (entry.getValue().amount > 0) {
-                        return new ItemStack(BuiltInRegistries.ITEM.get(entry.getKey()),
+                        return stackOf(entry.getValue(), BuiltInRegistries.ITEM.get(entry.getKey()),
                                 (int) Math.min(entry.getValue().amount, 64));
                     }
                 }
                 return ItemStack.EMPTY;
             }
-            List<Item> inputs = inputKeys();
-            Container inputContainer = slot < inputs.size()
-                    ? inputItems.get(BuiltInRegistries.ITEM.getKey(inputs.get(slot))) : null;
-            if (slot < inputs.size()) {
+            List<ResourceLocation> inputs = inputIds();
+            if (slot >= 0 && slot < inputs.size()) {
+                ResourceLocation id = inputs.get(slot);
+                Container inputContainer = inputItems.get(id);
                 long amount = inputContainer == null ? 0 : Math.min(inputContainer.amount, 64);
-                return new ItemStack(inputs.get(slot), (int) amount); // 空槽返回 EMPTY（不再伪 1，便于 insertItemStacked 类自动化）
+                return stackOf(inputContainer, BuiltInRegistries.ITEM.get(id), (int) amount);
             }
-            List<Item> outputs = outputKeys();
+            List<ResourceLocation> outputs = outputIds();
             int outputIndex = slot - inputs.size();
             if (outputIndex >= 0 && outputIndex < outputs.size()) {
-                Container container = outputItems.get(BuiltInRegistries.ITEM.getKey(outputs.get(outputIndex)));
+                ResourceLocation id = outputs.get(outputIndex);
+                Container container = outputItems.get(id);
                 long amount = container == null ? 0 : Math.min(container.amount, 64);
-                return new ItemStack(outputs.get(outputIndex), (int) amount); // 空槽返回 EMPTY
+                return stackOf(container, BuiltInRegistries.ITEM.get(id), (int) amount);
             }
             return ItemStack.EMPTY;
         }
@@ -839,25 +898,26 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
                 int accepted = (int) Math.min(space, stack.getCount());
                 if (!simulate) {
                     container.amount += accepted;
+                    container.applyTemplate(stack); // 记录燃料真实形态（组件保真，如带名的桶/容器）
                     setChanged();
                 }
                 return accepted >= stack.getCount() ? ItemStack.EMPTY
                         : stack.copyWithCount(stack.getCount() - accepted);
             }
-            List<Item> inputs = inputKeys();
-            if (slot >= inputs.size() || stack.isEmpty()) {
+            List<ResourceLocation> inputs = inputIds();
+            if (slot < 0 || slot >= inputs.size() || stack.isEmpty()) {
                 return stack;
             }
-            Item expected = inputs.get(slot);
-            if (!stack.is(expected)) {
-                return stack;
-            }
-            ResourceLocation id = BuiltInRegistries.ITEM.getKey(expected);
+            ResourceLocation id = inputs.get(slot);
             Container container = inputItems.get(id);
+            if (container == null || !stack.is(BuiltInRegistries.ITEM.get(id))) {
+                return stack;
+            }
             long space = container.capacity - container.amount;
             int accepted = (int) Math.min(space, stack.getCount());
             if (!simulate) {
                 container.amount += accepted;
+                container.applyTemplate(stack); // 记录投入原料真实形态（组件保真）
                 setChanged();
             }
             return accepted >= stack.getCount() ? ItemStack.EMPTY
@@ -870,22 +930,25 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             if (burnModeActive() && slot == fuelSlotIndex()) {
                 return ItemStack.EMPTY;
             }
-            List<Item> inputs = inputKeys();
+            List<ResourceLocation> inputs = inputIds();
             int outputIndex = slot - inputs.size();
-            List<Item> outputs = outputKeys();
+            List<ResourceLocation> outputs = outputIds();
             if (outputIndex < 0 || outputIndex >= outputs.size()) {
                 return ItemStack.EMPTY;
             }
-            Item expected = outputs.get(outputIndex);
-            ResourceLocation id = BuiltInRegistries.ITEM.getKey(expected);
+            ResourceLocation id = outputs.get(outputIndex);
             Container container = outputItems.get(id);
+            if (container == null) {
+                return ItemStack.EMPTY;
+            }
+            Item expected = BuiltInRegistries.ITEM.get(id);
             long available = Math.min(container.amount, amount);
             if (!simulate) {
                 container.amount -= available;
                 setChanged();
             }
-            return available <= 0 ? ItemStack.EMPTY
-                    : new ItemStack(expected, (int) Math.min(available, expected.getDefaultMaxStackSize()));
+            // 组件保真：按模板重建产物（水瓶仍是水瓶，而非无组件的"不可合成药水"）
+            return stackOf(container, expected, (int) Math.min(available, expected.getDefaultMaxStackSize()));
         }
 
         @Override
@@ -899,8 +962,9 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             if (burnModeActive() && slot == fuelSlotIndex() && acceptBurnFuel(stack)) {
                 return true;
             }
-            List<Item> inputs = inputKeys();
-            return slot < inputs.size() && stack.is(inputs.get(slot));
+            List<ResourceLocation> inputs = inputIds();
+            return slot >= 0 && slot < inputs.size()
+                    && stack.is(BuiltInRegistries.ITEM.get(inputs.get(slot)));
         }
     }
 
@@ -1109,7 +1173,7 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             // 注意：不能用容器容量换算（输出仓容量是固定暂存仓 256/4000，与速率无关；
             // 输入容量虽然是 rate×400，换算结果碰巧一致，但不直观且能量无容量可换算）。
             inputItems.forEach((id, container) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
-                    .translate("tooltip.factory.io_in_item", itemDisplayName(id),
+                    .translate("tooltip.factory.io_in_item", itemDisplayName(id, container),
                             ratePerSecond(inputItemTickRates.get(id)))
                     .style(ChatFormatting.AQUA)
                     .forGoggles(tooltip, 1));
@@ -1123,7 +1187,7 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
                     return; // 返还桶等非产品项（无速率）不显示为产物
                 }
                 net.createmod.catnip.lang.Lang.builder("createcmpor")
-                        .translate("tooltip.factory.io_out_item", itemDisplayName(id),
+                        .translate("tooltip.factory.io_out_item", itemDisplayName(id, container),
                                 ratePerSecond(outputItemTickRates.get(id)))
                         .style(ChatFormatting.AQUA)
                         .forGoggles(tooltip, 1);
@@ -1147,7 +1211,7 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             }
         } else {
             inputItemPatterns.forEach((id, pattern) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
-                    .translate("tooltip.factory.io_in_item", itemDisplayName(id), average(pattern))
+                    .translate("tooltip.factory.io_in_item", itemDisplayName(id, inputItems.get(id)), average(pattern))
                     .style(ChatFormatting.AQUA)
                     .forGoggles(tooltip, 1));
             inputFluidPatterns.forEach((id, pattern) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
@@ -1155,7 +1219,7 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
                     .style(ChatFormatting.AQUA)
                     .forGoggles(tooltip, 1));
             outputItemPatterns.forEach((id, pattern) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
-                    .translate("tooltip.factory.io_out_item", itemDisplayName(id), average(pattern))
+                    .translate("tooltip.factory.io_out_item", itemDisplayName(id, outputItems.get(id)), average(pattern))
                     .style(ChatFormatting.AQUA)
                     .forGoggles(tooltip, 1));
             outputFluidPatterns.forEach((id, pattern) -> net.createmod.catnip.lang.Lang.builder("createcmpor")
@@ -1191,6 +1255,17 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         return item.getDescription();
     }
 
+    /**
+     * 物品显示名（优先用容器模板的 hover name）：带组件物品（如水瓶/附魔书）
+     * 显示其真实名称，而不是无组件原型的名称（如"不可合成的药水"）。
+     */
+    private static Object itemDisplayName(ResourceLocation id, Container container) {
+        if (container != null && !container.template.isEmpty()) {
+            return container.template.getHoverName();
+        }
+        return itemDisplayName(id);
+    }
+
     /** 流体显示名：本地化名称（找不到时回退为 id）。 */
     private static Object fluidDisplayName(ResourceLocation id) {
         net.minecraft.world.level.material.Fluid fluid = BuiltInRegistries.FLUID.get(id);
@@ -1222,11 +1297,11 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         replayMode = tag.getBoolean("replay_mode");
         installed = tag.getBoolean("installed");
         lastSuccess = tag.getBoolean("last_success");
-        loadContainerMap(tag, "input_items", inputItems);
-        loadContainerMap(tag, "output_items", outputItems);
-        loadContainerMap(tag, "burner_fuel_items", burnerFuelItems);
-        loadContainerMap(tag, "input_fluids", inputFluids);
-        loadContainerMap(tag, "output_fluids", outputFluids);
+        loadContainerMap(tag, "input_items", inputItems, registries);
+        loadContainerMap(tag, "output_items", outputItems, registries);
+        loadContainerMap(tag, "burner_fuel_items", burnerFuelItems, registries);
+        loadContainerMap(tag, "input_fluids", inputFluids, registries);
+        loadContainerMap(tag, "output_fluids", outputFluids, registries);
         inputEnergyCapacity = tag.getLong("input_energy_capacity");
         inputEnergyAmount = tag.getLong("input_energy_amount");
         outputEnergyCapacity = tag.getLong("output_energy_capacity");
@@ -1262,11 +1337,11 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         tag.putBoolean("replay_mode", replayMode);
         tag.putBoolean("installed", installed);
         tag.putBoolean("last_success", lastSuccess);
-        saveContainerMap(tag, "input_items", inputItems);
-        saveContainerMap(tag, "output_items", outputItems);
-        saveContainerMap(tag, "burner_fuel_items", burnerFuelItems);
-        saveContainerMap(tag, "input_fluids", inputFluids);
-        saveContainerMap(tag, "output_fluids", outputFluids);
+        saveContainerMap(tag, "input_items", inputItems, registries);
+        saveContainerMap(tag, "output_items", outputItems, registries);
+        saveContainerMap(tag, "burner_fuel_items", burnerFuelItems, registries);
+        saveContainerMap(tag, "input_fluids", inputFluids, registries);
+        saveContainerMap(tag, "output_fluids", outputFluids, registries);
         tag.putLong("input_energy_capacity", inputEnergyCapacity);
         tag.putLong("input_energy_amount", inputEnergyAmount);
         tag.putLong("output_energy_capacity", outputEnergyCapacity);
@@ -1316,8 +1391,13 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         tag.put(key, mapTag);
     }
 
+    /**
+     * 载入物品/流体容器表。物品条目可带 {@code template}（count=1 的完整 ItemStack NBT，
+     * 含 DataComponents）——旧档无该键时保持 EMPTY，按纯 id 语义工作（向后兼容）。
+     */
     private static void loadContainerMap(CompoundTag tag, String key,
-                                         Map<ResourceLocation, Container> output) {
+                                         Map<ResourceLocation, Container> output,
+                                         HolderLookup.Provider registries) {
         output.clear();
         if (!tag.contains(key, Tag.TAG_COMPOUND)) {
             return;
@@ -1327,17 +1407,24 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             CompoundTag entry = map.getCompound(idKey);
             Container container = new Container(entry.getLong("capacity"));
             container.amount = entry.getLong("amount");
+            if (entry.contains("template", Tag.TAG_COMPOUND)) {
+                container.template = ItemStack.parseOptional(registries, entry.getCompound("template"));
+            }
             output.put(ResourceLocation.parse(idKey), container);
         }
     }
 
     private static void saveContainerMap(CompoundTag tag, String key,
-                                         Map<ResourceLocation, Container> map) {
+                                         Map<ResourceLocation, Container> map,
+                                         HolderLookup.Provider registries) {
         CompoundTag mapTag = new CompoundTag();
         for (Map.Entry<ResourceLocation, Container> entry : map.entrySet()) {
             CompoundTag entryTag = new CompoundTag();
             entryTag.putLong("capacity", entry.getValue().capacity);
             entryTag.putLong("amount", entry.getValue().amount);
+            if (!entry.getValue().template.isEmpty()) {
+                entryTag.put("template", entry.getValue().template.saveOptional(registries));
+            }
             mapTag.put(entry.getKey().toString(), entryTag);
         }
         tag.put(key, mapTag);

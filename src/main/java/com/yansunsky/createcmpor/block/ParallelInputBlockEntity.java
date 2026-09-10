@@ -38,7 +38,8 @@ public class ParallelInputBlockEntity extends BaseIOBlockEntity {
         public @NotNull ItemStack getStackInSlot(int slot) {
             java.util.List<ResourceLocation> branch = branchItems();
             if (slot < 0 || slot >= branch.size()) return ItemStack.EMPTY;
-            return new ItemStack(BuiltInRegistries.ITEM.get(branch.get(slot)), Integer.MAX_VALUE);
+            // 按白名单登记形态提供（含组件）
+            return filterStack(branch.get(slot), Integer.MAX_VALUE);
         }
 
         @Override
@@ -50,7 +51,7 @@ public class ParallelInputBlockEntity extends BaseIOBlockEntity {
         public @NotNull ItemStack extractItem(int slot, int amount, boolean simulate) {
             java.util.List<ResourceLocation> branch = branchItems();
             if (!isActive() || slot < 0 || slot >= branch.size()) return ItemStack.EMPTY;
-            ItemStack result = new ItemStack(BuiltInRegistries.ITEM.get(branch.get(slot)), amount);
+            ItemStack result = filterStack(branch.get(slot), amount);
             if (!simulate) handle(result);
             return result;
         }
