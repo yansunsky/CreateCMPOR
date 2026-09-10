@@ -25,7 +25,7 @@ public final class Ae2BlockContents {
     public static boolean addToSnapshot(ServerLevel level, BlockPos pos,
                                         ResourceLocation blockId,
                                         HolderLookup.Provider registries,
-                                        Map<ResourceLocation, Long> items) {
+                                        Map<String, Long> items) {
         if (!ME_CHEST.equals(blockId)) {
             return false;
         }

@@ -23,6 +23,7 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
@@ -222,8 +223,13 @@ final class EvaluationScheduler {
 
         Map<EvaluationTrace.FlowKey, Long> floor = new HashMap<>();
         for (ItemEntity itemEntity : target.getEntitiesOfClass(ItemEntity.class, bounds)) {
-            ResourceLocation id = BuiltInRegistries.ITEM.getKey(itemEntity.getItem().getItem());
-            floor.merge(EvaluationTrace.FlowKey.item(id), (long) itemEntity.getItem().getCount(), Long::sum);
+            ItemStack floorStack = itemEntity.getItem();
+            ResourceLocation id = BuiltInRegistries.ITEM.getKey(floorStack.getItem());
+            // 掉落物同样按身份签名记账（组件变体各自成桶）
+            floor.merge(EvaluationTrace.FlowKey.item(id,
+                            com.yansunsky.createcmpor.evaluation.ItemIdentity.of(
+                                    floorStack, target.registryAccess())),
+                    (long) floorStack.getCount(), Long::sum);
         }
         state.floorItems = floor;
         if (!floor.isEmpty()) {
@@ -351,8 +357,12 @@ final class EvaluationScheduler {
 
         Map<EvaluationTrace.FlowKey, Long> floor = new HashMap<>();
         for (ItemEntity itemEntity : target.getEntitiesOfClass(ItemEntity.class, bounds)) {
-            ResourceLocation id = BuiltInRegistries.ITEM.getKey(itemEntity.getItem().getItem());
-            floor.merge(EvaluationTrace.FlowKey.item(id), (long) itemEntity.getItem().getCount(), Long::sum);
+            ItemStack floorStack = itemEntity.getItem();
+            ResourceLocation id = BuiltInRegistries.ITEM.getKey(floorStack.getItem());
+            floor.merge(EvaluationTrace.FlowKey.item(id,
+                            com.yansunsky.createcmpor.evaluation.ItemIdentity.of(
+                                    floorStack, target.registryAccess())),
+                    (long) floorStack.getCount(), Long::sum);
         }
         state.floorItems = floor;
         if (!floor.isEmpty()) {

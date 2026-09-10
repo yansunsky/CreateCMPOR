@@ -29,7 +29,14 @@ import java.util.Set;
  * Phase 6 库存基线审计：S0/S_warmup/S1 全房间能力扫描（迁移自原 CMPOR Core.scanInventory）。
  */
 final class EvaluationAudit {
-    record InventorySnapshot(Map<ResourceLocation, Long> items,
+    /**
+     * 房间库存快照。
+     *
+     * <p>{@code items} 的键是 {@link ItemIdentity} 的<b>身份签名</b>（id + 组件摘要），
+     * 而非裸 item id —— 否则"水瓶"与同 id 的其他药水会被合并计数，
+     * 导致同 id 转化产线（水瓶→粗制药水）在净平衡里互相抵消。</p>
+     */
+    record InventorySnapshot(Map<String, Long> items,
                              Map<ResourceLocation, Long> fluids, long energy,
                              long normalBurnTicks, long superBurnTicks) {
         static InventorySnapshot empty() {
@@ -56,7 +63,7 @@ final class EvaluationAudit {
         int endY = (int) Math.floor(bounds.maxY - EPSILON);
         int endZ = (int) Math.floor(bounds.maxZ - EPSILON);
 
-        Map<ResourceLocation, Long> items = new HashMap<>();
+        Map<String, Long> items = new HashMap<>();
         Map<ResourceLocation, Long> fluids = new HashMap<>();
         long energy = 0;
         long normalBurnTicks = 0;
@@ -268,18 +275,22 @@ final class EvaluationAudit {
         });
 
         Set<EvaluationTrace.FlowKey> keys = new HashSet<>(trace.series().keySet());
-        baseline.items().keySet().forEach(id -> keys.add(EvaluationTrace.FlowKey.item(id)));
+        // 库存快照按"身份签名"（id + 组件摘要）聚合，故此处回填时同样用签名构造键，
+        // 保证与 trace 键逐个对得上（否则同一物品会被当成两种、净额计算错乱）。
+        baseline.items().keySet().forEach(sig ->
+                keys.add(EvaluationTrace.FlowKey.item(ItemIdentity.idOf(sig), sig)));
         baseline.fluids().keySet().forEach(id -> keys.add(EvaluationTrace.FlowKey.fluid(id)));
-        end.items().keySet().forEach(id -> keys.add(EvaluationTrace.FlowKey.item(id)));
+        end.items().keySet().forEach(sig ->
+                keys.add(EvaluationTrace.FlowKey.item(ItemIdentity.idOf(sig), sig)));
         end.fluids().keySet().forEach(id -> keys.add(EvaluationTrace.FlowKey.fluid(id)));
 
         for (EvaluationTrace.FlowKey key : keys) {
             boolean item = "item".equals(key.kind());
-            long baseCount = item ? baseline.items().getOrDefault(key.id(), 0L)
+            long baseCount = item ? baseline.items().getOrDefault(key.signature(), 0L)
                     : baseline.fluids().getOrDefault(key.id(), 0L);
-            long endCount = item ? end.items().getOrDefault(key.id(), 0L)
+            long endCount = item ? end.items().getOrDefault(key.signature(), 0L)
                     : end.fluids().getOrDefault(key.id(), 0L);
-            long s0Count = item ? s0.items().getOrDefault(key.id(), 0L)
+            long s0Count = item ? s0.items().getOrDefault(key.signature(), 0L)
                     : s0.fluids().getOrDefault(key.id(), 0L);
             EvaluationTrace.Series series = trace.series().get(key);
             long ioOut = series == null ? 0L : series.outputTotal;

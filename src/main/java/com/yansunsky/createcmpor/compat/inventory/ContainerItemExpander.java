@@ -1,6 +1,7 @@
 package com.yansunsky.createcmpor.compat.inventory;
 
 import com.yansunsky.createcmpor.CreateCMPOR;
+import com.yansunsky.createcmpor.evaluation.ItemIdentity;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.resources.ResourceLocation;
@@ -37,7 +38,7 @@ public final class ContainerItemExpander {
      */
     public static void addToSnapshot(ItemStack stack, long amount,
                                      HolderLookup.Provider registries,
-                                     Map<ResourceLocation, Long> items) {
+                                     Map<String, Long> items) {
         if (stack == null || stack.isEmpty() || amount <= 0) {
             return;
         }
@@ -46,7 +47,8 @@ public final class ContainerItemExpander {
         if (isConfigOnlyItem(id)) {
             return; // 配置型物品（createsifter 筛网等）不是房间库存，不统计
         }
-        merge(items, id, amount);
+        // 身份签名（id + 组件摘要）：不同组件变体各自成桶，不再被合并计数
+        merge(items, ItemIdentity.of(stack, registries), amount);
         expand(stack.copyWithCount(1), amount, registries, items,
                 0, new HashSet<>(), new HashSet<>());
     }
@@ -66,7 +68,7 @@ public final class ContainerItemExpander {
 
     private static void expand(ItemStack stack, long multiplier,
                                HolderLookup.Provider registries,
-                               Map<ResourceLocation, Long> items,
+                               Map<String, Long> items,
                                int depth, Set<String> activeIdentities,
                                Set<String> reportedFailures) {
         if (stack.isEmpty() || multiplier <= 0 || depth >= MAX_DEPTH) {
@@ -106,7 +108,7 @@ public final class ContainerItemExpander {
                 ResourceLocation id = net.minecraft.core.registries.BuiltInRegistries.ITEM
                         .getKey(contained.stack().getItem());
                 if (!isConfigOnlyItem(id)) {
-                    merge(items, id, containedAmount);
+                    merge(items, ItemIdentity.of(contained.stack(), registries), containedAmount);
                 }
                 expand(contained.stack(), containedAmount, registries, items,
                         depth + 1, activeIdentities, reportedFailures);
@@ -145,12 +147,12 @@ public final class ContainerItemExpander {
         return ReadResult.success("minecraft:container", contents);
     }
 
-    private static void merge(Map<ResourceLocation, Long> items,
-                              ResourceLocation id, long amount) {
-        if (id == null || amount <= 0) {
+    private static void merge(Map<String, Long> items,
+                              String signature, long amount) {
+        if (signature == null || signature.isEmpty() || amount <= 0) {
             return;
         }
-        items.merge(id, amount, ContainerItemExpander::saturatingAdd);
+        items.merge(signature, amount, ContainerItemExpander::saturatingAdd);
     }
 
     static long saturatingMultiply(long left, long right) {
