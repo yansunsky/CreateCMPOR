@@ -21,7 +21,8 @@ public class InputBlockEntity extends BaseIOBlockEntity {
         @Override
         public @NotNull ItemStack getStackInSlot(int slot) {
             if (slot < 0 || slot >= items.size()) return ItemStack.EMPTY;
-            return new ItemStack(BuiltInRegistries.ITEM.get(items.get(slot)), Integer.MAX_VALUE);
+            // 按白名单登记形态提供（含组件），避免带组件物品退化为无组件原型
+            return filterStack(items.get(slot), Integer.MAX_VALUE);
         }
 
         @Override
@@ -32,7 +33,7 @@ public class InputBlockEntity extends BaseIOBlockEntity {
         @Override
         public @NotNull ItemStack extractItem(int slot, int amount, boolean simulate) {
             if (!isActive() || slot < 0 || slot >= items.size()) return ItemStack.EMPTY;
-            ItemStack result = new ItemStack(BuiltInRegistries.ITEM.get(items.get(slot)), amount);
+            ItemStack result = filterStack(items.get(slot), amount);
             if (!simulate) handle(result);
             return result;
         }

@@ -1,8 +1,10 @@
 package com.yansunsky.createcmpor.evaluation;
 
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.item.ItemStack;
 
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -10,6 +12,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * Phase 6 评估采样模型：按秒 bucket 记录 IO 流量 + 累计总量双通道。
  *
  * <p>物品与流体用 {@link FlowKey}（kind + id）区分；能量独立序列。</p>
+ *
+ * <p><b>组件（DataComponents）保真</b>：1.20.5+ 起大量物品差异（药水内容、附魔、
+ * 自定义名等）由 DataComponents 承载，仅靠 item id 无法刻画一种物品。采样时
+ * 额外记录每条物品流<b>首个观测到</b>的物品模板（count=1、含组件），固化时交给
+ * 工厂，使产物能按真实形态重建（否则"水瓶"会被还原成无组件的"不可合成药水"）。</p>
  */
 public final class EvaluationTrace {
     public record FlowKey(String kind, ResourceLocation id) {
@@ -27,6 +34,9 @@ public final class EvaluationTrace {
         final int[] output;
         long inputTotal;
         long outputTotal;
+        /** 该流量首次观测到的物品模板（count=1、含组件）；未观测到则为 EMPTY。 */
+        ItemStack inputTemplate = ItemStack.EMPTY;
+        ItemStack outputTemplate = ItemStack.EMPTY;
 
         Series(int seconds) {
             input = new int[seconds];
@@ -56,9 +66,18 @@ public final class EvaluationTrace {
         }
 
         public void record(String roomCode, FlowKey key, long amount, boolean input, long currentTick) {
+            record(roomCode, key, amount, input, currentTick, ItemStack.EMPTY);
+        }
+
+        /**
+         * 记录一次物品/流体流量；{@code template} 为本次流量的物品形态模板
+         * （count=1、含 DataComponents），仅物品流有意义，用于固化时还原产物形态。
+         */
+        public void record(String roomCode, FlowKey key, long amount, boolean input, long currentTick,
+                           ItemStack template) {
             EvaluationTrace trace = traces.get(roomCode);
             if (trace != null) {
-                trace.record(key, amount, input, currentTick);
+                trace.record(key, amount, input, currentTick, template);
             }
         }
 
@@ -145,6 +164,10 @@ public final class EvaluationTrace {
     }
 
     void record(FlowKey key, long amount, boolean input, long currentTick) {
+        record(key, amount, input, currentTick, ItemStack.EMPTY);
+    }
+
+    void record(FlowKey key, long amount, boolean input, long currentTick, ItemStack template) {
         int second = (int) ((currentTick - startTick) / 20);
         if (second < 0 || second >= seconds) {
             return;
@@ -158,6 +181,39 @@ public final class EvaluationTrace {
         } else {
             entry.outputTotal += amount;
         }
+        // 组件模板：只取首个非空模板（同 id 多变体在 id 粒度聚合下取先见者）
+        if (template != null && !template.isEmpty()) {
+            ItemStack one = template.copyWithCount(1);
+            if (input) {
+                if (entry.inputTemplate.isEmpty()) {
+                    entry.inputTemplate = one;
+                }
+            } else if (entry.outputTemplate.isEmpty()) {
+                entry.outputTemplate = one;
+            }
+        }
+    }
+
+    /** 输入物品模板表（仅包含已观测到模板的条目）：FlowKey → 模板 Stack（count=1）。 */
+    Map<FlowKey, ItemStack> inputTemplates() {
+        Map<FlowKey, ItemStack> templates = new LinkedHashMap<>();
+        series.forEach((key, entry) -> {
+            if (!entry.inputTemplate.isEmpty()) {
+                templates.put(key, entry.inputTemplate);
+            }
+        });
+        return templates;
+    }
+
+    /** 输出物品模板表（仅包含已观测到模板的条目）：FlowKey → 模板 Stack（count=1）。 */
+    Map<FlowKey, ItemStack> outputTemplates() {
+        Map<FlowKey, ItemStack> templates = new LinkedHashMap<>();
+        series.forEach((key, entry) -> {
+            if (!entry.outputTemplate.isEmpty()) {
+                templates.put(key, entry.outputTemplate);
+            }
+        });
+        return templates;
     }
 
     void recordEnergy(long amount, boolean input, long currentTick) {

@@ -39,16 +39,26 @@ public abstract class RoomCodeBlockEntity extends BlockEntity {
         }
     }
 
+    /** 需要注册表访问器的持久化扩展点（子类覆写以存取 ItemStack/组件等）。 */
+    protected void loadCommon(CompoundTag tag, HolderLookup.Provider registries) {
+        loadCommon(tag);
+    }
+
+    /** 需要注册表访问器的持久化扩展点（子类覆写以存取 ItemStack/组件等）。 */
+    protected void saveCommon(CompoundTag tag, HolderLookup.Provider registries) {
+        saveCommon(tag);
+    }
+
     @Override
     protected void loadAdditional(CompoundTag tag, HolderLookup.Provider registries) {
         super.loadAdditional(tag, registries);
-        loadCommon(tag);
+        loadCommon(tag, registries);
     }
 
     @Override
     protected void saveAdditional(CompoundTag tag, HolderLookup.Provider registries) {
         super.saveAdditional(tag, registries);
-        saveCommon(tag);
+        saveCommon(tag, registries);
     }
 
     @Override

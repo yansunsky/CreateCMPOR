@@ -18,6 +18,9 @@ final class EvaluationVerdict {
                   Map<EvaluationTrace.FlowKey, Double> outputRates,
                   Map<EvaluationTrace.FlowKey, int[]> replayIn,
                   Map<EvaluationTrace.FlowKey, int[]> replayOut,
+                  /** 输入/输出物品形态模板（count=1、含 DataComponents），固化时交给工厂还原产物形态。 */
+                  Map<EvaluationTrace.FlowKey, net.minecraft.world.item.ItemStack> inputItemTemplates,
+                  Map<EvaluationTrace.FlowKey, net.minecraft.world.item.ItemStack> outputItemTemplates,
                   double inputEnergyRate, double outputEnergyRate,
                   int[] energyReplayIn, int[] energyReplayOut,
                   StressProfile stressProfile,
@@ -80,6 +83,7 @@ final class EvaluationVerdict {
         String detail = "REPLAY：净平衡+损耗+" + Config.LOSS_RATE.get();
         return new Result(VERDICT_REPLAY, null, Map.of(), Map.of(),
                 replay.replayIn(), replay.replayOut(),
+                trace.inputTemplates(), trace.outputTemplates(),
                 0, EvaluationTrace.total(replay.energyOut()) > 0
                         ? (double) EvaluationTrace.total(replay.energyOut()) / trace.seconds() : 0,
                 replay.energyIn(), replay.energyOut(), stressProfile,
@@ -100,7 +104,9 @@ final class EvaluationVerdict {
         double auditedEnergy = EvaluationAudit.auditEnergyRate(
                 base, s1, trace.energy(), outputEnergyRate, trace.seconds());
         return new Result(VERDICT_RATE, null, audited.inputs(), audited.outputs(),
-                Map.of(), Map.of(), inputEnergyRate, auditedEnergy,
+                Map.of(), Map.of(),
+                trace.inputTemplates(), trace.outputTemplates(),
+                inputEnergyRate, auditedEnergy,
                 null, null, stressProfile,
                 audited.normalBurnDemandPerSecond(), audited.superBurnDemandPerSecond(),
                 "RATE：稳定速率拟合");
@@ -108,6 +114,7 @@ final class EvaluationVerdict {
 
     static Result reject(String reason, String detail) {
         return new Result(VERDICT_REJECTED, reason, Map.of(), Map.of(), Map.of(), Map.of(),
+                Map.of(), Map.of(),
                 0, 0, null, null, StressProfile.EMPTY, 0, 0, detail);
     }
 

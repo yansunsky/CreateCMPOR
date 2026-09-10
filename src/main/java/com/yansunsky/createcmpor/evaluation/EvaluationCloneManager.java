@@ -627,10 +627,12 @@ public final class EvaluationCloneManager {
                 EvaluationVerdict.Result branchResult = results.get(i);
                 if (EvaluationVerdict.VERDICT_REPLAY.equals(branchResult.verdict())) {
                     factory.installPatterns(branchResult.replayIn(), branchResult.replayOut(),
+                            branchResult.inputItemTemplates(), branchResult.outputItemTemplates(),
                             branchResult.energyReplayIn(), branchResult.energyReplayOut(),
                             branchResult.normalBurnDemandPerSecond(), branchResult.superBurnDemandPerSecond());
                 } else {
                     factory.installRates(branchResult.inputRates(), branchResult.outputRates(),
+                            branchResult.inputItemTemplates(), branchResult.outputItemTemplates(),
                             branchResult.inputEnergyRate(), branchResult.outputEnergyRate(),
                             branchResult.normalBurnDemandPerSecond(), branchResult.superBurnDemandPerSecond());
                 }
@@ -663,10 +665,12 @@ public final class EvaluationCloneManager {
             EvaluationVerdict.Result branchResult = results.get(i);
             if (EvaluationVerdict.VERDICT_REPLAY.equals(branchResult.verdict())) {
                 factory.installPatterns(branchResult.replayIn(), branchResult.replayOut(),
+                        branchResult.inputItemTemplates(), branchResult.outputItemTemplates(),
                         branchResult.energyReplayIn(), branchResult.energyReplayOut(),
                         branchResult.normalBurnDemandPerSecond(), branchResult.superBurnDemandPerSecond());
             } else {
                 factory.installRates(branchResult.inputRates(), branchResult.outputRates(),
+                        branchResult.inputItemTemplates(), branchResult.outputItemTemplates(),
                         branchResult.inputEnergyRate(), branchResult.outputEnergyRate(),
                         branchResult.normalBurnDemandPerSecond(), branchResult.superBurnDemandPerSecond());
             }
