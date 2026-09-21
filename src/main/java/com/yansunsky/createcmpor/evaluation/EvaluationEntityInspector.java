@@ -1,6 +1,5 @@
 package com.yansunsky.createcmpor.evaluation;
 
-import com.yansunsky.createcmpor.Config;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtUtils;
@@ -82,10 +81,7 @@ final class EvaluationEntityInspector {
             throw new IllegalStateException("实体缺少有效 id：" + id);
         }
         ResourceLocation typeId = ResourceLocation.parse(id);
-        if (Config.SUSPICIOUS_MODS.get().contains(typeId.getNamespace())) {
-            throw new EvaluationStorageBridge.UnsupportedContentException(
-                    "message.createcmpor.evaluation.entity_mod_blacklisted");
-        }
+        Blacklist.checkEntity(typeId);
 
         if (CARRIAGE_CONTRAPTION_ID.equals(id)) {
             if (!tag.hasUUID("UUID")) {
@@ -154,10 +150,8 @@ final class EvaluationEntityInspector {
                 ListTag palette = blocks.getList("Palette", Tag.TAG_COMPOUND);
                 for (int index = 0; index < palette.size(); index++) {
                     CompoundTag stateTag = palette.getCompound(index);
-                    if (stateTag.contains("Name", Tag.TAG_STRING)
-                            && Config.SUSPICIOUS_BLOCKS.get().contains(stateTag.getString("Name"))) {
-                        throw new EvaluationStorageBridge.UnsupportedContentException(
-                                "message.createcmpor.evaluation.block_blacklisted");
+                    if (stateTag.contains("Name", Tag.TAG_STRING)) {
+                        Blacklist.checkBlock(stateTag.getString("Name"));
                     }
                 }
             }
@@ -165,10 +159,8 @@ final class EvaluationEntityInspector {
     }
 
     private static void checkItemStack(CompoundTag itemTag) {
-        if (itemTag.contains("id", Tag.TAG_STRING)
-                && Config.SUSPICIOUS_ITEMS.get().contains(itemTag.getString("id"))) {
-            throw new EvaluationStorageBridge.UnsupportedContentException(
-                    "message.createcmpor.evaluation.item_blacklisted");
+        if (itemTag.contains("id", Tag.TAG_STRING)) {
+            Blacklist.checkItem(ResourceLocation.tryParse(itemTag.getString("id")));
         }
     }
 

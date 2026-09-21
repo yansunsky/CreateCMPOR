@@ -1,6 +1,5 @@
 package com.yansunsky.createcmpor.evaluation;
 
-import com.yansunsky.createcmpor.Config;
 import com.yansunsky.createcmpor.CreateCMPOR;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
@@ -409,9 +408,8 @@ final class EvaluationStorageBridge {
                 if (blockId == null || blockLookup.get(ResourceKey.create(Registries.BLOCK, blockId)).isEmpty()) {
                     throw new IllegalStateException("源区块 palette 包含未知方块：" + pos);
                 }
-                if (Config.SUSPICIOUS_BLOCKS.get().contains(blockId.toString())) {
-                    throw new UnsupportedContentException("message.createcmpor.evaluation.block_blacklisted");
-                }
+                // 方块级 + 模组级黑名单（统一走 Blacklist，避免多处判定漂移）
+                Blacklist.checkBlock(blockId);
                 if ("create:track_signal".equals(blockId.toString())) {
                     throw new UnsupportedContentException("message.createcmpor.evaluation.railway_signal_unsupported");
                 }
