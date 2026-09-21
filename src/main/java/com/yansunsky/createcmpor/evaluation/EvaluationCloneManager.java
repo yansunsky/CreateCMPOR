@@ -219,6 +219,29 @@ public final class EvaluationCloneManager {
                     EvaluationEntityInspector.inspectAll(runtime.sourceEntities);
             runtime.rewrittenEntities = entities.rewrittenByChunk();
             manifest.setEntityCount(entities.totalEntities());
+            // 实体侧的精妙背包（掉落物/contraption 携带物）同样改写 UUID。
+            // 区块侧改写已在异步 inspectSource 完成；此处位于服务端线程且全部区块 future 已 join。
+            for (List<CompoundTag> chunkEntities : runtime.rewrittenEntities.values()) {
+                for (CompoundTag entity : chunkEntities) {
+                    com.yansunsky.createcmpor.compat.inventory.SophisticatedBackpackIsolation
+                            .rewriteUuids(entity, runtime.backpackUuids);
+                }
+            }
+            // 精妙背包隔离收尾：为每个新 UUID 深拷贝源内容（含嵌套背包），并落到 manifest 持久化。
+            // 必须在服务端线程（BackpackStorage 是 SavedData）；反射不可用时失败关闭——
+            // 宁可取消评估，也不能让副本继续与源房间共用全局存储（那正是本次要修的复制漏洞）。
+            if (!runtime.backpackUuids.isEmpty()) {
+                if (!com.yansunsky.createcmpor.compat.inventory.SophisticatedBackpackIsolation
+                        .copyContents(runtime.backpackUuids)) {
+                    CreateCMPOR.LOGGER.error("评估会话 {} 精妙背包隔离失败（BackpackStorage 不可访问），"
+                            + "已安全取消评估", session.id());
+                    requestCleanup(server, data, session, "message.createcmpor.evaluation.backpack_isolation_failed");
+                    return;
+                }
+                manifest.backpackUuids().putAll(runtime.backpackUuids);
+                CreateCMPOR.LOGGER.info("评估会话 {} 精妙背包存储已隔离：{} 个 UUID 重映射并深拷贝副本内容",
+                        session.id(), runtime.backpackUuids.size());
+            }
             String fallbackReason = EvaluationModePolicy.serialFallbackReason(
                     runtime.sourceTags, runtime.rewrittenEntities);
             // 铁路回退增强：内容扫描未命中但源房间存在铁路（车厢实体或源房间轨道图节点）时，
@@ -250,7 +273,8 @@ public final class EvaluationCloneManager {
         if (runtime.operation == Operation.NONE) {
             runtime.chunk = pending.chunkPos();
             runtime.sourceFuture = EvaluationStorageBridge.readSourceRecords(room.level(), pending.chunkPos())
-                    .thenApply(records -> EvaluationStorageBridge.inspectSource(room.level(), records))
+                    .thenApply(records -> EvaluationStorageBridge.inspectSource(
+                            room.level(), records, runtime.backpackUuids))
                     .thenCompose(sourceChunk -> runtime.staging.write(sourceChunk.pos(), sourceChunk.tag().copy())
                             .thenApply(ignored -> sourceChunk));
             runtime.operation = Operation.STAGING_WRITE;
@@ -920,6 +944,17 @@ public final class EvaluationCloneManager {
             runtime.railwayCleaned = true;
             syncCriticalState(server, data);
         }
+        if (!runtime.backpackCleaned) {
+            // 精妙背包副本内容清理（服务端线程）：删除本次评估分配的新 UUID，
+            // 避免全局 SavedData 堆积孤儿条目。幂等，失败仅告警不影响后续清理。
+            if (!com.yansunsky.createcmpor.compat.inventory.SophisticatedBackpackIsolation
+                    .deleteContents(manifest.backpackUuids().values())) {
+                CreateCMPOR.LOGGER.warn("评估会话 {} 精妙背包副本内容清理失败（BackpackStorage 不可访问），"
+                        + "残留 {} 个孤儿 UUID（不可达，不影响玩家）",
+                        session.id(), manifest.backpackUuids().size());
+            }
+            runtime.backpackCleaned = true;
+        }
         if (manifest.targetWriteIntent() || session.cleanTargetOnCancel()) {
             List<ChunkPos> chunks = chunkPositions(manifest);
             if (!EvaluationStorageBridge.areChunksIdle(target, chunks)) {
@@ -1270,6 +1305,12 @@ public final class EvaluationCloneManager {
         /** 探针：写 staging 时的源区块 tag（diff 排查摘要不一致）。 */
         private final Map<ChunkPos, CompoundTag> sourceTags = new LinkedHashMap<>();
         private Map<ChunkPos, List<CompoundTag>> rewrittenEntities = Map.of();
+        /**
+         * 精妙背包 UUID 映射（源 → 副本）。
+         * 区块 NBT 改写发生在异步 IO 线程（{@code inspectSource}），故用并发 Map；
+         * 服务端线程在全部区块就绪后做内容深拷贝并落到 manifest 持久化。
+         */
+        private final Map<UUID, UUID> backpackUuids = new java.util.concurrent.ConcurrentHashMap<>();
         private Operation operation = Operation.NONE;
         private ChunkPos chunk;
         private CompletableFuture<EvaluationStorageBridge.SourceChunk> sourceFuture;
@@ -1281,6 +1322,7 @@ public final class EvaluationCloneManager {
         private boolean targetFlushed;
         private boolean ticketsRemoved;
         private boolean railwayCleaned;
+        private boolean backpackCleaned;
         private boolean evaluationCleaned;
 
         private RuntimeState(ChunkStorage staging) {
