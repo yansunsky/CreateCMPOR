@@ -52,6 +52,7 @@
   "message.createcmpor.evaluation.entity_mod_blacklisted": "The room contains entities from a blacklisted mod, so evaluation was safely cancelled.",
   "message.createcmpor.evaluation.item_blacklisted": "The room contains blacklisted items, so evaluation was safely cancelled.",
   "message.createcmpor.evaluation.block_blacklisted": "The room contains blacklisted blocks, so evaluation was safely cancelled.",
+  "message.createcmpor.evaluation.backpack_isolation_failed": "Sophisticated Backpacks storage could not be isolated (API unavailable). Evaluation was safely cancelled to prevent item duplication.",
   "message.createcmpor.evaluation.entity_reference_outside": "An entity references entities outside the room, so evaluation was safely cancelled.",
   "message.createcmpor.evaluation.railway_signal_unsupported": "The railway in the room contains signals, which Phase 5 does not support yet. Evaluation was safely cancelled.",
   "message.createcmpor.evaluation.railway_train_missing": "The train referenced by a carriage no longer exists. Evaluation was safely cancelled.",

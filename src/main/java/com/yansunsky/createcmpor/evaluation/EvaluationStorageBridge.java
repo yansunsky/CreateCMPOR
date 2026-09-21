@@ -30,6 +30,7 @@ import java.nio.file.Path;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 /** 复用维度现有 ChunkMap/entity/POI worker，并管理会话专属 staging。 */
@@ -262,7 +263,8 @@ final class EvaluationStorageBridge {
                 .thenApply(ignored -> new StoredRecords(pos, chunk.join(), entities.join(), poi.join()));
     }
 
-    static SourceChunk inspectSource(ServerLevel source, SourceRecords records) {
+    static SourceChunk inspectSource(ServerLevel source, SourceRecords records,
+                                     java.util.Map<UUID, UUID> backpackUuids) {
         CompoundTag chunk = records.chunk().orElseThrow(() ->
                 new IllegalStateException("源区块记录缺失：" + records.pos()));
         validateChunkTag(source, records.pos(), chunk);
@@ -270,20 +272,17 @@ final class EvaluationStorageBridge {
         ListTag entities = inspectEntityRecord(records.pos(), records.entities());
         Optional<CompoundTag> poi = inspectPoiRecord(records.pos(), records.poi());
         inspectBlockPalette(source, records.pos(), chunk);
-        return new SourceChunk(records.pos(), chunk.copy(), CanonicalNbtHasher.sha256(chunk),
+        CompoundTag copy = chunk.copy();
+        // 副本初始化：精妙背包 storage_uuid 换成新 UUID——防副本与源房间共用全局
+        // SavedData（否则副本侧写入直接落到源房间背包，表现为"凭空多出产物"）。
+        // 纯 NBT 改写，可在本异步线程执行；内容深拷贝/清理由 CloneManager 在服务端线程完成。
+        // 无背包时为空操作。源 hash 用原始 chunk（源侧），staging 校验读回的是改写后内容。
+        com.yansunsky.createcmpor.compat.inventory.SophisticatedBackpackIsolation
+                .rewriteUuids(copy, backpackUuids);
+        return new SourceChunk(records.pos(), copy, CanonicalNbtHasher.sha256(chunk),
                 chunk.getInt("DataVersion"), entities.copy(), poi);
     }
 
-    /**
-     * 副本方块实体初始化（防评估欺诈骗局）：把 {@code create:blaze_burner} 的
-     * {@code fuelLevel}(activeFuel) 与 {@code burnTimeRemaining}(剩余燃烧 tick) 清零，
-     * 让评估期间燃烧室只能靠真实的燃料物品流维持（三扫描/IO 流量记录燃料消耗）。
-     *
-     * <p><b>只清普通/超热燃烧室</b>（用户决策）：{@code isCreative=true} 的创造燃烧室保留
-     * （创造模式下外部输入的物品本来也是"免费"的，且其 NBT 不写 fuelLevel/burnTimeRemaining）。
-     * blockstate 的 {@code blaze}(HeatLevel) 无需处理——BE tick 燃烧耗尽后自带
-     * {@code updateBlockState()} 自愈（Create 源码 BlazeBurnerBlockEntity.tick）。</p>
-     */
     static CompletableFuture<Void> deleteRecords(ServerLevel level, List<ChunkPos> chunks) {
         CompletableFuture<?>[] futures = chunks.stream().flatMap(pos -> java.util.stream.Stream.of(
                         chunkStorage(level).write(pos, null),

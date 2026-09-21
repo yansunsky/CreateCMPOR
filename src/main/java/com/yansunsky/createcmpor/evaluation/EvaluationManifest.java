@@ -13,7 +13,9 @@ import net.minecraft.world.level.Level;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -55,6 +57,12 @@ public final class EvaluationManifest {
     private boolean targetReady;
     private int entityCount;
     private final List<RailwayRecord> railwayRecords = new ArrayList<>();
+    /**
+     * 精妙背包副本 UUID 映射（源 UUID → 副本 UUID）。
+     * 评估结束时据此删除副本内容，避免全局 SavedData 堆积孤儿条目；
+     * 崩溃恢复（reconcileCriticalSessions → CLEANING）同样依赖它完成清理。
+     */
+    private final Map<UUID, UUID> backpackUuids = new LinkedHashMap<>();
 
     private EvaluationManifest(UUID sessionId, String roomCode,
                                ResourceKey<Level> sourceDimension, ResourceKey<Level> targetDimension,
@@ -192,6 +200,8 @@ public final class EvaluationManifest {
         this.targetWriteIntent = false;
         this.ticketsAdded = false;
         this.targetReady = false;
+        // 下一分支会从源重新克隆并重新分配 UUID，旧映射的副本内容已在上一次 CLEANING 删除
+        this.backpackUuids.clear();
         for (ChunkRecord chunk : chunks) {
             chunk.resetForBranch();
         }
@@ -207,6 +217,11 @@ public final class EvaluationManifest {
 
     public List<RailwayRecord> railwayRecords() {
         return railwayRecords;
+    }
+
+    /** 精妙背包副本 UUID 映射（源 → 副本）；评估结束/取消时据副本 UUID 删除内容。 */
+    public Map<UUID, UUID> backpackUuids() {
+        return backpackUuids;
     }
 
     public ChunkRecord chunk(ChunkPos position) {
@@ -251,6 +266,11 @@ public final class EvaluationManifest {
         }
         tag.put("railway_records", railwayTags);
 
+        // 精妙背包副本映射：评估结束/取消时据此清理副本内容（崩溃恢复亦依赖）
+        tag.put("backpack_uuids",
+                com.yansunsky.createcmpor.compat.inventory.SophisticatedBackpackIsolation
+                        .serializeMapping(backpackUuids));
+
         ListTag chunkTags = new ListTag();
         for (ChunkRecord chunk : chunks) {
             chunkTags.add(chunk.save());
@@ -282,6 +302,10 @@ public final class EvaluationManifest {
         for (int index = 0; index < railwayTags.size(); index++) {
             manifest.railwayRecords.add(RailwayRecord.load(railwayTags.getCompound(index)));
         }
+        // 旧档无此键 → 空映射（不因背包隔离缺失而拒绝加载）
+        manifest.backpackUuids.putAll(
+                com.yansunsky.createcmpor.compat.inventory.SophisticatedBackpackIsolation
+                        .deserializeMapping(tag.getList("backpack_uuids", Tag.TAG_INT_ARRAY)));
         manifest.validate();
         return manifest;
     }

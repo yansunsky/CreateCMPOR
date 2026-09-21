@@ -52,6 +52,7 @@
   "message.createcmpor.evaluation.entity_mod_blacklisted": "房间包含黑名单模组的实体，评估已安全取消。",
   "message.createcmpor.evaluation.item_blacklisted": "房间包含黑名单物品，评估已安全取消。",
   "message.createcmpor.evaluation.block_blacklisted": "房间包含黑名单方块，评估已安全取消。",
+  "message.createcmpor.evaluation.backpack_isolation_failed": "无法隔离精妙背包存储（API 不可用），为避免物品复制已安全取消评估。",
   "message.createcmpor.evaluation.entity_reference_outside": "房间内实体引用了房间外的实体，评估已安全取消。",
   "message.createcmpor.evaluation.railway_signal_unsupported": "房间内铁路包含信号灯，Phase 5 暂不支持，评估已安全取消。",
   "message.createcmpor.evaluation.railway_train_missing": "车厢引用的火车已不存在，评估已安全取消。",
