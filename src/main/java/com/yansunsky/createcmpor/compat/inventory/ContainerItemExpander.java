@@ -1,6 +1,7 @@
 package com.yansunsky.createcmpor.compat.inventory;
 
 import com.yansunsky.createcmpor.CreateCMPOR;
+import com.yansunsky.createcmpor.evaluation.Blacklist;
 import com.yansunsky.createcmpor.evaluation.ItemIdentity;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.core.component.DataComponents;
@@ -44,6 +45,8 @@ public final class ContainerItemExpander {
         }
 
         ResourceLocation id = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem());
+        // 黑名单先于配置型过滤：配置型物品同样是"房间内容"，列入黑名单时照常拦截
+        Blacklist.checkItem(id);
         if (isConfigOnlyItem(id)) {
             return; // 配置型物品（createsifter 筛网等）不是房间库存，不统计
         }
@@ -107,6 +110,8 @@ public final class ContainerItemExpander {
                 }
                 ResourceLocation id = net.minecraft.core.registries.BuiltInRegistries.ITEM
                         .getKey(contained.stack().getItem());
+                // 嵌套容器内部物品同样过黑名单（潜影盒套潜影盒、AE2 cell 内物品等）
+                Blacklist.checkItem(id);
                 if (!isConfigOnlyItem(id)) {
                     merge(items, ItemIdentity.of(contained.stack(), registries), containedAmount);
                 }

@@ -110,18 +110,26 @@ public class Config {
                 .define("enableInventoryAudit", true);
         SUSPICIOUS_MODS = builder
                 .comment(
-                        "包含不可审计存储方块的模组 ID。",
-                        "Mod IDs whose storage blocks cannot be audited.")
-                .defineListAllowEmpty("suspiciousMods", List.of("ae2", "refinedstorage"), value -> value instanceof String);
+                        "模组级黑名单：该命名空间下的任何方块或实体进入房间即拒绝评估。",
+                        "用于 capability 不可审计的存储模组（AE2/RS 等）——先把模组 ID 填到这里，",
+                        "再按需用 suspiciousBlocks 放行个别方块。",
+                        "默认空列表：AE2 方块本身已由 ContainerItemExpander 兼容读取，故不再默认拒绝。",
+                        "Mod-level blacklist: any block or entity in this namespace aborts the evaluation.",
+                        "For storage mods whose capabilities cannot be audited (AE2/RS, etc.).",
+                        "Empty by default: AE2 blocks are already read by the built-in compat layer.")
+                .defineListAllowEmpty("suspiciousMods", List.of(), value -> value instanceof String);
         SUSPICIOUS_BLOCKS = builder
                 .comment(
-                        "明确禁止进入评估的方块 ID。",
+                        "明确禁止进入评估的方块 ID（namespace:path）。",
                         "Block IDs explicitly forbidden from entering evaluation.")
                 .defineListAllowEmpty("suspiciousBlocks", List.of(), value -> value instanceof String);
         SUSPICIOUS_ITEMS = builder
                 .comment(
-                        "明确禁止进入评估的物品 ID（Phase 5 检查掉落物与 contraption 携带物）。",
-                        "Item IDs explicitly forbidden from entering evaluation (Phase 5 checks dropped items and contraption cargo).")
+                        "明确禁止进入评估的物品 ID（namespace:path）——物品级黑名单。",
+                        "检查范围：容器槽位物品、嵌套容器内部物品（潜影盒/AE2 cell 等）、",
+                        "地板掉落物、contraption 携带物。命中即中止评估。",
+                        "Item IDs explicitly forbidden from entering evaluation.",
+                        "Covers container slots, nested container contents, dropped items and contraption cargo.")
                 .defineListAllowEmpty("suspiciousItems", List.of(), value -> value instanceof String);
         MAX_CONCURRENT_EVALUATIONS = builder
                 .comment(
