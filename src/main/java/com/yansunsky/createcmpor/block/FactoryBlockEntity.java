@@ -50,9 +50,18 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         implements IHaveGoggleInformation {
 
     private static final int BUFFER_SECONDS = 20;
-    /** 产物暂存仓容量：物品 4 组。 */
+    /**
+     * 产物暂存仓<b>保底</b>容量（物品 4 组）。
+     *
+     * <p>实际容量 = {@code max(保底, 速率 × BUFFER_SECONDS)}（见 {@link #capacityFromTickRate}），
+     * 与输入侧同口径——即"20 秒产量"缓冲。低速产线用保底值，高速产线按速率放大。
+     *
+     * <p>为什么必须随速率放大（0.3.48 修复）：旧实现固定 256，一条 6601 个/秒的产线只有
+     * 0.04 秒缓冲 → 产物持续溢出静默丢弃；且容量 256 只够暴露 4 个 64 分片，
+     * Create 打包机一包（9 组 = 576 个）只能取到 4 组。放大后容量与速率匹配、分片可达 9。
+     */
     private static final long ITEM_OUTPUT_BUFFER = 256;
-    /** 产物暂存仓容量：流体 4 桶。 */
+    /** 产物暂存仓保底容量（流体 4 桶）；实际容量同物品侧按速率放大。 */
     private static final long FLUID_OUTPUT_BUFFER = 4000;
 
     private String roomCode;
@@ -262,7 +271,11 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
                 continue;
             }
             boolean item = "item".equals(entry.getKey().kind());
-            long buffer = item ? ITEM_OUTPUT_BUFFER : FLUID_OUTPUT_BUFFER;
+            // 输出容量 = max(保底, 速率 × 20 秒)，与输入侧 capacityFromTickRate 同口径。
+            // 旧实现写死 256：高速产线缓冲不足会溢出丢产物，且分片只有 4 → 打包机一包只能取 4 组。
+            long scaled = capacityFromTickRate(entry.getValue());
+            long buffer = item ? Math.max(ITEM_OUTPUT_BUFFER, scaled)
+                    : Math.max(FLUID_OUTPUT_BUFFER, scaled);
             if (item) {
                 Container container = new Container(entry.getKey().signature(), entry.getKey().id(), buffer);
                 container.applyTemplate(templateOf(outputItemTemplates, entry.getKey()));
@@ -890,14 +903,122 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             return keys;
         }
 
-        @Override
-        public int getSlots() {
-            return inputIds().size() + outputIds().size() + (burnModeActive() ? 1 : 0);
+        /**
+         * 每个签名暴露的分片槽数：把"单槽大容量"拆成"多槽 × 每槽 64"。
+         *
+         * <p>为什么必须分片（Create 6.0.10 源码确证）：打包机拆包
+         * （{@code DefaultUnpackingHandler.unpack}）在 simulate 阶段遍历目标槽，
+         * <b>空槽</b>按 {@code getSlotLimit} 认领、<b>非空槽</b>受
+         * {@code min(itemInSlot.getMaxStackSize(), getSlotLimit)} 限制（恒 ≤ 64）。
+         * 一包最多 9 组（{@code PackageItem.SLOTS=9} × 64 = 576 个），若每个签名只有 1 个槽，
+         * 一次只能吃下 64 → 整包拆包判定失败。分片后 9 个槽可一次吸收 576 个。
+         *
+         * <p>分片语义：分片 i 负责该容器 [i×64, (i+1)×64) 段。对外等价于"多个 64 容量的格子"，
+         * 与 Create ItemVault（20 槽 × 64）思路一致；内部仍是单一 {@code Container.amount}（long），
+         * 存档格式不变。
+         */
+        /** 每片固定 64（等价于"一个普通格子"）。 */
+        private static final int SHARD_SIZE = 64;
+        /**
+         * 每个签名最多暴露的分片数（上限，防高速产线容量过大导致槽位爆炸）。
+         *
+         * <p>9 是打包机一包的上限（{@code PackageItem.SLOTS=9}），足够一次吸收整包；
+         * 容量超过 9×64=576 时，超出部分由最后一片"兜底覆盖"（见 {@link #shardCapacity}），
+         * 保证**存量全覆盖**——不会出现"看不见/取不出"的卡死。
+         */
+        private static final int MAX_SHARDS_PER_SIGNATURE = 9;
+
+        /** 该容器应暴露的分片数：按容量推导（≤64 一片；超 576 仍为 9 片，末片兜底）。 */
+        private int shardCount(Container container) {
+            if (container == null) {
+                return 0;
+            }
+            long byCapacity = (Math.max(0L, container.capacity) + SHARD_SIZE - 1) / SHARD_SIZE;
+            return (int) Math.max(1L, Math.min(MAX_SHARDS_PER_SIGNATURE, byCapacity));
         }
 
-        /** 燃料槽索引（burn 模式追加在输入+输出之后；未激活返回 -1）。 */
+        /** 输入区槽位总数（各签名分片数之和）。 */
+        private int inputSlotTotal() {
+            int total = 0;
+            for (String signature : inputIds()) {
+                total += shardCount(inputItems.get(signature));
+            }
+            return total;
+        }
+
+        /** 输出区槽位总数。 */
+        private int outputSlotTotal() {
+            int total = 0;
+            for (String signature : outputIds()) {
+                total += shardCount(outputItems.get(signature));
+            }
+            return total;
+        }
+
+        /** 输出区分片起始索引。 */
+        private int outputShardStart() {
+            return inputSlotTotal();
+        }
+
+        /** 燃料槽索引（burn 模式追加在输入+输出分片之后；未激活返回 -1）。 */
         private int fuelSlotIndex() {
-            return burnModeActive() ? inputIds().size() + outputIds().size() : -1;
+            return burnModeActive() ? inputSlotTotal() + outputSlotTotal() : -1;
+        }
+
+        @Override
+        public int getSlots() {
+            return inputSlotTotal() + outputSlotTotal() + (burnModeActive() ? 1 : 0);
+        }
+
+        /**
+         * 分片槽 → 容器；越界/燃料槽/未命中返回 null。
+         *
+         * @param shardOut 输出参数：[0] = 分片序号（该签名内的第几片），仅在返回非 null 时有效
+         */
+        private Container containerForShard(int slot, int[] shardOut) {
+            if (slot < 0) {
+                return null;
+            }
+            int cursor = 0;
+            for (String signature : inputIds()) {
+                Container container = inputItems.get(signature);
+                int count = shardCount(container);
+                if (slot < cursor + count) {
+                    shardOut[0] = slot - cursor;
+                    return container;
+                }
+                cursor += count;
+            }
+            for (String signature : outputIds()) {
+                Container container = outputItems.get(signature);
+                int count = shardCount(container);
+                if (slot < cursor + count) {
+                    shardOut[0] = slot - cursor;
+                    return container;
+                }
+                cursor += count;
+            }
+            return null;
+        }
+
+        /**
+         * 分片段容量上限。
+         *
+         * <p><b>末片兜底</b>：容量 > 片数×64 时，最后一片覆盖剩余全部容量，
+         * 保证所有存量都能被 getStackInSlot 看到、被 extractItem 取出（否则超出部分永久卡死）。
+         */
+        private long shardCapacity(Container container, int shard) {
+            long start = (long) shard * SHARD_SIZE;
+            long end = shard == shardCount(container) - 1
+                    ? container.capacity
+                    : Math.min(container.capacity, start + SHARD_SIZE);
+            return Math.max(0L, end - start);
+        }
+
+        /** 分片内已占用量（用于判断槽是否"看着为空"与剩余空间）。 */
+        private long shardAmount(Container container, int shard) {
+            long start = (long) shard * SHARD_SIZE;
+            return Math.max(0L, Math.min(container.amount - start, shardCapacity(container, shard)));
         }
 
         @Override
@@ -913,20 +1034,16 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
                 }
                 return ItemStack.EMPTY;
             }
-            List<String> inputs = inputIds();
-            if (slot >= 0 && slot < inputs.size()) {
-                Container inputContainer = inputItems.get(inputs.get(slot));
-                long amount = inputContainer == null ? 0 : Math.min(inputContainer.amount, 64);
-                return itemStackOf(inputContainer, (int) amount);
+            // 输入/输出分片槽：返回该分片段的占用量（空分片返回 EMPTY）。
+            // 分片语义让外部设备看到"多个 64 容量的格子"，与 Create ItemVault 一致；
+            // 内部仍是单一 Container.amount，存档不变。
+            int[] shard = new int[1];
+            Container container = containerForShard(slot, shard);
+            if (container == null) {
+                return ItemStack.EMPTY;
             }
-            List<String> outputs = outputIds();
-            int outputIndex = slot - inputs.size();
-            if (outputIndex >= 0 && outputIndex < outputs.size()) {
-                Container container = outputItems.get(outputs.get(outputIndex));
-                long amount = container == null ? 0 : Math.min(container.amount, 64);
-                return itemStackOf(container, (int) amount);
-            }
-            return ItemStack.EMPTY;
+            long amount = Math.min(shardAmount(container, shard[0]), 64L);
+            return itemStackOf(container, (int) amount);
         }
 
         @Override
@@ -946,18 +1063,19 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
                 return accepted >= stack.getCount() ? ItemStack.EMPTY
                         : stack.copyWithCount(stack.getCount() - accepted);
             }
-            List<String> inputs = inputIds();
-            if (slot < 0 || slot >= inputs.size() || stack.isEmpty()) {
+            // 输入分片槽：只接受本分片段范围内的量（见 getSlotLimit 注释——超领会被拆包逻辑销毁）。
+            if (stack.isEmpty()) {
                 return stack;
             }
-            Container container = inputItems.get(inputs.get(slot));
+            int[] shard = new int[1];
+            Container container = containerForShard(slot, shard);
             if (container == null || container.id == null
                     || !stack.is(BuiltInRegistries.ITEM.get(container.id))) {
                 return stack;
             }
-            long space = container.capacity - container.amount;
-            int accepted = (int) Math.min(space, stack.getCount());
-            if (!simulate) {
+            long free = shardCapacity(container, shard[0]) - shardAmount(container, shard[0]);
+            int accepted = (int) Math.max(0, Math.min(free, stack.getCount()));
+            if (!simulate && accepted > 0) {
                 container.amount += accepted;
                 container.applyTemplate(stack); // 记录投入原料真实形态（组件保真）
                 setChanged();
@@ -972,18 +1090,16 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             if (burnModeActive() && slot == fuelSlotIndex()) {
                 return ItemStack.EMPTY;
             }
-            List<String> inputs = inputIds();
-            int outputIndex = slot - inputs.size();
-            List<String> outputs = outputIds();
-            if (outputIndex < 0 || outputIndex >= outputs.size()) {
+            // 输出分片槽：只能从"输出区"取；总量取自该分片段（扣减写回容器总量）。
+            // 注意：这里不按分片段上限截断取用量——抽取是"清空容器"语义，
+            // 允许一次取走整段（上限交给调用方 amount 与 maxStackSize）。
+            int[] shard = new int[1];
+            Container container = containerForShard(slot, shard);
+            if (container == null || !isOutputShard(slot)) {
                 return ItemStack.EMPTY;
             }
-            Container container = outputItems.get(outputs.get(outputIndex));
-            if (container == null) {
-                return ItemStack.EMPTY;
-            }
-            long available = Math.min(container.amount, amount);
-            if (!simulate) {
+            long available = Math.min(shardAmount(container, shard[0]), amount);
+            if (!simulate && available > 0) {
                 container.amount -= available;
                 setChanged();
             }
@@ -991,9 +1107,50 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             return itemStackOf(container, (int) Math.min(available, maxStackSizeOf(container)));
         }
 
+        /** 该槽是否属于输出区（输入区与燃料槽不可抽取）。 */
+        private boolean isOutputShard(int slot) {
+            if (burnModeActive() && slot == fuelSlotIndex()) {
+                return false;
+            }
+            int start = outputShardStart();
+            return slot >= start && slot < start + outputSlotTotal();
+        }
+
+        /**
+         * 槽位上限 = 该缓存容器的实际容量（对齐 StorageDrawers 抽屉 getMaxCapacity 的成熟范式），
+         * 而不是硬编码 64。
+         *
+         * <p>原因：Create 打包机拆包（{@code DefaultUnpackingHandler}）在 simulate 阶段对<b>空槽</b>
+         * 用 {@code getSlotLimit(slot)} 判断"放得下多少"；若这里返回 64，一包 9 组（576 个）会被判为
+         * 放不下 → 整包拆包失败。返回真实容量后，空槽可一次接纳整包。
+         *
+         * <p>注意（源码确证）：非空槽分支仍受 {@code itemInSlot.getMaxStackSize()}（物品自身堆叠上限，
+         * 通常 64）限制，与 getSlotLimit 无关——单槽大口吞吐需配合"空槽喂料"或自定义 UnpackingHandler。
+         * 上限裁剪到 Integer.MAX_VALUE（IItemHandler 契约要求 int）。
+         */
+        /**
+         * 槽位上限 = 该<b>分片</b>的剩余空间（不是总容量）。
+         *
+         * <p>为什么必须是"剩余空间"而不是"总容量"（Create 源码确证）：打包机拆包的
+         * {@code DefaultUnpackingHandler} 在空槽分支里<b>忽略 insertItem 的返回值</b>——
+         * 它按 {@code getSlotLimit} 认定"这些全放下了"。若这里报总容量，容器接近满时会超领，
+         * 真实插入不足的部分被凭空销毁（丢物品）。报剩余空间则认领量恰好等于可接受量。
+         *
+         * <p>分片满时返回 0 → 打包机在 simulate 阶段把该槽判为"放不下"并继续试下一片，
+         * 与 ItemVault 的"满槽跳过"行为一致。
+         */
         @Override
         public int getSlotLimit(int slot) {
-            return 64;
+            if (burnModeActive() && slot == fuelSlotIndex()) {
+                return 1024;
+            }
+            int[] shard = new int[1];
+            Container container = containerForShard(slot, shard);
+            if (container == null) {
+                return 64;
+            }
+            long free = shardCapacity(container, shard[0]) - shardAmount(container, shard[0]);
+            return (int) Math.max(0, Math.min(free, Integer.MAX_VALUE));
         }
 
         @Override
@@ -1002,11 +1159,12 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             if (burnModeActive() && slot == fuelSlotIndex() && acceptBurnFuel(stack)) {
                 return true;
             }
-            List<String> inputs = inputIds();
-            if (slot < 0 || slot >= inputs.size()) {
+            // 仅输入区可插入；且必须是该分片所属容器的物品
+            if (slot < 0 || slot >= outputShardStart()) {
                 return false;
             }
-            Container container = inputItems.get(inputs.get(slot));
+            int[] shard = new int[1];
+            Container container = containerForShard(slot, shard);
             return container != null && container.id != null
                     && stack.is(BuiltInRegistries.ITEM.get(container.id));
         }

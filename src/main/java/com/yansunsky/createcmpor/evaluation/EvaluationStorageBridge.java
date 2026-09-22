@@ -1,5 +1,6 @@
 package com.yansunsky.createcmpor.evaluation;
 
+import com.yansunsky.createcmpor.Config;
 import com.yansunsky.createcmpor.CreateCMPOR;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
@@ -53,17 +54,120 @@ final class EvaluationStorageBridge {
         return level.getPoiManager().simpleRegionStorage;
     }
 
+    /** 严格 idle：五个子条件必须全空（含 pendingUnloads 必须为空）。 */
     static boolean isChunkIdle(ServerLevel level, ChunkPos pos) {
-        long key = pos.toLong();
-        return level.getChunkSource().chunkMap.getVisibleChunkIfPresent(key) == null
-                && level.getChunkSource().chunkMap.getUpdatingChunkIfPresent(key) == null
-                && !level.getChunkSource().chunkMap.pendingUnloads.containsKey(key)
-                && level.getChunkSource().getChunkNow(pos.x, pos.z) == null
-                && !level.areEntitiesLoaded(key);
+        return isChunkContentUnloaded(level, pos)
+                && !level.getChunkSource().chunkMap.pendingUnloads.containsKey(pos.toLong());
     }
 
     static boolean areChunksIdle(ServerLevel level, List<ChunkPos> chunks) {
         return chunks.stream().allMatch(pos -> isChunkIdle(level, pos));
+    }
+
+    /**
+     * 「内容已卸载」：区块本体不在内存（可见表/更新表/chunkNow/实体全部为空）。
+     *
+     * <p>与 {@link #isChunkIdle} 的区别：<b>不检查</b> {@code pendingUnloads}。
+     * 用于识别 vanilla 卸载收尾卡死——{@code ChunkMap.scheduleUnload} 是异步自我重试
+     * （{@code if (!holder.isReadyForSaving()) scheduleUnload(...)}），一旦该 holder 的
+     * {@code saveSync} / generation 引用永不归零，holder 会永远留在 {@code pendingUnloads}，
+     * 但区块内容其实早已卸载、且没有任何票据（实测日志：{@code pendingUnload=true, tickets=[],
+     * visible=false, chunkNow=false, entities=false}）。此时评估读的是磁盘数据，继续冻结是安全的。
+     */
+    static boolean isChunkContentUnloaded(ServerLevel level, ChunkPos pos) {
+        long key = pos.toLong();
+        return level.getChunkSource().chunkMap.getVisibleChunkIfPresent(key) == null
+                && level.getChunkSource().chunkMap.getUpdatingChunkIfPresent(key) == null
+                && level.getChunkSource().getChunkNow(pos.x, pos.z) == null
+                && !level.areEntitiesLoaded(key);
+    }
+
+    /** 全部区块「内容已卸载」（忽略 pendingUnloads 卡死）。 */
+    static boolean areChunkContentsUnloaded(ServerLevel level, List<ChunkPos> chunks) {
+        return chunks.stream().allMatch(pos -> isChunkContentUnloaded(level, pos));
+    }
+
+    /**
+     * 该区块是否处于「卡死的 pendingUnloads」：内容已卸载 + 仍在 pendingUnloads + 无票据。
+     * 无票据是关键判据——有票据时属于正常的加载/卸载竞争中，不应放行。
+     */
+    static boolean isUnloadStuckOnPending(ServerLevel level, ChunkPos pos) {
+        long key = pos.toLong();
+        if (!isChunkContentUnloaded(level, pos)) {
+            return false;
+        }
+        if (!level.getChunkSource().chunkMap.pendingUnloads.containsKey(key)) {
+            return false;
+        }
+        return chunkTicketNames(level, key).isEmpty();
+    }
+
+    /** 该房间是否存在卡死的 pendingUnloads 区块（诊断/计时用）。 */
+    static boolean hasUnloadStuckChunk(ServerLevel level, List<ChunkPos> chunks) {
+        return chunks.stream().anyMatch(pos -> isUnloadStuckOnPending(level, pos));
+    }
+
+    /**
+     * 卡死豁免的放行判定：<b>每个</b>区块都必须"严格 idle 或 卡死的 pendingUnloads"。
+     *
+     * <p>不能写成"全部内容已卸 + 任一卡死"——那会误放行「1 个卡死 + 1 个被外部强加载」的房间，
+     * 后者才是真正危险的场景（源房间正在被其它模组 tick）。
+     */
+    static boolean areChunksIdleOrStuckPending(ServerLevel level, List<ChunkPos> chunks) {
+        return chunks.stream().allMatch(pos ->
+                isChunkIdle(level, pos) || isUnloadStuckOnPending(level, pos));
+    }
+
+    /**
+     * A：准确描述"卸载被什么挡住"——旧文案一律说"被外部票据加载"，
+     * 与诊断里 {@code tickets=[]} 的事实矛盾，会把排查引向错误方向（外部模组）。
+     * 这里按实际子条件归类。
+     */
+    static String describeUnloadBlocker(ServerLevel level, List<ChunkPos> chunks) {
+        int pendingOnly = 0;   // 仅 pendingUnloads 卡住（vanilla 卸载收尾卡死）
+        int ticketed = 0;      // 有票据持有
+        int inMemory = 0;      // 仍在可见/更新表或内容在内存
+        int entities = 0;      // 实体仍加载
+        for (ChunkPos pos : chunks) {
+            long key = pos.toLong();
+            boolean contentUnloaded = isChunkContentUnloaded(level, pos);
+            boolean pending = level.getChunkSource().chunkMap.pendingUnloads.containsKey(key);
+            boolean hasTicket = !chunkTicketNames(level, key).isEmpty();
+            if (hasTicket) {
+                ticketed++;
+            }
+            if (!contentUnloaded) {
+                inMemory++;
+            }
+            if (level.areEntitiesLoaded(key)) {
+                entities++;
+            }
+            if (contentUnloaded && pending && !hasTicket) {
+                pendingOnly++;
+            }
+        }
+        StringBuilder sb = new StringBuilder();
+        if (ticketed > 0) {
+            sb.append(ticketed).append(" 个区块仍持有票据（外部加载）");
+        }
+        if (inMemory > 0) {
+            sb.append(sb.isEmpty() ? "" : "；").append(inMemory).append(" 个区块内容仍在内存");
+        }
+        if (entities > 0) {
+            sb.append(sb.isEmpty() ? "" : "；").append(entities).append(" 个区块实体仍加载");
+        }
+        if (pendingOnly > 0) {
+            sb.append(sb.isEmpty() ? "" : "；").append(pendingOnly)
+                    .append(" 个区块卡在 pendingUnloads（内容已卸载且无票据，vanilla 卸载收尾未完成");
+            if (Config.UNLOAD_STUCK_PENDING_TICKS.get() <= 0) {
+                sb.append("；可设 unloadStuckPendingTicks>0 放行");
+            }
+            sb.append("）");
+        }
+        if (sb.isEmpty()) {
+            sb.append("原因未归类（详见诊断行）");
+        }
+        return sb.toString();
     }
 
     /**
