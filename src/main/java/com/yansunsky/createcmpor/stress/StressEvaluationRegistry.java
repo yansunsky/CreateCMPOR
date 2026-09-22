@@ -1,5 +1,7 @@
 package com.yansunsky.createcmpor.stress;
 
+import com.yansunsky.createcmpor.CreateCMPOR;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -24,7 +26,8 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p><b>按网络分组计算</b>：stress_input 和 stress_output 可能在同一个 Create KineticNetwork 中。
  * 此时 stress_output 采样到的 capacity 包含了 stress_input 的虚拟容量，如果不扣除就会凭空产出应力。
- * 因此 consume() 按 networkId 分组，统一计算 {@code net = (capacity - virtual) - stress}：
+ * 因此 consume() 按 networkId 分组，统一计算 {@code net = (capacity - Σvirtual) - stress}
+ * （Σvirtual = 同网络**每个** 应力输入方块各自虚拟容量之和；漏扣任意一份都会凭空产出应力）：
  * <ul>
  *     <li>net > 0 → 真实净产出 → outputSU</li>
  *     <li>net < 0 → 真实净消耗 → inputSU（取绝对值）</li>
@@ -60,9 +63,12 @@ public class StressEvaluationRegistry {
      * 评估结束：按 Create KineticNetwork 分组聚合，计算工厂的 input/output 应力。
      *
      * <p>每个网络的 capacity/stress 对所有成员方块都是相同的值（来自同一个 KineticNetwork），
-     * 取任一采样即可。virtualCapacity 只来自 INPUT 类型的采样，需累加同网络所有 INPUT 的虚拟容量。
+     * 取任一采样即可。virtualCapacity 只来自 INPUT 类型的采样，**必须累加同网络每个 INPUT 方块
+     * 各自的虚拟容量**：Create 的 calculateCapacity() 对所有 source 求和（raw × |各源自身转速|），
+     * 同网络 N 个应力输入方块时 capacity 含 N 份虚拟容量，漏扣即凭空多出 (N-1)×16384×speed
+     * （0.3.44 之前版本只扣 1 份 → 两个应力输入方块即可做出无限应力输出工厂）。
      *
-     * <p>计算公式：{@code net = (capacity - totalVirtual) - stress}
+     * <p>计算公式：{@code net = (capacity - Σvirtual) - stress}
      * <ul>
      *     <li>net > 0 → outputSU += net（真实净产出）</li>
      *     <li>net < 0 → inputSU += |net|（真实净消耗）</li>
@@ -98,41 +104,44 @@ public class StressEvaluationRegistry {
             float sStress = stableValue(netSamples, Sample::stress);
             float sSpeed = stableValue(netSamples, Sample::speed);
 
-            // 累加同网络所有 INPUT 采样的虚拟容量
-            float totalVirtual = 0f;
-            for (Sample s : netSamples) {
-                if (s.type() == SampleType.INPUT)
-                    totalVirtual += stableValue(
-                            netSamples.stream().filter(x -> x.type() == SampleType.INPUT).toList(),
-                            Sample::virtualCapacity);
-            }
-            // 如果有多个 INPUT 方块在同一网络，每个的 virtualCapacity 相同（都是同一个网络的容量贡献），
-            // 但实际只需扣一次。取最大值而非累加。
-            // 修正：每个 stress_input 的 virtualCapacity 是它自己贡献的，capacity 是整个网络的。
-            // 如果网络上有 N 个 stress_input，capacity 包含了所有 N 个的虚拟容量之和，
-            // 所以 totalVirtual 应该是所有 INPUT virtualCapacity 之和。
-            // 但上面的循环会对每个 INPUT sample 都累加一次 stableValue（整个 INPUT 序列的中位数），
-            // 这会导致重复计算。改为：取所有 INPUT 的 virtualCapacity 稳定值的最大值
-            // （因为同一网络上所有 INPUT 看到的 capacity 相同，virtual 也应该是同一个值）。
+            // 累加同网络「所有」INPUT 方块的虚拟容量（按 IO 方块去重后各自取稳定值再求和）。
             //
-            // 实际上：每个 stress_input 的 virtualCapacity = 它自己的 calculateAddedStressCapacity() × speed
-            // 如果有两个 stress_input 在同一网络，每个贡献自己的虚拟容量，
-            // capacity = sum(所有虚拟容量) + 真实容量
-            // 所以 totalVirtual = sum(每个 input 的 virtualCapacity)
-            // 但我们只有一个稳定值（中位数），且同网络所有 input 的 virtual 应该相同
-            // （因为它们报告的都是自己的虚拟容量，且同一个 calculateAddedStressCapacity()）
-            // 所以取一次即可。
-
-            // 简化：取同网络 INPUT 采样的 virtualCapacity 稳定值（如果有 INPUT 的话）
-            List<Sample> inputSamples = netSamples.stream()
-                    .filter(s -> s.type() == SampleType.INPUT).toList();
-            if (!inputSamples.isEmpty()) {
-                totalVirtual = stableValue(inputSamples, Sample::virtualCapacity);
+            // 为什么必须求和：Create 的 KineticNetwork.calculateCapacity() 对网络内所有 source 求和
+            // （presentCapacity += getActualCapacityOf(be)，即 raw × |该源自身转速|）。
+            // 同网络 N 个 stress_input 时，capacity 里含 N 份虚拟容量，所以必须扣 N 份。
+            // 旧实现只扣 1 份（取 INPUT 采样中位值）→ net 凭空多出 (N-1) × 16384 × speed，
+            // 玩家用 2 个应力输入方块即可做出「0 输入、大输出」的无限应力工厂（本次修复的漏洞）。
+            float totalVirtual = 0f;
+            int inputBlockCount = 0;
+            for (List<Sample> ioSeries : perIo.values()) {
+                if (ioSeries.isEmpty()) {
+                    continue;
+                }
+                Sample head = ioSeries.get(0);
+                if (head.type() != SampleType.INPUT || !netId.equals(head.networkId())) {
+                    continue;
+                }
+                totalVirtual += stableValue(ioSeries, Sample::virtualCapacity);
+                inputBlockCount++;
+            }
+            if (inputBlockCount > 1) {
+                // 同一网络挂了多个应力输入方块：正常房间只需 1 个即可驱动全部机器。
+                // 这里只告警不拒绝（求和已保证不凭空产出），便于线上发现新的堆叠利用变种。
+                CreateCMPOR.LOGGER.warn("[CreateCMPOR] room={} 网络 {} 上存在 {} 个应力输入方块，"
+                                + "虚拟容量按 {} SU 全额扣除（net={}）；若该房间被用于刷应力请检查布局",
+                        roomCode, netId, inputBlockCount, totalVirtual,
+                        Math.max(0f, sCap - totalVirtual) - sStress);
             }
 
-            // 核心计算：(capacity - virtual) - stress = 真实净应力
-            float realCapacity = sCap - totalVirtual;
+            // 核心计算：(capacity - Σvirtual) - stress = 真实净应力
+            float realCapacity = Math.max(0f, sCap - totalVirtual);
             float net = realCapacity - sStress;
+            // 护栏：capacity 与虚拟容量的求和顺序不同可能残留极小浮点差，
+            // 含注入源的网络理论上净值为 0（或负），用相对阈值抹掉假输出/假输入。
+            float epsilon = Math.max(1f, Math.abs(sCap) * 1e-6f);
+            if (Math.abs(net) < epsilon) {
+                net = 0f;
+            }
 
 //            CreateCMPOR.LOGGER.info("[CreateCMPOR] room={} net={} 计算: cap={} virtual={} stress={} → realCap={} net={} (speed={})",
 //                    roomCode, netId, sCap, totalVirtual, sStress, realCapacity, net, sSpeed);
