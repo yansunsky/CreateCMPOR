@@ -1251,6 +1251,21 @@ public final class EvaluationCloneManager {
                 Component.translatable("message.createcmpor.evaluation.source_reload_forced"));
     }
 
+    /** 克隆进度日志的最小步长（每完成这么多区块才打一条日志；完成时必打一条）。 */
+    private static final int CLONE_LOG_STEP = 8;
+    /** 克隆进度日志水位：会话 → [上次打日志时的已校验数, 已发布数]（两阶段各自计步）。 */
+    private static final java.util.Map<UUID, int[]> CLONE_LOGGED_WATERMARK =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * 克隆进度上报。
+     *
+     * <p><b>日志降噪（0.3.50）</b>：原实现每完成一个区块就打一条 INFO——16 区块房间会刷出上百行，
+     * 而 Minecraft 的日志写入是同步 I/O，高频写会拖慢 server tick（实测玩家侧明显卡顿）。
+     * 现改为<b>每 {@link #CLONE_LOG_STEP} 个区块（或每 10%）打一条</b>，并在全部完成时补一条终态日志。
+     *
+     * <p><b>玩家 actionbar 提示保持实时</b>：它是网络包，开销远小于写日志，且玩家需要看到进度。
+     */
     private static void notifyCloneProgress(MinecraftServer server, EvaluationSession session,
                                             EvaluationManifest manifest) {
         int total = manifest.chunks().size();
@@ -1258,8 +1273,21 @@ public final class EvaluationCloneManager {
                 .filter(chunk -> chunk.stagingStatus() == EvaluationManifest.StagingStatus.VERIFIED).count();
         int published = (int) manifest.chunks().stream()
                 .filter(chunk -> chunk.publishStatus() == EvaluationManifest.PublishStatus.VERIFIED).count();
-        CreateCMPOR.LOGGER.info("评估会话 {} 克隆进度：区块 {}/{} 已校验，{}/{} 已发布",
-                session.id(), verified, total, published, total);
+
+        // 日志：按"阶段水位"采样——校验与发布各自每跨过 step 个区块才打一条（整体完成时必打）。
+        // 不要用 (x/step != (x-1)/step) 跨界判定：两阶段交替上升会反复跨同一 step（16 区块仍刷 18 行）；
+        // 也不要只用 min(verified,published) 单一水位：会完全丢失"校验阶段"的进度可见性。
+        int step = Math.max(CLONE_LOG_STEP, total / 10);
+        int[] watermark = CLONE_LOGGED_WATERMARK.computeIfAbsent(session.id(), k -> new int[]{-1, -1});
+        boolean allDone = verified >= total && published >= total;
+        if (allDone || verified - watermark[0] >= step || published - watermark[1] >= step) {
+            watermark[0] = verified;
+            watermark[1] = published;
+            CreateCMPOR.LOGGER.info("评估会话 {} 克隆进度：区块 {}/{} 已校验，{}/{} 已发布",
+                    session.id(), verified, total, published, total);
+        }
+
+        // 玩家提示：保持实时（不降频）
         var owner = server.getPlayerList().getPlayer(session.owner());
         if (owner != null) {
             owner.displayClientMessage(Component.translatable(
@@ -1274,6 +1302,7 @@ public final class EvaluationCloneManager {
     }
 
     private void closeRuntime(UUID sessionId) {
+        CLONE_LOGGED_WATERMARK.remove(sessionId);
         if (sessionId.equals(publishingSession)) {
             publishingSession = null;
         }
