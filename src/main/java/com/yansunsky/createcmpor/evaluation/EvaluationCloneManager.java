@@ -996,6 +996,10 @@ public final class EvaluationCloneManager {
                 data.addPendingLauncherReturn(session.id(), session.owner());
             }
             data.remove(session.id());
+            // 成功路径（固化完成）同样必须把观察者送出：否则会滞留在评估副本里
+            // （此前只在 rollback 路径挂了踢出，导致"评估完成工厂固化后观察者不被踢出"）
+            EvaluationObservationManager.exitObserversOf(server, session.id(),
+                    "message.createcmpor.observation.finished");
             server.overworld().getDataStorage().save();
             EvaluationCloneManager.INSTANCE.afterSessionRemoved(server, data);
             var owner = server.getPlayerList().getPlayer(session.owner());
