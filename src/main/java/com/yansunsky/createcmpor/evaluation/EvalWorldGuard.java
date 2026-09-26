@@ -1,5 +1,6 @@
 package com.yansunsky.createcmpor.evaluation;
 
+import com.yansunsky.createcmpor.Config;
 import com.yansunsky.createcmpor.CreateCMPOR;
 import dev.compactmods.machines.api.CompactMachines;
 import dev.compactmods.machines.api.dimension.CompactDimension;
@@ -68,7 +69,20 @@ public final class EvalWorldGuard {
         }
     }
 
+    /**
+     * 评估维度的玩家处置。
+     *
+     * <p>开启观察功能时，评估维度**不再直接踢人**：普通玩家（右键进入、或被传送模组送进来）
+     * 一律交给 {@link EvaluationObservationManager#onServerTick} 转为观察者并纳入边界/会话监管。
+     *
+     * <p><b>OP 豁免</b>：OP 保持原有的自由进出能力（含 {@code /ccmpor room enter eval} 调试路径），
+     * 不会被强制转为观察者，也不会被踢出——避免把管理员调试手段一并砍掉。
+     * 关闭观察功能时保持原行为（非 OP 一律送回主世界）。
+     */
     private static void ejectPlayersIfNeeded(ServerLevel level) {
+        if (Config.ENABLE_EVALUATION_OBSERVATION.get()) {
+            return; // 由 EvaluationObservationManager 每 tick 接管（普通玩家转观察者/越界退出/会话结束退出；OP 豁免）
+        }
         for (ServerPlayer player : List.copyOf(level.players())) {
             if (!player.hasPermissions(OP_PERMISSION_LEVEL)) {
                 moveToOverworld(player, false);

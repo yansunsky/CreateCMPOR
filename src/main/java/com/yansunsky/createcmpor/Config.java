@@ -79,6 +79,28 @@ public class Config {
      */
     public static final ModConfigSpec.IntValue UNLOAD_STUCK_PENDING_TICKS;
 
+    /**
+     * 是否允许玩家以观察者模式进入评估副本查看产线。
+     * Whether players may enter a running evaluation replica as a spectator.
+     * <ul>
+     * <li>{@code true}（默认）：手持 {@code compactmachines:personal_shrinking_device}
+     * 右键评估方块即可进入；任何被传送指令送入评估维度的玩家也会被自动转为观察者。</li>
+     * <li>{@code false}：完全关闭观察功能（评估维度仍由守卫把非 OP 玩家送回主世界）。</li>
+     * </ul>
+     * 观察者不产生区块票据、也不参与刷怪（vanilla 语义），因此不会影响评估结果。
+     */
+    public static final ModConfigSpec.BooleanValue ENABLE_EVALUATION_OBSERVATION;
+
+    /**
+     * 允许观察评估副本的权限等级。
+     * Permission level required to observe an evaluation replica.
+     * <ul>
+     * <li>{@code 0}（默认）：所有玩家都可观察（供玩家自查产线问题）。</li>
+     * <li>{@code 2}：仅管理员（OP）可观察。</li>
+     * </ul>
+     */
+    public static final ModConfigSpec.IntValue OBSERVATION_PERMISSION_LEVEL;
+
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
 
@@ -233,6 +255,22 @@ public class Config {
                         ">0：连续该 tick 数观察到「仅 pendingUnloads 卡住、其余子条件全空」时视为已卸载并继续冻结。",
                         ">0: after this many consecutive ticks of 'only pendingUnloads stuck, all other sub-conditions clear', treat it as unloaded and continue freezing.")
                 .defineInRange("unloadStuckPendingTicks", 0, 0, 100000);
+        ENABLE_EVALUATION_OBSERVATION = builder
+                .comment(
+                        "是否允许玩家以观察者模式进入评估副本查看产线。",
+                        "Whether players may enter a running evaluation replica as a spectator.",
+                        "true（默认）：手持 personal_shrinking_device 右键评估方块进入；被传送指令送入评估维度的玩家也会自动转为观察者。",
+                        "true (default): right-click the evaluator block with personal_shrinking_device; players teleported into an evaluation dimension are converted to spectators automatically.",
+                        "false：关闭观察功能。",
+                        "false: disable observation entirely.",
+                        "观察者不产生区块票据、不参与刷怪，因此不影响评估结果。",
+                        "Spectators generate no chunk tickets and never participate in mob spawning, so evaluation results are unaffected.")
+                .define("enableEvaluationObservation", true);
+        OBSERVATION_PERMISSION_LEVEL = builder
+                .comment(
+                        "允许观察评估副本的权限等级（0=所有玩家，2=仅管理员）。",
+                        "Permission level required to observe an evaluation replica (0 = everyone, 2 = operators only).")
+                .defineInRange("observationPermissionLevel", 0, 0, 4);
         builder.pop();
 
         SPEC = builder.build();

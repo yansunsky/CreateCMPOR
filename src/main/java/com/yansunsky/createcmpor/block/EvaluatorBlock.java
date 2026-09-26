@@ -58,6 +58,65 @@ public class EvaluatorBlock extends BaseEntityBlock {
         }
     }
 
+    /**
+     * 右键评估方块 = 观察评估副本（黑盒观察）。
+     *
+     * <ul>
+     * <li><b>手持 {@code compactmachines:personal_shrinking_device} + 右键</b>：
+     * 进入评估副本；已在观察中则切换到下一个并行分支（串行时相当于刷新位置）。</li>
+     * <li><b>潜行 + 右键</b>：退出观察，回到进入前的位置与游戏模式。</li>
+     * <li>其它情况不拦截（返回 PASS，交给原版/其它模组处理）。</li>
+     * </ul>
+     *
+     * <p>观察者不产生区块票据、不参与刷怪，因此观看副本不影响评估结果。
+     */
+    @Override
+    protected net.minecraft.world.ItemInteractionResult useItemOn(
+            net.minecraft.world.item.ItemStack stack, BlockState state, Level level, BlockPos pos,
+            net.minecraft.world.entity.player.Player player, net.minecraft.world.InteractionHand hand,
+            net.minecraft.world.phys.BlockHitResult hitResult) {
+        if (level.isClientSide) {
+            // 客户端：手持缩小设备时给出成功反馈，避免手臂摆动/重复触发
+            return com.yansunsky.createcmpor.evaluation.EvaluationObservationManager.isShrinkingDevice(stack)
+                    ? net.minecraft.world.ItemInteractionResult.SUCCESS
+                    : net.minecraft.world.ItemInteractionResult.PASS_TO_DEFAULT_BLOCK_INTERACTION;
+        }
+        if (!(player instanceof net.minecraft.server.level.ServerPlayer serverPlayer)) {
+            return net.minecraft.world.ItemInteractionResult.PASS_TO_DEFAULT_BLOCK_INTERACTION;
+        }
+        var observation = com.yansunsky.createcmpor.evaluation.EvaluationObservationManager.INSTANCE;
+        if (serverPlayer.isShiftKeyDown()
+                && observation.isObserving(serverPlayer)
+                && com.yansunsky.createcmpor.evaluation.EvaluationObservationManager.isShrinkingDevice(stack)) {
+            observation.exit(serverPlayer, "message.createcmpor.observation.exited");
+            return net.minecraft.world.ItemInteractionResult.SUCCESS;
+        }
+        if (!com.yansunsky.createcmpor.evaluation.EvaluationObservationManager.isShrinkingDevice(stack)) {
+            return net.minecraft.world.ItemInteractionResult.PASS_TO_DEFAULT_BLOCK_INTERACTION;
+        }
+        if (!(level.getBlockEntity(pos) instanceof EvaluatorBlockEntity evaluator)) {
+            return net.minecraft.world.ItemInteractionResult.PASS_TO_DEFAULT_BLOCK_INTERACTION;
+        }
+        observation.enterOrSwitch(serverPlayer, evaluator.getRoomCode());
+        return net.minecraft.world.ItemInteractionResult.SUCCESS;
+    }
+
+    @Override
+    protected net.minecraft.world.InteractionResult useWithoutItem(
+            BlockState state, Level level, BlockPos pos,
+            net.minecraft.world.entity.player.Player player, net.minecraft.world.phys.BlockHitResult hitResult) {
+        // 潜行空手右键 = 退出观察（便捷出口，避免玩家必须手持设备才能出来）
+        if (!level.isClientSide && player.isShiftKeyDown()
+                && player instanceof net.minecraft.server.level.ServerPlayer serverPlayer) {
+            var observation = com.yansunsky.createcmpor.evaluation.EvaluationObservationManager.INSTANCE;
+            if (observation.isObserving(serverPlayer)) {
+                observation.exit(serverPlayer, "message.createcmpor.observation.exited");
+                return net.minecraft.world.InteractionResult.SUCCESS;
+            }
+        }
+        return net.minecraft.world.InteractionResult.PASS;
+    }
+
     @Override
     public @Nullable BlockEntity newBlockEntity(BlockPos pos, BlockState state) {
         return new EvaluatorBlockEntity(pos, state);

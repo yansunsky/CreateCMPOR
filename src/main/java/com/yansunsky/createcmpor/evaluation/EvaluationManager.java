@@ -598,6 +598,9 @@ public final class EvaluationManager {
             data.addPendingLauncherReturn(session.id(), session.owner());
         }
         data.remove(session.id());
+        // 会话结束：把仍在观察该副本的玩家送出并恢复其游戏模式（自愈兜底，防遗留观察者）
+        EvaluationObservationManager.exitObserversOf(server, session.id(),
+                "message.createcmpor.observation.finished");
         flushTransactions(server);
         EvaluationCloneManager.INSTANCE.afterSessionRemoved(server, data);
         ServerPlayer owner = server.getPlayerList().getPlayer(session.owner());

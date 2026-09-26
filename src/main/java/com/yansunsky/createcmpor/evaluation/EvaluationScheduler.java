@@ -156,6 +156,9 @@ final class EvaluationScheduler {
             }
         }
         if (rejected) {
+            // 并行评估失败（同样"评估结束"）：不等清理完成就先送出观察者
+            EvaluationObservationManager.exitObserversOf(server, session.id(),
+                    "message.createcmpor.observation.finished");
             EvaluationCloneManager.INSTANCE.requestCleanup(
                     server, data, session, "message.createcmpor.evaluation.runtime_failed");
             return;
@@ -173,6 +176,9 @@ final class EvaluationScheduler {
         session.setState(EvaluationSession.State.SOLIDIFYING);
         data.changed();
         EvaluationCloneManager.syncCritical(server, data);
+        // 并行评估已全部结束、副本不再需要观察：同样在固化开始时先踢出观察者
+        EvaluationObservationManager.exitObserversOf(server, session.id(),
+                "message.createcmpor.observation.finished");
         notifyOwner(server, session, Component.literal("并行评估全部完成，开始固化"));
     }
 
@@ -464,6 +470,9 @@ final class EvaluationScheduler {
             session.setState(EvaluationSession.State.ROLLING_BACK);
             data.changed();
             EvaluationCloneManager.syncCritical(server, data);
+            // 评估已被拒绝（同样"评估结束"）：不等回滚完成就先送出观察者
+            EvaluationObservationManager.exitObserversOf(server, session.id(),
+                    "message.createcmpor.observation.finished");
             notifyOwner(server, session, Component.literal("评估结论：" + state.result.verdict()
                     + "（" + state.result.rejectReason() + "）"));
             CreateCMPOR.LOGGER.info("评估会话 {} 结论 {}：{}",
@@ -490,6 +499,11 @@ final class EvaluationScheduler {
         session.setState(EvaluationSession.State.SOLIDIFYING);
         data.changed();
         EvaluationCloneManager.syncCritical(server, data);
+        // 评估已结束、副本不再需要观察：**在此刻先踢出观察者**，而不等清理完成。
+        // 原因：CLEANING 阶段会等待区块 idle / IO future / 清理校验，可能耗时很久甚至卡住
+        // （表现为"评估完成、工厂已固化、副本清理中"之后玩家仍留在副本里）。
+        EvaluationObservationManager.exitObserversOf(server, session.id(),
+                "message.createcmpor.observation.finished");
         notifyOwner(server, session, Component.literal("评估结论：" + state.result.verdict()));
         CreateCMPOR.LOGGER.info("评估会话 {} 全部分支完成，结论 {}：{}",
                 session.id(), state.result.verdict(), state.result.detail());

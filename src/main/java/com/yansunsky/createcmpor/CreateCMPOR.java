@@ -72,6 +72,9 @@ public class CreateCMPOR {
         NeoForge.EVENT_BUS.addListener(EvaluationManager.INSTANCE::onBlockBreak);
         NeoForge.EVENT_BUS.addListener(EvalWorldGuard::onServerTick);
         NeoForge.EVENT_BUS.addListener(EvalWorldGuard::onPlayerRespawn);
+        // 评估副本观察（黑盒查看产线）：每 tick 监管观察者/传送进入者，登录时自愈未正常退出的观察
+        NeoForge.EVENT_BUS.addListener(com.yansunsky.createcmpor.evaluation.EvaluationObservationManager::onServerTick);
+        NeoForge.EVENT_BUS.addListener(com.yansunsky.createcmpor.evaluation.EvaluationObservationManager::onPlayerLogin);
         // 防复制护栏：玩家进入已评估房间的空间时自动还原工厂
         NeoForge.EVENT_BUS.addListener(com.yansunsky.createcmpor.evaluation.AntiDupeSpaceEntryHandler::onServerTick);
 
