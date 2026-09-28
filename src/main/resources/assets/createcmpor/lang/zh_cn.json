@@ -29,7 +29,7 @@
   "message.createcmpor.evaluation.incomplete_transaction": "发现不完整事务，原机器和启动棒已回滚。",
   "message.createcmpor.evaluation.recovered_after_restart": "服务器重启后已取消未完成评估并恢复原机器。",
   "message.createcmpor.evaluation.players_remain": "房间内玩家未能及时离开，评估已取消。",
-  "message.createcmpor.evaluation.unload_timeout": "原房间被其他区块票据强制加载，评估已取消。",
+  "message.createcmpor.evaluation.unload_timeout": "原房间未能在超时前完成卸载，评估已取消（具体卡住原因见服务器日志）。",
   "message.createcmpor.evaluation.frozen": "原房间已保存并卸载，冻结完成。",
   "message.createcmpor.evaluation.started": "评估事务已建立，正在撤离玩家并冻结原房间。",
   "message.createcmpor.evaluation.launcher_returned": "评估启动棒已退还。",
