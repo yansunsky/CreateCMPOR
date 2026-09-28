@@ -29,7 +29,7 @@
   "message.createcmpor.evaluation.incomplete_transaction": "An incomplete transaction was found. The machine and launcher were restored.",
   "message.createcmpor.evaluation.recovered_after_restart": "The unfinished evaluation was cancelled and the machine restored after restart.",
   "message.createcmpor.evaluation.players_remain": "Players could not leave the room in time; evaluation was cancelled.",
-  "message.createcmpor.evaluation.unload_timeout": "Another chunk ticket kept the room loaded; evaluation was cancelled.",
+  "message.createcmpor.evaluation.unload_timeout": "The source room did not finish unloading before the timeout; evaluation was cancelled (see the server log for the exact blocker).",
   "message.createcmpor.evaluation.frozen": "The source room was saved and unloaded; freezing is complete.",
   "message.createcmpor.evaluation.started": "The evaluation transaction started; players are being removed and the source room frozen.",
   "message.createcmpor.evaluation.launcher_returned": "The evaluation launcher was returned.",

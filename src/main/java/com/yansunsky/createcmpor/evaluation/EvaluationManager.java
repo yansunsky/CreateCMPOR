@@ -103,7 +103,7 @@ public final class EvaluationManager {
         } catch (RuntimeException exception) {
             CreateCMPOR.LOGGER.error("无法建立评估会话 {}", session.id(), exception);
             rollback(server, data, session,
-                    Component.translatable("message.createcmpor.evaluation.start_failed"));
+                    "message.createcmpor.evaluation.start_failed");
             return StartResult.failure(Component.translatable("message.createcmpor.evaluation.start_failed"));
         }
     }
@@ -223,7 +223,7 @@ public final class EvaluationManager {
             }
             try {
                 rollback(server, data, session,
-                        Component.translatable("message.createcmpor.evaluation.recovered_after_restart"));
+                        "message.createcmpor.evaluation.recovered_after_restart");
             } catch (RuntimeException exception) {
                 CreateCMPOR.LOGGER.error("启动恢复会话 {} 失败，将在服务端 tick 中重试", session.id(), exception);
             }
@@ -313,7 +313,7 @@ public final class EvaluationManager {
         }
         switch (session.state()) {
             case PREPARED -> rollback(server, data, session,
-                    Component.translatable("message.createcmpor.evaluation.incomplete_transaction"));
+                    "message.createcmpor.evaluation.incomplete_transaction");
             case EVALUATOR_INSTALLED -> transition(data, session, EvaluationSession.State.EVICTING_PLAYERS);
             case EVICTING_PLAYERS -> tickPlayerEviction(server, data, session);
             case SAVING_SOURCE -> tickSaving(server, data, session);
@@ -324,8 +324,7 @@ public final class EvaluationManager {
                     PARALLEL_EVALUATING,
                     EVALUATING, EVALUATED, SOLIDIFYING, CLEANING ->
                     EvaluationCloneManager.INSTANCE.tick(server, data, session);
-            case ROLLING_BACK -> rollback(server, data, session,
-                    Component.translatable(session.rollbackMessageKey()));
+            case ROLLING_BACK -> rollback(server, data, session, session.rollbackMessageKey());
         }
     }
 
@@ -334,7 +333,7 @@ public final class EvaluationManager {
         RoomInstance room = CompactMachines.room(server, session.roomCode()).orElse(null);
         if (room == null) {
             rollback(server, data, session,
-                    Component.translatable("message.createcmpor.evaluation.room_missing", session.roomCode()));
+                    "message.createcmpor.evaluation.room_missing");
             return;
         }
 
@@ -353,7 +352,7 @@ public final class EvaluationManager {
         if (session.stateTicks() >= PLAYER_EXIT_TIMEOUT_TICKS) {
             playersBeingEvicted.entrySet().removeIf(entry -> entry.getValue().sessionId().equals(session.id()));
             rollback(server, data, session,
-                    Component.translatable("message.createcmpor.evaluation.players_remain"));
+                    "message.createcmpor.evaluation.players_remain");
         }
     }
 
@@ -361,7 +360,7 @@ public final class EvaluationManager {
         RoomInstance room = CompactMachines.room(server, session.roomCode()).orElse(null);
         if (room == null) {
             rollback(server, data, session,
-                    Component.translatable("message.createcmpor.evaluation.room_missing", session.roomCode()));
+                    "message.createcmpor.evaluation.room_missing");
             return;
         }
         // 源房间的 dirty chunk 会在 WAITING_UNLOAD 的正常卸载流程中逐区块提交到 vanilla IOWorker。
@@ -374,7 +373,7 @@ public final class EvaluationManager {
         RoomInstance room = CompactMachines.room(server, session.roomCode()).orElse(null);
         if (room == null) {
             rollback(server, data, session,
-                    Component.translatable("message.createcmpor.evaluation.room_missing", session.roomCode()));
+                    "message.createcmpor.evaluation.room_missing");
             return;
         }
         List<ChunkPos> roomChunks = CompactMachines.roomChunks(session.roomCode()).stream().toList();
@@ -420,13 +419,14 @@ public final class EvaluationManager {
         data.changed();
         if (session.stateTicks() >= UNLOAD_TIMEOUT_TICKS) {
             // A：按"实际卡住的子条件"给出准确原因（旧文案一律说"被外部票据加载"，
-            // 与诊断里 tickets=[] 的事实矛盾，误导排查方向）。
+            // 与诊断里 tickets=[] 的事实矛盾，误导排查方向）。注意：0.3.48 只改了日志文案，
+            // 玩家侧 lang 的 unload_timeout 直到 0.3.51 才对齐——两处都要改，缺一则继续误导。
             CreateCMPOR.LOGGER.warn("评估会话 {} 等待源房间 {} 卸载超时（{}）。诊断：\n{}",
                     session.id(), session.roomCode(),
                     EvaluationStorageBridge.describeUnloadBlocker(room.level(), roomChunks),
                     EvaluationStorageBridge.sourceIdleDiagnostics(room.level(), roomChunks));
             rollback(server, data, session,
-                    Component.translatable("message.createcmpor.evaluation.unload_timeout"));
+                    "message.createcmpor.evaluation.unload_timeout");
         }
     }
 
@@ -535,8 +535,23 @@ public final class EvaluationManager {
         }
     }
 
+    /**
+     * 回滚：恢复原机器并结束会话。
+     *
+     * <p><b>原因必须以「消息键」传入并立即落到会话上</b>：回滚天然跨 tick
+     * （{@link #restoreMachine} 之后还要异步等区块存档落地），首 tick 只会把状态推到
+     * {@code ROLLING_BACK}，下一 tick 由
+     * {@code case ROLLING_BACK -> rollback(..., session.rollbackMessageKey())} 重新进入。
+     * 若此处不持久化，补通知时只能拿到会话里的默认键 {@code runtime_failed}，
+     * 玩家看到的将是一句与真实原因无关的"冻结失败"（实机证据：18 次"源房间卸载超时"
+     * 全部被误报成 runtime_failed，排查方向被带偏）。</p>
+     */
     private void rollback(MinecraftServer server, EvaluationSavedData data, EvaluationSession session,
-                          Component reason) {
+                          String messageKey) {
+        if (!messageKey.equals(session.rollbackMessageKey())) {
+            session.setRollbackMessageKey(messageKey);
+            data.changed();
+        }
         playersBeingEvicted.entrySet().removeIf(entry -> entry.getValue().sessionId().equals(session.id()));
         if (session.hasPhase4Manifest()) {
             EvaluationManifest manifest = session.manifest();
@@ -607,8 +622,23 @@ public final class EvaluationManager {
         if (owner != null) {
             deliverPendingLaunchers(owner, data);
         }
+        Component reason = rollbackReason(session);
         notifyOwner(server, session, reason);
         CreateCMPOR.LOGGER.warn("评估会话 {} 已回滚：{}", session.id(), reason.getString());
+    }
+
+    /**
+     * 渲染回滚原因文案。
+     *
+     * <p>键存放在会话上（跨 tick / 跨重启），需要参数的原因只有 {@code room_missing}，
+     * 且其参数恒为会话自己的 roomCode —— 因此"立即通知"与"下一 tick 补通知"
+     * 渲染出的是同一句话。</p>
+     */
+    private static Component rollbackReason(EvaluationSession session) {
+        if ("message.createcmpor.evaluation.room_missing".equals(session.rollbackMessageKey())) {
+            return Component.translatable(session.rollbackMessageKey(), session.roomCode());
+        }
+        return Component.translatable(session.rollbackMessageKey());
     }
 
     private static void restoreMachine(ServerLevel level, EvaluationSession session) {
@@ -645,7 +675,7 @@ public final class EvaluationManager {
         if (session.hasPhase4Manifest()) {
             EvaluationCloneManager.INSTANCE.requestCleanup(server, data, session, messageKey);
         } else {
-            rollback(server, data, session, Component.translatable(messageKey));
+            rollback(server, data, session, messageKey);
         }
     }
 
