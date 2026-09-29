@@ -113,6 +113,17 @@ public class Config {
     public static final ModConfigSpec.BooleanValue ENABLE_FACTORY_PREVIEW;
 
     /**
+     * 手持/物品栏里的工厂物品是否显示它自己携带的微缩预览（0.4.2）。
+     * Whether the held / inventory factory item renders its own miniature preview (0.4.2).
+     * <ul>
+     * <li>{@code true}（默认）：物品显示自带预览（与方块侧同一套烘焙/绘制管线）；</li>
+     * <li>{@code false}：物品只画机壳（与 0.4.1 外观一致），也不烘焙、不占物品侧缓存。</li>
+     * </ul>
+     * 纯客户端开关：改这一项不需要服务端同步，不影响已采集的快照数据。
+     */
+    public static final ModConfigSpec.BooleanValue ENABLE_FACTORY_ITEM_PREVIEW;
+
+    /**
      * 微缩预览的网格体积上限（格）。
      * Maximum preview grid volume, in cells.
      * <ul>
@@ -320,6 +331,17 @@ public class Config {
                         "false：不采集，工厂外观与旧版一致。",
                         "false: no capture; factories look like previous versions.")
                 .define("enableFactoryPreview", true);
+        ENABLE_FACTORY_ITEM_PREVIEW = builder
+                .comment(
+                        "手持/物品栏里的工厂物品是否显示它自己携带的微缩预览（0.4.2）。",
+                        "Whether the held / inventory factory item renders its own miniature preview (0.4.2).",
+                        "true（默认）：物品显示自带预览（与方块侧同一套烘焙/绘制管线，共用缓存）；",
+                        "true (default): the item shows its own preview using the same bake/render pipeline as the block;",
+                        "false：物品只画机壳（与 0.4.1 外观一致），也不烘焙、不占物品侧缓存。",
+                        "false: shell only (identical to 0.4.1), no baking and no item-side cache use.",
+                        "纯客户端开关：不需要服务端同步，也不影响已采集的快照数据。",
+                        "Client-only switch: no server sync required and captured snapshots are unaffected.")
+                .define("enableFactoryItemPreview", true);
         PREVIEW_MAX_VOLUME = builder
                 .comment(
                         "微缩预览网格体积上限（格）。超过该体积的房间先按整数步长盒式降采样再进快照。",
