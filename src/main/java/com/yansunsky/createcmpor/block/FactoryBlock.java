@@ -71,6 +71,17 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
      */
     public static final BooleanProperty ENCASED = BooleanProperty.create("encased");
 
+    /**
+     * 展示模式下是否已用 Create 的「边框玻璃」包壳（0.4.0）。
+     *
+     * <p>默认 {@code false}（无边框，只有安山机壳底座）；手持 {@code create:framed_glass} 右键包壳后为 {@code true}，
+     * 外壳改用边框玻璃贴图。只在 {@code ENCASED=false}（展示模式）下有意义。
+     *
+     * <p>与 {@link #ENCASED} 拆成两个属性的理由：现有全部 {@code !ENCASED} 分支的语义恰好等于
+     * "新式展示形态（含玻璃壳）"，拆开可以不动一行既有逻辑；旧存档缺该属性时取默认值 false，零迁移。
+     */
+    public static final BooleanProperty GLASS_SHELL = BooleanProperty.create("glass");
+
     static {
         SHAFT_BY_FACE.put(Direction.NORTH, SHAFT_NORTH);
         SHAFT_BY_FACE.put(Direction.SOUTH, SHAFT_SOUTH);
@@ -86,6 +97,7 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
                 // 注意：这里是"方块默认状态"，不等于"新放置状态"——新放置走 getStateForPlacement(=false)。
                 // 默认状态设为 true 是为了让旧存档缺属性时解析成传统模式（见 ENCASED 注释）。
                 .setValue(ENCASED, true)
+                .setValue(GLASS_SHELL, false)
                 .setValue(SHAFT_NORTH, false)
                 .setValue(SHAFT_SOUTH, false)
                 .setValue(SHAFT_EAST, false)
@@ -96,7 +108,7 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
 
     @Override
     protected void createBlockStateDefinition(StateDefinition.Builder<Block, BlockState> builder) {
-        builder.add(ENCASED, SHAFT_NORTH, SHAFT_SOUTH, SHAFT_EAST, SHAFT_WEST, SHAFT_UP, SHAFT_DOWN);
+        builder.add(ENCASED, GLASS_SHELL, SHAFT_NORTH, SHAFT_SOUTH, SHAFT_EAST, SHAFT_WEST, SHAFT_UP, SHAFT_DOWN);
     }
 
     /** 扳手：点击任意面 → toggle 该面接口轴；开启非当前轴向的面时自动关闭其他轴向开口（共轴约束）。 */
@@ -149,6 +161,12 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
         BlockPos pos = context.getClickedPos();
         Player player = context.getPlayer();
         if (!(level instanceof ServerLevel serverLevel)) {
+            return InteractionResult.SUCCESS;
+        }
+        if (!state.getValue(ENCASED) && state.getValue(GLASS_SHELL)) {
+            // 三段式第一段：先脱掉边框玻璃壳（仍是展示模式）
+            KineticBlockEntity.switchToBlockState(level, pos, state.setValue(GLASS_SHELL, false));
+            playGlassSound(level, pos, true);
             return InteractionResult.SUCCESS;
         }
         if (state.getValue(ENCASED)) {
@@ -287,6 +305,15 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
     @Override
     protected ItemInteractionResult useItemOn(ItemStack stack, BlockState state, Level level, BlockPos pos,
                                               Player player, InteractionHand hand, BlockHitResult hitResult) {
+        if (isFramedGlass(stack) && !state.getValue(ENCASED) && !state.getValue(GLASS_SHELL)) {
+            // 边框玻璃包壳（0.4.0）：展示模式下的可选外壳。同样不消耗物品（与 Create 的机壳包壳语义一致）。
+            if (level.isClientSide) {
+                return ItemInteractionResult.SUCCESS;
+            }
+            KineticBlockEntity.switchToBlockState(level, pos, state.setValue(GLASS_SHELL, true));
+            playGlassSound(level, pos, false);
+            return ItemInteractionResult.SUCCESS;
+        }
         if (isAndesiteCasing(stack) && !state.getValue(ENCASED)) {
             // 包壳（0.4.0）：复用 Create「手持机壳右键包壳」的语义——**不消耗机壳物品**（Create 的
             // EncasableBlock#tryEncase 全路径没有 shrink，机壳相当于"皮肤"）。
@@ -339,6 +366,24 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
                     Component.translatable("message.createcmpor.factory.revert_failed"), true);
         }
         return ItemInteractionResult.SUCCESS;
+    }
+
+    /** 手持物是否为 Create 的边框玻璃（按注册名判断，避免依赖 Create 静态条目的可见性）。 */
+    private static boolean isFramedGlass(ItemStack stack) {
+        return net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem())
+                .equals(net.minecraft.resources.ResourceLocation.fromNamespaceAndPath("create", "framed_glass"));
+    }
+
+    /**
+     * 玻璃壳的装/拆音效。
+     *
+     * <p>刻意写死 {@code SoundEvents.GLASS_PLACE / GLASS_BREAK}：现有 {@link #playEncaseSound} 取的是
+     * **新方块状态的 SoundType**（工厂是 METAL），装玻璃会响金属声，与材质不符。
+     */
+    private static void playGlassSound(Level level, BlockPos pos, boolean removing) {
+        level.playSound(null, pos,
+                removing ? net.minecraft.sounds.SoundEvents.GLASS_BREAK : net.minecraft.sounds.SoundEvents.GLASS_PLACE,
+                net.minecraft.sounds.SoundSource.BLOCKS, 0.9F, removing ? 1.1F : 1.0F);
     }
 
     /** 手持物是否为 Create 的安山机壳（按注册名判断，避免依赖 Create 的静态条目在附属环境下的可见性）。 */

@@ -2,10 +2,20 @@
   "multipart": [
     {
       "when": {
-        "encased": "false"
+        "encased": "false",
+        "glass": "false"
       },
       "apply": {
         "model": "createcmpor:block/factory_display"
+      }
+    },
+    {
+      "when": {
+        "encased": "false",
+        "glass": "true"
+      },
+      "apply": {
+        "model": "createcmpor:block/factory_display_glass"
       }
     },
     {

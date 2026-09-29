@@ -52,8 +52,11 @@ import java.util.WeakHashMap;
  */
 public final class FactoryPreviewRenderer {
 
-    /** 展示区边长（像素）。方块内部空腔约 14px，这里留出 1px 余量。 */
-    private static final float BOX_PX = 12.0F;
+    /**
+     * 展示区边长（像素）。方块内部空腔约 14px；底座占 3px、玻璃壳顶板在 y=15，
+     * 故取 11 让内容顶端停在 y=14，与顶板留 1px 净空（避免共面闪烁）。
+     */
+    private static final float BOX_PX = 11.0F;
 
     /** 展示区距方块底面的高度（像素）= 展示模型底座高度（y 0..3）。 */
     private static final float BOTTOM_PX = 3.0F;
