@@ -1,6 +1,7 @@
 package com.yansunsky.createcmpor.block;
 
 import com.yansunsky.createcmpor.Config;
+import com.yansunsky.createcmpor.CreateCMPOR;
 import com.yansunsky.createcmpor.compat.cm.CreateNbtSanitizer;
 import com.yansunsky.createcmpor.init.ModItems;
 import com.simibubi.create.content.equipment.wrench.IWrenchable;
@@ -215,9 +216,47 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
         if (blockEntity != null) {
             CompoundTag tag = CreateNbtSanitizer.sanitizeBlockEntityTag(
                     blockEntity.saveWithFullMetadata(level.registryAccess()));
+            guardItemPreviewSize(tag, pos);
             BlockItem.setBlockEntityData(drop, blockEntity.getType(), tag);
         }
         Block.popResource(level, pos, drop);
+    }
+
+    /**
+     * 物品侧体积兜底：把写进工厂物品的 BE NBT 压到 {@link Config#PREVIEW_ITEM_MAX_KB} 以内。
+     *
+     * <p>工厂物品的 NBT（含整份微缩快照）会随 ItemStack 走进容器内容包 / 槽位包 / 实体数据包，
+     * 而客户端读包内 NBT 有 2 MB 硬配额（{@code FriendlyByteBuf.DEFAULT_NBT_QUOTA}）——
+     * 单品 NBT 越界 = 收包方解析失败/断线。方块侧已有 {@code previewSyncMaxKb} 闸门，物品侧原先没有，
+     * 这里是补上的那一层（用户 2026-09-29 认可"护栏只是兜底"）。
+     *
+     * <p>逐级瘦身，只在真的越界时发生（正常工厂 ~130 KB 一分不动）：
+     * <ol>
+     *   <li>丢掉预览的<b>快照实体段</b>（装置/动物，最占体积且纯装饰）；</li>
+     *   <li>仍越界则丢掉<b>整份微缩预览</b>（物品照常可放置，只是放下后不显示微缩）。</li>
+     * </ol>
+     * 两级都打日志，便于事后定位"某个工厂物品体积异常"。
+     */
+    private static void guardItemPreviewSize(CompoundTag tag, BlockPos pos) {
+        int budgetBytes = Config.PREVIEW_ITEM_MAX_KB.get() * 1024;
+        int size = tag.sizeInBytes();
+        if (size <= budgetBytes) {
+            return;
+        }
+        CompoundTag preview = tag.getCompound("preview");
+        if (preview.contains("entities")) {
+            preview.remove("entities");
+            int after = tag.sizeInBytes();
+            CreateCMPOR.LOGGER.info("[预览] 物品侧体积兜底：{} 丢弃快照实体段 {} KB → {} KB（上限 {} KB）",
+                    pos, size / 1024, after / 1024, budgetBytes / 1024);
+            size = after;
+        }
+        if (size > budgetBytes) {
+            tag.remove("preview");
+            CreateCMPOR.LOGGER.warn("[预览] 物品侧体积兜底：{} 丢弃整份微缩快照 {} KB → {} KB"
+                            + "（上限 {} KB；该物品放下后不显示微缩，房间/产线数据不受影响）",
+                    pos, size / 1024, tag.sizeInBytes() / 1024, budgetBytes / 1024);
+        }
     }
 
     /** 工厂被取下/破坏前：从组索引移除本位置（确保索引只记录实际存在的工厂，重放可组还原）。 */
