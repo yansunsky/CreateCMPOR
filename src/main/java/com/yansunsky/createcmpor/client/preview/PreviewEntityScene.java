@@ -8,8 +8,10 @@ import com.yansunsky.createcmpor.preview.PreviewSnapshot;
 import net.createmod.catnip.animation.AnimationTickHolder;
 import com.simibubi.create.content.contraptions.AbstractContraptionEntity;
 import com.simibubi.create.content.contraptions.Contraption;
+import com.simibubi.create.content.contraptions.bearing.BearingContraption;
 import com.simibubi.create.foundation.virtualWorld.VirtualRenderWorld;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction.Axis;
 import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.client.Minecraft;
@@ -79,10 +81,13 @@ public final class PreviewEntityScene {
     public static final PreviewEntityScene EMPTY = new PreviewEntityScene(List.of(), null, List.of());
 
     /**
-     * 已知会失败的类型（会话级锁存）：避免每帧重复抛异常刷日志。
-     * 与 {@link PreviewDynamicParts#markFailed} 同一思路，但按<b>实体类型</b>而不是方块状态。
+     * 已知会失败的<b>记录</b>（会话级锁存）：避免每帧重复抛异常刷日志。
+     *
+     * <p>键 = 类型 + NBT 内容哈希，<b>不是</b>只按类型（0.4.18 修正，子代理复核指出）：
+     * 只按类型锁存的话，某一只实体因数据问题失败会把<b>同类型的所有实体</b>在本会话内永久屏蔽
+     * （换一座工厂、换一只同类型实体都不会再尝试）。
      */
-    private static final Set<String> FAILED_TYPES = new HashSet<>();
+    private static final Set<String> FAILED_ENTITIES = new HashSet<>();
 
     /** 光照诊断只打一次（避免刷屏）。 */
     private static boolean lightProbeLogged;
@@ -121,7 +126,7 @@ public final class PreviewEntityScene {
      * @param baseAngle 快照里记录的基准转角（度）——只有可控装置用
      * @param animDegPerTick <b>已按动画周期整表缩放</b>的角速度（度/tick，0 = 静止）
      */
-    private record Placed(Entity entity, float x, float y, float z, String type,
+    private record Placed(Entity entity, float x, float y, float z, String type, String latchKey,
                           float baseAngle, float animDegPerTick) {
     }
 
@@ -139,18 +144,19 @@ public final class PreviewEntityScene {
         List<Placed> built = new ArrayList<>(records.size());
         List<VirtualRenderWorld> contraptionWorlds = new ArrayList<>(2);
         for (PreviewSnapshot.EntityRecord record : records) {
-            if (FAILED_TYPES.contains(record.type())) {
+            String latchKey = record.type() + "#" + Integer.toHexString(record.data().hashCode());
+            if (FAILED_ENTITIES.contains(latchKey)) {
                 continue;
             }
             try {
                 EntityType<?> type = EntityType.byString(record.type()).orElse(null);
                 if (type == null) {
-                    FAILED_TYPES.add(record.type());
+                    FAILED_ENTITIES.add(latchKey);
                     continue;
                 }
                 Entity entity = type.create(virtualWorld);
                 if (entity == null) {
-                    FAILED_TYPES.add(record.type());
+                    FAILED_ENTITIES.add(latchKey);
                     continue;
                 }
                 // load 会读 Pos/Rotation/Motion…；我们随后用快照里那三个量化值覆盖位置与朝向，
@@ -174,24 +180,33 @@ public final class PreviewEntityScene {
                 entity.setOldPosAndRot();
                 // 装置额外一步：把"上一帧姿态"对齐到"当前姿态"（影子实体永远不会 tick，见方法注释）
                 alignContraptionPrevFields(entity);
-                // 装置额外一步：登记它的烘焙世界（渲染期逐帧喂光照，见类字段注释）
-                VirtualRenderWorld bakeWorld = contraptionBakeWorld(entity);
-                if (bakeWorld != null && bakeWorld != virtualWorld
-                        && contraptionWorlds.stream().noneMatch(existing -> existing == bakeWorld)) {
-                    contraptionWorlds.add(bakeWorld);
-                }
+                // 装置额外一步：轴兜底。快照里的 Axis 曾经被我方裁剪丢掉过（0.4.13 的实机 bug），
+                // 而 Create 的 readAdditional 是 rotationAxis 的唯一来源（setContraption 只在 create()
+                // 工厂方法里调用，加载路径不走）⇒ Axis 缺失时轴为 null、applyLocalTransforms 静默不转。
+                // 兜底来源是装置自己的 BearingContraption.getFacing().getAxis()（public，Create:95），
+                // 于是"老快照（Axis 被裁过）"无需重新固化也能转起来。
+                recoverRotationAxis(entity);
                 // 角速度与转速表同一口径缩放（整表缩放系数由烘焙侧算好传进来），
                 // 于是"装置"与"驱动它的轴承"在微缩里转速一致；基准角取 NBT 里那个冻结的角度。
                 float anim = record.animDegPerTick() * speedScale;
                 if (Math.abs(anim) < PreviewSnapshot.SPEED_EPSILON) {
                     anim = 0.0F;
                 }
+                // P0 判据日志（子代理建议）：一行说清"这只装置到底转不转、按什么轴、体积多大"
+                logContraptionJudge(record, entity, anim);
+                // 装置额外一步：登记它的烘焙世界（渲染期逐帧喂光照，见类字段注释）
+                VirtualRenderWorld bakeWorld = contraptionBakeWorld(entity);
+                if (bakeWorld != null && bakeWorld != virtualWorld
+                        && contraptionWorlds.stream().noneMatch(existing -> existing == bakeWorld)) {
+                    contraptionWorlds.add(bakeWorld);
+                }
                 float baseAngle = entity instanceof ControlledContraptionEntity controlled
                         ? controlled.getAngle(1.0F) : 0.0F;
-                built.add(new Placed(entity, record.x(), record.y(), record.z(), record.type(), baseAngle, anim));
+                built.add(new Placed(entity, record.x(), record.y(), record.z(), record.type(), latchKey,
+                        baseAngle, anim));
             } catch (Throwable error) {
-                FAILED_TYPES.add(record.type());
-                CreateCMPOR.LOGGER.warn("[预览] 实体重建失败，今后跳过该类型：{}", record.type(), error);
+                FAILED_ENTITIES.add(latchKey);
+                CreateCMPOR.LOGGER.warn("[预览] 实体重建失败，今后跳过这一条：{}", latchKey, error);
             }
         }
         return built.isEmpty() ? EMPTY : new PreviewEntityScene(built, virtualWorld, contraptionWorlds);
@@ -226,6 +241,59 @@ public final class PreviewEntityScene {
             world.setExternalLight(packedLight);
         } catch (Throwable error) {
             CreateCMPOR.LOGGER.debug("[预览] 设置预览世界外部光照失败（装置可能偏暗）", error);
+        }
+    }
+
+    /**
+     * 轴兜底：`ControlledContraptionEntity.rotationAxis` 为 null 时，用装置自己的
+     * {@code BearingContraption.getFacing().getAxis()} 补上（公开 API）。
+     *
+     * <p>为什么需要：轴在客户端只有一个来源——{@code readAdditional} 的 {@code Axis} 键
+     * （{@code setContraption} 只在 Create 的 {@code create()} 工厂方法里被调用，加载路径不走）。
+     * 该键曾被 0.4.13 的裁剪丢掉，导致"装置在、但不转"（实机 bug）。
+     * 有了这条兜底，<b>老快照也能转</b>，同时对抗未来 Create 改名。
+     */
+    private static void recoverRotationAxis(Entity entity) {
+        if (!(entity instanceof ControlledContraptionEntity controlled)) {
+            return;
+        }
+        try {
+            if (controlled.getRotationAxis() != null) {
+                return;
+            }
+            Contraption contraption = controlled.getContraption();
+            if (contraption instanceof BearingContraption bearing) {
+                controlled.setRotationAxis(bearing.getFacing().getAxis());
+            }
+        } catch (Throwable error) {
+            CreateCMPOR.LOGGER.debug("[预览] 装置旋转轴兜底失败", error);
+        }
+    }
+
+    /**
+     * P0 判据日志：一只装置一行，直接回答"它转不转、按什么轴、数据多大"。
+     *
+     * <p>加这条的理由（子代理复核结论）：此前的日志无法区分"没采到 anim / 重建失败 /
+     * 轴丢失所以静默不转 / 老快照根本没这个字段"这四种情况，实机排查要靠猜。
+     * 现在一行说清：类型、原始角速度、缩放后角速度、旋转轴、装置 NBT 体积、prevAngle 反射是否可用。
+     */
+    private static void logContraptionJudge(PreviewSnapshot.EntityRecord record, Entity entity, float scaledAnim) {
+        if (!(entity instanceof ControlledContraptionEntity controlled)) {
+            return;
+        }
+        try {
+            Axis axis = controlled.getRotationAxis();
+            int bytes = record.data().sizeInBytes();
+            CreateCMPOR.LOGGER.info(
+                    "[预览] 装置判定：{} 原始角速度 {} 度/tick → 缩放后 {} 度/tick；轴 = {}；"
+                            + "装置 NBT {} KB；prevAngle 反射 {}；基准角 {}°",
+                    record.type(), String.format("%.3f", record.animDegPerTick()),
+                    String.format("%.3f", scaledAnim),
+                    axis == null ? "null（不会转！）" : axis, bytes / 1024,
+                    prevAngleField() == null ? "不可用" : "可用",
+                    String.format("%.1f", controlled.getAngle(1.0F)));
+        } catch (Throwable error) {
+            CreateCMPOR.LOGGER.debug("[预览] 装置判定日志失败", error);
         }
     }
 
@@ -369,9 +437,9 @@ public final class PreviewEntityScene {
         return placed.size();
     }
 
-    /** 被锁存为"渲染/重建失败"的类型数量（调试用）。 */
+    /** 被锁存为"渲染/重建失败"的条目数（调试用）。 */
     public static int failedTypeCount() {
-        return FAILED_TYPES.size();
+        return FAILED_ENTITIES.size();
     }
 
     /**
@@ -409,22 +477,22 @@ public final class PreviewEntityScene {
         }
         try {
             for (Placed placement : placed) {
-                if (FAILED_TYPES.contains(placement.type())) {
+                if (FAILED_ENTITIES.contains(placement.latchKey())) {
                     continue;
                 }
                 try {
                     driveContraptionAngle(placement, renderTime);
                     EntityRenderer<? super Entity> renderer = dispatcher.getRenderer(placement.entity());
                     if (renderer == null) {
-                        FAILED_TYPES.add(placement.type());
+                        FAILED_ENTITIES.add(placement.latchKey());
                         CreateCMPOR.LOGGER.warn("[预览] 实体类型没有渲染器，跳过：{}", placement.type());
                         continue;
                     }
                     dispatcher.render(placement.entity(), placement.x(), placement.y(), placement.z(),
                             placement.entity().getYRot(), partialTicks, ms, buffers, packedLight);
                 } catch (Throwable error) {
-                    FAILED_TYPES.add(placement.type());
-                    CreateCMPOR.LOGGER.warn("[预览] 实体渲染失败，今后跳过该类型：{}", placement.type(), error);
+                    FAILED_ENTITIES.add(placement.latchKey());
+                    CreateCMPOR.LOGGER.warn("[预览] 实体渲染失败，今后跳过这一条：{}", placement.latchKey(), error);
                 }
             }
         } catch (Throwable error) {

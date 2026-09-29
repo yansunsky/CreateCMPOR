@@ -223,6 +223,19 @@ public class Config {
      */
     public static final ModConfigSpec.IntValue PREVIEW_BIG_ENTITY_WARN_KB;
 
+    /**
+     * 快照里<b>整张实体表的总体积上限</b>（<b>KB</b>）。超过就按"到取景盒中心的距离"丢弃剩余条目。
+     * Total budget for the whole entity table inside one snapshot (in <b>KB</b>); the rest is dropped by distance.
+     * <ul>
+     * <li><b>为什么必须有这条</b>：实体表是随工厂方块实体的 {@code getUpdateTag()} 一起同步给客户端的，
+     *     而客户端读 NBT 有硬配额 {@code FriendlyByteBuf.DEFAULT_NBT_QUOTA = 2097152}（2 MB）
+     *     —— 越过它就不是"显示异常"，而是<b>区块数据包解析失败 / 断线</b>。
+     *     单条上限可以配得很大（例如 8 个装置各 1 MB），所以必须再有一道"总量闸门"。</li>
+     * <li>默认 1024（1 MB）：足够放一台几百 KB 的大装置 + 几十只普通实体，仍留一半余量给方块网格。</li>
+     * </ul>
+     */
+    public static final ModConfigSpec.IntValue PREVIEW_ENTITY_TABLE_MAX_KB;
+
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
 
@@ -489,9 +502,11 @@ public class Config {
                                 + " 与客户端同步包的体积增量。",
                         "The Contraption compound itself is never trimmed, so this value bounds the other keys and the"
                                 + " resulting block-entity NBT / client sync payload growth.",
-                        "硬上限 = 该值 × 4。默认 192（KB）；范围 4~8192。",
-                        "Hard limit = 4x this value. Default 192 (KB); range 4-8192.")
-                .defineInRange("previewContraptionMaxKb", 192, 4, 8192);
+                        "硬上限 = 该值 × 4。默认 192（KB）；范围 4~1024"
+                                + "（上限收紧到 1024：再大就可能把实体表顶过 2 MB 的客户端 NBT 配额）。",
+                        "Hard limit = 4x this value. Default 192 (KB); range 4-1024"
+                                + " (capped: larger values risk exceeding the client's 2 MB NBT quota).")
+                .defineInRange("previewContraptionMaxKb", 192, 4, 1024);
         PREVIEW_TRIM_MIN_KEY_KB = builder
                 .comment(
                         "裁剪时的「小键保护」阈值（单位 KB）：小于该体积的键一律保留。",
@@ -510,6 +525,17 @@ public class Config {
                         "默认 48（KB）；范围 1~8192。",
                         "Default 48 (KB); range 1-8192.")
                 .defineInRange("previewBigEntityWarnKb", 48, 1, 8192);
+        PREVIEW_ENTITY_TABLE_MAX_KB = builder
+                .comment(
+                        "快照里整张实体表的总体积上限（单位 KB）：超过就按「到取景盒中心的距离」丢弃剩余条目。",
+                        "Total budget of the whole entity table in one snapshot (in KB); the rest is dropped by distance.",
+                        "为什么必须有：实体表随方块实体 update tag 同步，而客户端读 NBT 有 2 MB 硬配额"
+                                + "（FriendlyByteBuf.DEFAULT_NBT_QUOTA），越界会导致区块包解析失败/断线。",
+                        "Why mandatory: the table rides the block-entity update tag and the client enforces a 2 MB NBT"
+                                + " quota (FriendlyByteBuf.DEFAULT_NBT_QUOTA); exceeding it breaks chunk packets.",
+                        "默认 1024（1 MB）；范围 64~2048。配套地，previewContraptionMaxKb 的上限收到 1024。",
+                        "Default 1024 (1 MB); range 64-2048. Consequently previewContraptionMaxKb caps at 1024.")
+                .defineInRange("previewEntityTableMaxKb", 1024, 64, 2048);
         builder.pop();
 
         SPEC = builder.build();

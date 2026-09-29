@@ -342,6 +342,10 @@ public final class PreviewCapture {
             return List.of();
         }
 
+        // 总量闸门（见 Config.PREVIEW_ENTITY_TABLE_MAX_KB 的注释：客户端读 NBT 有 2 MB 硬配额）
+        int tableBudget = Config.PREVIEW_ENTITY_TABLE_MAX_KB.get() * 1024;
+        int used = 0;
+        int skippedByBudget = 0;
         List<PreviewSnapshot.EntityRecord> records = new ArrayList<>();
         if (contraptionLimit > 0 && !contraptions.isEmpty()) {
             records.addAll(pickNearest(contraptions, contraptionLimit, contraptionBudgetBytes(),
@@ -364,6 +368,22 @@ public final class PreviewCapture {
             CreateCMPOR.LOGGER.info("[预览] 装置动画：{} 个装置带动画（最大角速度 {} 度/tick，口径 = 控制器转速 × 0.3）",
                     animated, String.format("%.3f", maxDeg));
         }
+        // 装置排在前面（视觉主角），再普通实体；两桶都已是"从近到远"，所以这里丢的必然是最远的
+        List<PreviewSnapshot.EntityRecord> budgeted = new ArrayList<>(records.size());
+        for (PreviewSnapshot.EntityRecord record : records) {
+            int cost = record.data().sizeInBytes() + 64;
+            if (used + cost > tableBudget) {
+                skippedByBudget++;
+                continue;
+            }
+            used += cost;
+            budgeted.add(record);
+        }
+        if (skippedByBudget > 0) {
+            CreateCMPOR.LOGGER.info("[预览] 实体表总量闸门：跳过 {} 条（上限 {} KB，已用 {} KB）",
+                    skippedByBudget, tableBudget / 1024, used / 1024);
+        }
+        records = budgeted;
         if (!records.isEmpty() || skippedPlayers > 0) {
             CreateCMPOR.LOGGER.info(
                     "[预览] 实体：采到 {} 条（房间内 普通 {} 只 / 装置 {} 个；跳过玩家 {} 只；上限 实体 {} / 装置 {}）",
