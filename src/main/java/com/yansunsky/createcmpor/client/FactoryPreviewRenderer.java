@@ -162,9 +162,11 @@ public final class FactoryPreviewRenderer {
                         }
                         pos.set(x, y, z);
                         world.setBlock(pos, state, 2);
-                        // 造代理方块实体：连通纹理（CTM）等模型数据来自 BE，缺了 BE 会拿不到 ModelData
-                        // → 渲染成黑块（用户实机反馈：机械动力保险柜在微缩里变黑，其 ItemVaultCTBehaviour 依赖 BE）。
-                        // 做法与参考实现（PE 的 VirtualMicroWorld）一致；失败只记数，绝不冒泡。
+                        // 造代理方块实体。**注意：连通纹理（CTM）不需要它**——已用源码证否：
+                        // `CTModel.gatherModelData` 是直接查世界邻居算数据的，且 `getQuads` 在拿不到 CT 数据时
+                        // 会回落成普通四边形（不会变黑）。保留代理 BE 的真实理由是另一些模型确实读 BE：
+                        // 例如 `CopycatModel` / `FluidTankModel` 的 gatherModelData 会经 world.getBlockEntity 取数据。
+                        // 失败只记 debug，绝不冒泡。
                         if (state.hasBlockEntity() && state.getBlock() instanceof EntityBlock entityBlock) {
                             try {
                                 BlockEntity proxy = entityBlock.newBlockEntity(pos, state);
@@ -228,11 +230,13 @@ public final class FactoryPreviewRenderer {
             } finally {
                 ModelBlockRenderer.clearCache();
             }
-            if (skipped > 0) {
-                CreateCMPOR.LOGGER.debug("[预览] 跳过 {} 个非 MODEL 形状方块（视觉由 Flywheel visual 绘制的机器，本版不渲染）", skipped);
-            }
-            if (proxies > 0) {
-                CreateCMPOR.LOGGER.debug("[预览] 建立 {} 个代理方块实体（供连通纹理等 ModelData 使用）", proxies);
+            if (skipped > 0 || proxies > 0 || layers.isEmpty()) {
+                CreateCMPOR.LOGGER.info("[预览] 烘焙完成：网格 {}x{}x{}，图层 {} 个，代理 BE {} 个，跳过 {} 格（非空气 {} 格）",
+                        snapshot.width(), snapshot.height(), snapshot.depth(), layers.size(), proxies, skipped,
+                        snapshot.nonAirCount());
+                // 内容清单：定位"某块渲染异常"时，先看这里有哪些方块（排查渲染问题的最直接证据）
+                CreateCMPOR.LOGGER.info("[预览] 内容 = {}", String.join(" | ",
+                        com.yansunsky.createcmpor.preview.PreviewCapture.describePalette(snapshot, 16)));
             }
             return layers.isEmpty() ? null : new Baked(snapshot, light, layers);
         } catch (Throwable error) {
