@@ -251,48 +251,30 @@ public final class PreviewCapture {
     // ------------------------------------------------------------------
 
     /**
-     * 普通实体裁剪后的<b>目标体积</b>（字节）。超出这个数不是"丢弃实体"，而是
-     * <b>按"键体积从大到小"逐键丢弃</b>，直到装得下（见 {@link #trimToBudget}）——
-     * 因为"某只实体 NBT 大了 3 KB"几乎总是某个模组挂上去的大块数据（刷怪数据/持久数据），
-     * 而它的外观标签（{@code Item}/{@code Color}/{@code VillagerData}…）通常只有几十字节。
-     * 0.4.8 的"超体积整只丢弃"就是这么把一屋子牛全丢光的（实机日志：
-     * {@code 实体：保留 0 条（超体积丢弃 4）}）。
-     */
-    private static final int ENTITY_BUDGET_BYTES = 8192;
-
-    /**
-     * 装置（contraption）裁剪后的目标体积（字节）。
+     * 普通实体/装置的<b>目标体积</b>与硬上限：全部来自配置（0.4.16 起可调），默认值 = 原硬编码行为。
      *
-     * <p>装置体积量级完全不同：它的方块结构整个存在自己的 {@code Contraption} 复合里
-     * （Create {@code Contraption.writeNBT} → {@code Blocks{Palette,BlockList}}，
-     * 每方块 ≥27 字节 + 每个调色板状态 40~60 字节）⇒ 一台十几个方块的装置就 1~3 KB，
-     * 上百方块的大装置可以到 30~60 KB。<b>{@code Contraption} 复合永不被裁剪</b>
-     * （裁了就没得画），只裁它旁边的大键（挂载数据之类）。
-     */
-    private static final int CONTRAPTION_BUDGET_BYTES = 196608;
-
-    /**
-     * 逐键裁剪<b>只动</b>大于该体积的键（1 KB）。
+     * <p>为什么必须有上限：实体表是随工厂方块实体的 NBT 一起<b>落盘并同步给客户端</b>的。
+     * 但"超限"不等于"丢弃实体"——0.4.8 的"超 3 KB 就丢"把一屋子牛全丢光了（实机），
+     * 0.4.10 的"丢到装得下为止"又把装置的 {@code Axis} 丢掉了 ⇒ Create 静默不再旋转装置（实机）。
+     * 现行策略：<b>只裁大键、保留小键、实在装不下（超过硬上限）才整只丢弃</b>。
      *
-     * <p>血泪教训（0.4.15 修复）：裁剪原先是"从最大的键开始丢，丢到装得下为止"，
-     * 结果一个 116 KB 的装置把 {@code Axis}（38 B）、{@code ControllerRelative}（36 B）这类
-     * <b>结构性小键</b>也一起丢光了——省不下字节，却直接改语义：
-     * Create {@code ControlledContraptionEntity.applyLocalTransforms} 里
-     * {@code if (axis != null) { …rotateDegrees(angle, axis)… }} ⇒ <b>轴没了就不转</b>
-     * （用户实机现象："装置在，但没动画"）。现在的口径是：
-     * <b>小于 1 KB 的键一律保留</b>，裁剪只针对大块数据（模组挂的持久化/刷怪配置之类）。
+     * <p>硬上限记为"预算 × 4"：预算是"裁剪目标"，硬上限是"裁剪也救不回来"的兜底线。
      */
-    private static final int TRIM_MIN_KEY_BYTES = 1024;
+    private static int entityBudgetBytes() {
+        return Config.PREVIEW_ENTITY_MAX_BYTES.get();
+    }
 
-    /**
-     * 裁剪后仍然超过该值（= 预算 × 4）才<b>整只丢弃</b>——防的是"某个键大到裁剪也救不回来"，
-     * 以及"实体数量正常但单条异常巨大"的极端存档。
-     */
-    private static final int ENTITY_HARD_LIMIT_BYTES = ENTITY_BUDGET_BYTES * 4;
-    private static final int CONTRAPTION_HARD_LIMIT_BYTES = CONTRAPTION_BUDGET_BYTES * 4;
+    private static int contraptionBudgetBytes() {
+        return Config.PREVIEW_CONTRAPTION_MAX_BYTES.get();
+    }
 
-    /** 单条实体超过该体积就打一条 WARN（提醒快照会明显变大），但不丢弃。 */
-    private static final int BIG_ENTITY_WARN_BYTES = 49152;
+    private static int entityHardLimitBytes() {
+        return entityBudgetBytes() * 4;
+    }
+
+    private static int contraptionHardLimitBytes() {
+        return contraptionBudgetBytes() * 4;
+    }
 
     /**
      * 裁剪时直接删掉的键：都是<b>渲染无关</b>的大块数据（AI 记忆、属性修饰符、背包、运动状态）。
@@ -362,12 +344,12 @@ public final class PreviewCapture {
 
         List<PreviewSnapshot.EntityRecord> records = new ArrayList<>();
         if (contraptionLimit > 0 && !contraptions.isEmpty()) {
-            records.addAll(pickNearest(contraptions, contraptionLimit, CONTRAPTION_BUDGET_BYTES,
-                    CONTRAPTION_HARD_LIMIT_BYTES, "Contraption",
+            records.addAll(pickNearest(contraptions, contraptionLimit, contraptionBudgetBytes(),
+                    contraptionHardLimitBytes(), "Contraption",
                     focusOrigin, step, width, height, depth, "装置"));
         }
         if (entityLimit > 0 && !plain.isEmpty()) {
-            records.addAll(pickNearest(plain, entityLimit, ENTITY_BUDGET_BYTES, ENTITY_HARD_LIMIT_BYTES, null,
+            records.addAll(pickNearest(plain, entityLimit, entityBudgetBytes(), entityHardLimitBytes(), null,
                     focusOrigin, step, width, height, depth, "实体"));
         }
         int animated = 0;
@@ -427,9 +409,10 @@ public final class PreviewCapture {
                     }
                 }
             }
-            if (record.data().sizeInBytes() > BIG_ENTITY_WARN_BYTES && trimNotes.size() < 4) {
+            int warnBytes = Config.PREVIEW_BIG_ENTITY_WARN_BYTES.get();
+            if (record.data().sizeInBytes() > warnBytes && trimNotes.size() < 4) {
                 trimNotes.add(String.format("%s %d B（超过 %d B，快照会明显变大；未丢弃）", record.type(),
-                        record.data().sizeInBytes(), BIG_ENTITY_WARN_BYTES));
+                        record.data().sizeInBytes(), warnBytes));
             }
             if (record.data().sizeInBytes() > hardLimit) {
                 tooLarge++;
@@ -491,7 +474,7 @@ public final class PreviewCapture {
                 net.minecraft.nbt.Tag value = data.get(key);
                 int size = value == null ? 0 : value.sizeInBytes();
                 // 小于阈值的键一律不碰：结构性小键丢了会改语义，省下的字节却可忽略
-                if (size < TRIM_MIN_KEY_BYTES) {
+                if (size < Config.PREVIEW_TRIM_MIN_KEY_BYTES.get()) {
                     continue;
                 }
                 if (size > biggestSize) {
@@ -574,8 +557,8 @@ public final class PreviewCapture {
                 CompoundTag data = entity.saveWithoutId(new CompoundTag());
                 int raw = data.sizeInBytes();
                 boolean contraption = entity instanceof AbstractContraptionEntity;
-                int budget = contraption ? CONTRAPTION_BUDGET_BYTES : ENTITY_BUDGET_BYTES;
-                int hard = contraption ? CONTRAPTION_HARD_LIMIT_BYTES : ENTITY_HARD_LIMIT_BYTES;
+                int budget = contraption ? contraptionBudgetBytes() : entityBudgetBytes();
+                int hard = contraption ? contraptionHardLimitBytes() : entityHardLimitBytes();
                 String verdict;
                 if (entity instanceof Player) {
                     verdict = "（玩家，采集侧跳过）";
