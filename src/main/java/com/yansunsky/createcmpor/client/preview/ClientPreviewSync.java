@@ -56,7 +56,15 @@ public final class ClientPreviewSync {
         private PreviewSnapshot snapshot;
         private boolean absent;
         private int attempts;
-        private long lastRequestTick = Long.MIN_VALUE;
+        /**
+         * 上次发请求的 tick；<b>0 = 从未请求过</b>。
+         *
+         * <p>⚠️ 0.4.24 修复：这里原先用 {@code Long.MIN_VALUE} 当"从未"哨兵，而判断是
+         * {@code now - lastRequestTick < cooldown} ⇒ {@code now - Long.MIN_VALUE} <b>溢出成负数</b>，
+         * 于是<b>第一次请求必然被"冷却未到"挡掉</b>（实机现象：bumprev 后微缩消失且永不索取）。
+         * 用 0 做哨兵并显式判 0 即可，代价是"第 0 tick 请求过"这种不可能的情形。
+         */
+        private long lastRequestTick;
         private boolean inFlight;
         private int bytes;
     }
@@ -77,14 +85,25 @@ public final class ClientPreviewSync {
     private static int requests;
     private static int evictions;
     private static boolean firstArrivalLogged;
+    /** 首次"为什么没发请求"只记一条 INFO（实机排查用；DEBUG 在本工程会被过滤）。 */
+    private static boolean firstBailLogged;
+
+    private static void bailOnce(String reason) {
+        if (!firstBailLogged) {
+            firstBailLogged = true;
+            CreateCMPOR.LOGGER.info("[预览同步] 本次没有发请求，原因：{}", reason);
+        }
+    }
 
     /** 渲染器唯一入口：需要就发请求 / 命中缓存就装回 BE。任何异常都吞掉（装饰路径，绝不冒烟）。 */
     public static void maybeRequest(FactoryBlockEntity be) {
         try {
             if (!Config.ENABLE_FACTORY_PREVIEW.get()) {
+                bailOnce("客户端配置 enableFactoryPreview=false");
                 return;
             }
             if (Config.PREVIEW_REQUEST_MODE.get() != Config.PreviewSyncMode.ON_DEMAND) {
+                bailOnce("客户端配置 previewRequestMode 不是 ON_DEMAND");
                 return;
             }
             Level level = be.getLevel();
@@ -93,11 +112,13 @@ public final class ClientPreviewSync {
             }
             ensureLevel(level);
             if (!channelAvailable()) {
+                bailOnce("对端没有本模组的按需同步通道（服务端为旧版本，或未注册 createcmpor:preview_response）");
                 return;   // 服务端没装/旧版本：一次都不发
             }
             Key key = new Key(level.dimension(), be.getBlockPos());
             int rev = be.previewRev();
             if (!be.previewHasContent()) {
+                bailOnce("服务端在轻量 tag 里说这个工厂没有快照（has_preview=false）");
                 Entry absent = CACHE.computeIfAbsent(key, k -> new Entry());
                 absent.absent = true;
                 absent.rev = rev;
@@ -128,22 +149,28 @@ public final class ClientPreviewSync {
                 return;
             }
             if (entry.attempts >= Config.PREVIEW_REQUEST_MAX_ATTEMPTS.get()) {
+                bailOnce("同一工厂已尝试 " + entry.attempts + " 次（上限 "
+                        + Config.PREVIEW_REQUEST_MAX_ATTEMPTS.get() + "），本会话放弃");
                 return;
             }
             long cooldown = (long) Config.PREVIEW_REQUEST_COOLDOWN_TICKS.get()
                     * (1L << Math.min(entry.attempts, 4));   // 20 / 40 / 80 / 160 tick 退避
-            if (now - entry.lastRequestTick < cooldown) {
+            if (entry.lastRequestTick != 0L && now - entry.lastRequestTick < cooldown) {
                 return;
             }
             if (!takeBudget(now)) {
-                return;
+                return;   // 每 tick 预算用完：下一 tick 再试，不算异常
             }
             if (Minecraft.getInstance().player == null) {
+                bailOnce("客户端玩家实体还没就绪");
                 return;
             }
             double radius = Config.PREVIEW_REQUEST_RADIUS.get();
             if (Minecraft.getInstance().player.distanceToSqr(Vec3.atCenterOf(be.getBlockPos()))
                     > radius * radius) {
+                bailOnce("玩家距工厂 " + (int) Math.sqrt(
+                                Minecraft.getInstance().player.distanceToSqr(Vec3.atCenterOf(be.getBlockPos())))
+                                + " 格，超出请求半径 " + Config.PREVIEW_REQUEST_RADIUS.get() + " 格");
                 return;   // 比渲染 LOD 小的请求半径：天然滞回，避免边缘反复请求
             }
             entry.inFlight = true;
