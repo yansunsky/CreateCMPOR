@@ -34,21 +34,26 @@ import java.util.Map;
  *
  * <p><b>但在这个工程里，max 合并与旧的"把光照烘进顶点"逐位等价</b>（源码推导，非实机观测）：
  * <ol>
- *     <li>虚拟世界自身的光照是<b>恒定</b>的：sky 恒 15、block 恒 0。
- *         sky 见 {@code SkyLightSectionStorage.getLightValue}（无 section 数据时 {@code j < k} 为假 → 返回 15；
- *         虚拟世界从不调 {@code runLightEngine()}，{@code visibleSectionData} 永远为空）；
- *         block 见 {@code BlockLightSectionStorage}（无 DataLayer → 0）。</li>
- *     <li>{@code LevelRenderer.getLightColor} = {@code sky<<20 | max(block, state.getLightEmission())<<4}。</li>
- *     <li>旧行为：bake 前 {@code world.setExternalLight(light)}，而 {@code VirtualRenderWorld.getBrightness}
- *         只做 {@code max(自身, 外部)} → 烘出的顶点光照 = {@code 15<<20 | max(block(light), emission)<<4}
- *         （对全网格恒定）。</li>
- *     <li>新行为：bake 不再设外部光照 → 顶点光照 = {@code 15<<20 | emission<<4}（同样恒定）；
- *         渲染期 {@code maxLight(该值, light)} = {@code 15<<20 | max(block(light), emission)<<4}
+ *     <li>虚拟世界自身的光照<b>恒为 0</b>（<b>0.4.14 更正</b>：这里原来写的"sky 恒 15"是<b>错的</b>）。
+ *         证据：Create {@code foundation/virtualWorld/VirtualRenderWorld.java:90} 构造光照引擎时写死
+ *         {@code new LevelLightEngine(chunkSource, true, false)}（发行 jar 字节码同）
+ *         ⇒ <b>天空光引擎被关闭</b>，{@code getBrightness(SKY)} 恒 0；方块光引擎虽然开着，
+ *         但虚拟世界从不 {@code runLightEngine()} ⇒ 也是 0。</li>
+ *     <li>所以 bake 出来的顶点光照 = {@code emission<<4}（只有方块自发光那一项存活）。</li>
+ *     <li>旧行为：bake 前 {@code world.setExternalLight(packedLight)}，而 {@code VirtualRenderWorld.getBrightness}
+ *         只做 {@code max(自身, 外部)} ⇒ 烘出的顶点光照 = 当时那个 {@code packedLight}
+ *         （{@code sky<<20 | max(block(light), emission)<<4}，对全网格恒定）。</li>
+ *     <li>新行为：bake 不设外部光照（顶点 = {@code emission<<4}，同样恒定）；
+ *         渲染期 {@code maxLight(该值, packedLight)} = {@code packedLight}
  *         → <b>与旧值逐位相同</b>。</li>
  *     <li>因为烘出的光照在全网格恒定，AO 混合（{@code ModelBlockRenderer.AmbientOcclusionFace.blend}
- *         对几个采样值求平均）不引入差异；自发光（emissiveRendering）状态两边都恒为 15728880。
- *         {@code SuperByteBuffer.maxLight} 是按位拆 block/sky 逐分量取 max 再 pack。</li>
+ *         对几个采样值求平均）不引入差异。{@code SuperByteBuffer.maxLight} 是按位拆 block/sky 逐分量取 max 再 pack。</li>
  * </ol>
+ *
+ * <p><b>推论（0.4.13/0.4.14 的装置光照修复就建立在这条上）</b>：凡是<b>不是</b>我们烘、我们也没有机会
+ * 调 {@code .light(...)} 的内容（首当其冲是 Create 自己渲染的装置），它的光照只能来自
+ * "烘进顶点的值"或"{@code useLevelLight} 采样虚拟世界"——而这两条在这个世界里都是 0。
+ * 修法是给虚拟世界逐帧设 external light（见 {@code PreviewEntityScene}）。
  *
  * <p><b>缓冲复用安全</b>：{@code renderInto} 末尾会调 {@code reset()}，而 {@code reset()} 会清掉
  * {@code hasCustomLight}/{@code packedLight}，所以"缓存实例复用 + 每帧 setCustomLight"不会残留状态。

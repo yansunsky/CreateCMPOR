@@ -76,21 +76,13 @@ import java.util.Set;
 public final class PreviewEntityScene {
 
     /** 没有实体的空场景（渲染侧零分支）。 */
-    public static final PreviewEntityScene EMPTY = new PreviewEntityScene(List.of(), null);
+    public static final PreviewEntityScene EMPTY = new PreviewEntityScene(List.of(), null, List.of());
 
     /**
      * 已知会失败的类型（会话级锁存）：避免每帧重复抛异常刷日志。
      * 与 {@link PreviewDynamicParts#markFailed} 同一思路，但按<b>实体类型</b>而不是方块状态。
      */
     private static final Set<String> FAILED_TYPES = new HashSet<>();
-
-    /**
-     * 预览用的恒定光照（sky 15 / block 0 = {@code 15 << 20}）。
-     *
-     * <p>用途见 {@link #prepareContraptionLight}：装置的顶点光照是<b>烘</b>出来的（Create 自己的缓存），
-     * 而我们插不进它的 {@code renderInto}，只能靠"给虚拟世界一个恒定光照"这条路。
-     */
-    private static final int PREVIEW_PACKED_LIGHT = 15 << 20;
 
     /** 光照诊断只打一次（避免刷屏）。 */
     private static boolean lightProbeLogged;
@@ -105,9 +97,22 @@ public final class PreviewEntityScene {
     /** 微缩虚拟世界（= 实体的 level）：渲染期要把本帧光照设成它的 external light，见 {@link #render}。 */
     private final Level virtualWorld;
 
-    private PreviewEntityScene(List<Placed> placed, Level virtualWorld) {
+    /**
+     * 各装置自己的<b>烘焙世界</b>（{@code ClientContraption.getRenderLevel()}）。
+     *
+     * <p>为什么也要逐帧设光照：装置内的"机关零件"渲染路径有三条（子代理源码复核），
+     * 其中 {@code DrillRenderer:51} 与 {@code HarvesterRenderer:56} <b>只读烘焙世界</b>
+     * （{@code .light(LevelRenderer.getLightColor(renderWorld, localPos))}），
+     * 不像其余零件那样再叠一次 {@code useLevelLight(context.world)}。
+     * 不设的话钻头/收割机会永远发黑。
+     */
+    private final List<VirtualRenderWorld> contraptionWorlds;
+
+    private PreviewEntityScene(List<Placed> placed, Level virtualWorld,
+                               List<VirtualRenderWorld> contraptionWorlds) {
         this.placed = List.copyOf(placed);
         this.virtualWorld = virtualWorld;
+        this.contraptionWorlds = List.copyOf(contraptionWorlds);
     }
 
     /**
@@ -132,6 +137,7 @@ public final class PreviewEntityScene {
             return EMPTY;
         }
         List<Placed> built = new ArrayList<>(records.size());
+        List<VirtualRenderWorld> contraptionWorlds = new ArrayList<>(2);
         for (PreviewSnapshot.EntityRecord record : records) {
             if (FAILED_TYPES.contains(record.type())) {
                 continue;
@@ -168,8 +174,12 @@ public final class PreviewEntityScene {
                 entity.setOldPosAndRot();
                 // 装置额外一步：把"上一帧姿态"对齐到"当前姿态"（影子实体永远不会 tick，见方法注释）
                 alignContraptionPrevFields(entity);
-                // 装置额外一步：准备光照（它由 Create 的渲染器画，我们插不进 light(...)，见方法注释）
-                prepareContraptionLight(virtualWorld, entity);
+                // 装置额外一步：登记它的烘焙世界（渲染期逐帧喂光照，见类字段注释）
+                VirtualRenderWorld bakeWorld = contraptionBakeWorld(entity);
+                if (bakeWorld != null && bakeWorld != virtualWorld
+                        && contraptionWorlds.stream().noneMatch(existing -> existing == bakeWorld)) {
+                    contraptionWorlds.add(bakeWorld);
+                }
                 // 角速度与转速表同一口径缩放（整表缩放系数由烘焙侧算好传进来），
                 // 于是"装置"与"驱动它的轴承"在微缩里转速一致；基准角取 NBT 里那个冻结的角度。
                 float anim = record.animDegPerTick() * speedScale;
@@ -184,7 +194,7 @@ public final class PreviewEntityScene {
                 CreateCMPOR.LOGGER.warn("[预览] 实体重建失败，今后跳过该类型：{}", record.type(), error);
             }
         }
-        return built.isEmpty() ? EMPTY : new PreviewEntityScene(built, virtualWorld);
+        return built.isEmpty() ? EMPTY : new PreviewEntityScene(built, virtualWorld, contraptionWorlds);
     }
 
     public boolean isEmpty() {
@@ -192,66 +202,64 @@ public final class PreviewEntityScene {
     }
 
     /**
-     * 给装置（contraption）准备光照。
+     * 把本帧光照喂给微缩虚拟世界（= 实体所在世界），并（仅首次）打印一条光照诊断。
      *
-     * <h3>问题（本项目专属坑）</h3>
-     * 微缩里的方块是我们自己烘的、渲染期用 {@code SuperByteBuffer.light(packedLight)} 施加光照；
-     * 但**装置是 Create 的 {@code ContraptionEntityRenderer} 画的**，我们拿不到它的 {@code renderInto}
-     * 调用点。装置的光照只有两个来源（catnip {@code ShadeSeparatingSuperByteBuffer.renderInto:180-191}）：
-     * <ol>
-     *     <li>{@code template.light(i)}——<b>烘进顶点</b>的光照（烘在 {@code ClientContraption} 自建的
-     *         {@code VirtualRenderWorld} 里）；</li>
-     *     <li>{@code useLevelLight(level, matrix)} 的采样值：{@code max(上面那个, getLight(level, pos))}，
-     *         而 {@code getLight} 走 {@code LevelRenderer.getLightColor(level, pos)}，
-     *         {@code level} 就是<b>实体所在的虚拟世界</b>（我们的）。</li>
-     * </ol>
-     * 本项目从 0.4.x 起<b>不再调用 {@code world.setExternalLight(...)}</b>，而虚拟世界的自身光照
-     * （无光照引擎数据）是 0 ⇒ 两条路都可能是 0 ⇒ 装置发黑（实机现象：真实世界正常、微缩里发暗）。
-     *
-     * <h3>做法</h3>
-     * 两条路各补一次，且都不影响我们自己的方块（我们的几何是烘好后在渲染期 {@code light()} 合并的，
-     * 改 external light 不会重烘）：
-     * <ul>
-     *     <li><b>装置的烘焙世界</b>（{@code ClientContraption.getRenderLevel()}）：设成恒定
-     *         {@code PREVIEW_PACKED_LIGHT}（sky 15 / block 0，与 0.4.0 时代"烘进顶点的光照"同口径）。
-     *         必须在它<b>首次烘焙之前</b>做——装置缓存的 SBB 是懒烘的，这里刚好在首次渲染之前。</li>
-     *     <li><b>我们自己的世界</b>：在 {@link #render} 里设成本帧的 {@code packedLight}，
-     *         让 {@code useLevelLight} 采样值与方块侧完全一致。</li>
-     * </ul>
-     * 全部包在 try 里：光照准备失败只是"可能偏暗"，绝不影响装置能不能画出来。
+     * <p>顺序很重要：<b>先读后写</b>。诊断要在设置之前采样，否则打印出来的是"已经被我们改过的值"，
+     * 看不到问题现场（子代理复核时指出的原始实现缺陷）。
      */
-    private static void prepareContraptionLight(Level virtualWorld, Entity entity) {
-        if (!(entity instanceof AbstractContraptionEntity contraptionEntity)) {
+    private void applyPreviewLight(int packedLight) {
+        if (!(virtualWorld instanceof VirtualRenderWorld world)) {
             return;
         }
         try {
-            if (virtualWorld instanceof VirtualRenderWorld world) {
-                world.setExternalLight(PREVIEW_PACKED_LIGHT);
-            }
-            Contraption contraption = contraptionEntity.getContraption();
-            if (contraption == null) {
-                return;
-            }
-            VirtualRenderWorld bakeWorld = contraption.getOrCreateClientContraptionLazy().getRenderLevel();
-            bakeWorld.setExternalLight(PREVIEW_PACKED_LIGHT);
             if (!lightProbeLogged) {
                 lightProbeLogged = true;
-                // 一次性诊断：把"烘进顶点的光照"与"采样光照"两条路的实际数值摆出来，
-                // 实机再遇到"装置发暗"时，这一行就能判定是哪条路还是两条路都为 0。
-                BlockPos probe = BlockPos.containing(entity.getX(), entity.getY(), entity.getZ());
+                BlockPos probe = BlockPos.containing(placed.getFirst().x(), placed.getFirst().y(),
+                        placed.getFirst().z());
                 CreateCMPOR.LOGGER.info(
-                        "[预览] 装置光照诊断：level={}（sky={} block={}，采样色 {}）→ 装置烘焙世界 sky={} block={}"
-                                + "（已设 external={}）",
-                        virtualWorld.getClass().getSimpleName(),
-                        virtualWorld.getBrightness(LightLayer.SKY, probe),
-                        virtualWorld.getBrightness(LightLayer.BLOCK, probe),
-                        LevelRenderer.getLightColor(virtualWorld, probe),
-                        bakeWorld.getBrightness(LightLayer.SKY, probe),
-                        bakeWorld.getBrightness(LightLayer.BLOCK, probe),
-                        PREVIEW_PACKED_LIGHT);
+                        "[预览] 装置光照诊断（设置前）：微缩世界 {}(sky={} block={} → 采样色 {})，本帧 packedLight={}",
+                        world.getClass().getSimpleName(),
+                        world.getBrightness(LightLayer.SKY, probe),
+                        world.getBrightness(LightLayer.BLOCK, probe),
+                        LevelRenderer.getLightColor(world, probe), packedLight);
             }
+            world.setExternalLight(packedLight);
         } catch (Throwable error) {
-            CreateCMPOR.LOGGER.debug("[预览] 装置光照准备失败（装置可能偏暗）", error);
+            CreateCMPOR.LOGGER.debug("[预览] 设置预览世界外部光照失败（装置可能偏暗）", error);
+        }
+    }
+
+    /**
+     * 取装置的<b>烘焙世界</b>（{@code ClientContraption.getRenderLevel()}）；非装置/失败返回 {@code null}。
+     *
+     * <p>光照为什么要这么绕（子代理独立复核 + 本代理 jar/源码双向确认）：
+     * <ul>
+     *     <li>Create 的 {@code VirtualRenderWorld} 构造器写死
+     *         {@code new LevelLightEngine(chunkSource, true, false)}
+     *         （{@code foundation/virtualWorld/VirtualRenderWorld.java:90}，发行 jar 字节码同样）。
+     *         ⇒ <b>天空光引擎被关掉</b>，{@code getBrightness(SKY)} 恒 0；方块光引擎虽开着但我们从不
+     *         {@code runLightEngine()} ⇒ 也恒 0。所以虚拟世界自身光照 = 0。</li>
+     *     <li>装置的顶点光照是<b>烘</b>出来的（Create 自己的 {@code CONTRAPTION} 缓存，懒烘），
+     *         而 {@code ContraptionEntityRenderer:128} 只再叠一次
+     *         {@code useLevelLight(entity.level() = 我们的微缩世界)} 采样 —— 采样值同样是 0
+     *         ⇒ {@code max(0,0)=0} ⇒ 装置发黑。</li>
+     *     <li>我们自己的方块不受影响：它们渲染期用 {@code .light(packedLight)} 合并。
+     *         真实世界也不受影响：那边 {@code useLevelLight} 采样的是真实光照。</li>
+     * </ul>
+     * 结论：唯一能插手的旋钮就是"<b>给这些虚拟世界设 external light</b>"（渲染期逐帧设成本帧
+     * {@code packedLight}，见 {@link #render}）。<b>不能设成恒定值</b>——{@code maxLight} 是逐分量取 max，
+     * 烘进顶点的光照就成了"降不下来的地板"，暗处的装置会比周围方块亮。
+     */
+    private static VirtualRenderWorld contraptionBakeWorld(Entity entity) {
+        if (!(entity instanceof AbstractContraptionEntity contraptionEntity)) {
+            return null;
+        }
+        try {
+            Contraption contraption = contraptionEntity.getContraption();
+            return contraption == null ? null : contraption.getOrCreateClientContraptionLazy().getRenderLevel();
+        } catch (Throwable error) {
+            CreateCMPOR.LOGGER.debug("[预览] 装置烘焙世界获取失败", error);
+            return null;
         }
     }
 
@@ -389,14 +397,15 @@ public final class PreviewEntityScene {
             CreateCMPOR.LOGGER.debug("[预览] 关闭实体阴影失败（继续绘制）", error);
         }
         float renderTime = AnimationTickHolder.getRenderTime();
-        try {
-            // 装置靠 useLevelLight(实体所在世界) 采样光照，而 create 的渲染器不会再传 light 进来
-            // ⇒ 把本帧光照设成虚拟世界的 external light，采样值就与方块侧一致了（见 prepareContraptionLight）
-            if (virtualWorld instanceof VirtualRenderWorld world) {
-                world.setExternalLight(packedLight);
+        applyPreviewLight(packedLight);
+        if (!contraptionWorlds.isEmpty()) {
+            for (VirtualRenderWorld world : contraptionWorlds) {
+                try {
+                    world.setExternalLight(packedLight);
+                } catch (Throwable error) {
+                    CreateCMPOR.LOGGER.debug("[预览] 设置装置烘焙世界光照失败（钻头/收割机可能偏暗）", error);
+                }
             }
-        } catch (Throwable error) {
-            CreateCMPOR.LOGGER.debug("[预览] 设置预览世界外部光照失败（装置可能偏暗）", error);
         }
         try {
             for (Placed placement : placed) {
