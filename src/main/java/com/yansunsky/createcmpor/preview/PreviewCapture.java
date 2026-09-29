@@ -249,31 +249,52 @@ public final class PreviewCapture {
     // ------------------------------------------------------------------
 
     /**
-     * 单条实体裁剪后 NBT 的体积上限（字节）。超限<b>整只丢弃</b>——宁可少画一只，
-     * 也不让一条自带大背包/大数据的实体把工厂 BE 的 NBT 撑爆（快照是随 BE 同步的）。
+     * 普通实体裁剪后的<b>目标体积</b>（字节）。超出这个数不是"丢弃实体"，而是
+     * <b>按"键体积从大到小"逐键丢弃</b>，直到装得下（见 {@link #trimToBudget}）——
+     * 因为"某只实体 NBT 大了 3 KB"几乎总是某个模组挂上去的大块数据（刷怪数据/持久数据），
+     * 而它的外观标签（{@code Item}/{@code Color}/{@code VillagerData}…）通常只有几十字节。
+     * 0.4.8 的"超体积整只丢弃"就是这么把一屋子牛全丢光的（实机日志：
+     * {@code 实体：保留 0 条（超体积丢弃 4）}）。
      */
-    private static final int MAX_ENTITY_NBT_BYTES = 3072;
+    private static final int ENTITY_BUDGET_BYTES = 8192;
 
     /**
-     * 单条<b>装置</b>（contraption）裁剪后 NBT 的体积上限（字节）。
+     * 装置（contraption）裁剪后的目标体积（字节）。
      *
-     * <p>装置体积量级完全不同：它的方块结构就存在自己的 {@code Contraption} 复合里
+     * <p>装置体积量级完全不同：它的方块结构整个存在自己的 {@code Contraption} 复合里
      * （Create {@code Contraption.writeNBT} → {@code Blocks{Palette,BlockList}}，
-     * 每方块约 27 字节起 + 每个调色板状态 40~60 字节）⇒ 小型装置 0.5~2 KB、大装置可到 8 KB 以上。
-     * 这里给 16 KB 上限，超过就整只丢弃（宁愿这次不画，也不让工厂 BE 的 NBT 被一条装置撑爆）。
+     * 每方块 ≥27 字节 + 每个调色板状态 40~60 字节）⇒ 一台十几个方块的装置就 1~3 KB，
+     * 上百方块的大装置可以到 30~60 KB。<b>{@code Contraption} 复合永不被裁剪</b>
+     * （裁了就没得画），只裁它旁边的大键（挂载数据之类）。
      */
-    private static final int MAX_CONTRAPTION_NBT_BYTES = 16384;
+    private static final int CONTRAPTION_BUDGET_BYTES = 65536;
+
+    /**
+     * 裁剪后仍然超过该值（= 预算 × 4）才<b>整只丢弃</b>——防的是"某个键大到裁剪也救不回来"，
+     * 以及"实体数量正常但单条异常巨大"的极端存档。
+     */
+    private static final int ENTITY_HARD_LIMIT_BYTES = ENTITY_BUDGET_BYTES * 4;
+    private static final int CONTRAPTION_HARD_LIMIT_BYTES = CONTRAPTION_BUDGET_BYTES * 4;
 
     /**
      * 裁剪时直接删掉的键：都是<b>渲染无关</b>的大块数据（AI 记忆、属性修饰符、背包、运动状态）。
      * 外观必需标签（展示框的 {@code Item}/{@code Facing}、羊的 {@code Color}、
-     * 村民的 {@code VillagerData}、盔甲架的 {@code Pose}、猫/狼/狐狸变体…）一律保留——
-     * 逐类型的"外观必需标签"无法静态穷举（第三方实体），所以采用"黑名单删除 + 体积上限"，
-     * 后续若发现某类型画错，再按实测往这里加键。
+     * 村民的 {@code VillagerData}、盔甲架的 {@code Pose}、猫/狼/狐狸变体…）一律保留。
      */
     private static final List<String> ENTITY_STRIP_KEYS = List.of(
             "Motion", "UUID", "Attributes", "Brain", "Inventory", "EnderItems",
             "BrainMemories", "LastDeathLocation", "warden_spawn", "fall_distance");
+
+    /**
+     * 兜底逐键裁剪时<b>绝不动</b>的键：渲染必需（丢了会变成无形/白模/裸实体）。
+     * 逐类型穷举"外观必需键"不现实（第三方实体），所以取"小名单保护 + 其余按体积从大到小丢"
+     * ——外观键都很小，真正的大块数据（刷怪配置、持久化数据）会先被丢出去。
+     */
+    private static final List<String> NEVER_TRIM_KEYS = List.of(
+            "id", "Item", "Facing", "ItemRotation", "Color", "Variant", "VillagerData", "Pose",
+            "ShowArms", "NoBasePlate", "Small", "Sheared", "CollarColor", "Type", "BodyId",
+            "Size", "Tame", "ChestedHorse", "Saddle", "HandItems", "ArmorItems", "SaddleItem",
+            "DecorItem", "CatType", "FoxType", "Trusting", "Contraption", "Anchor", "Blocks");
 
     /**
      * 采集实体表（v4）：枚举 {@code innerBounds} 内的实体，分两桶——普通实体与装置（contraption）。
@@ -320,11 +341,12 @@ public final class PreviewCapture {
 
         List<PreviewSnapshot.EntityRecord> records = new ArrayList<>();
         if (contraptionLimit > 0 && !contraptions.isEmpty()) {
-            records.addAll(pickNearest(contraptions, contraptionLimit, MAX_CONTRAPTION_NBT_BYTES,
+            records.addAll(pickNearest(contraptions, contraptionLimit, CONTRAPTION_BUDGET_BYTES,
+                    CONTRAPTION_HARD_LIMIT_BYTES, "Contraption",
                     focusOrigin, step, width, height, depth, "装置"));
         }
         if (entityLimit > 0 && !plain.isEmpty()) {
-            records.addAll(pickNearest(plain, entityLimit, MAX_ENTITY_NBT_BYTES,
+            records.addAll(pickNearest(plain, entityLimit, ENTITY_BUDGET_BYTES, ENTITY_HARD_LIMIT_BYTES, null,
                     focusOrigin, step, width, height, depth, "实体"));
         }
         if (!records.isEmpty() || skippedPlayers > 0) {
@@ -338,12 +360,18 @@ public final class PreviewCapture {
     /**
      * 一桶实体 → 记录列表：先转记录（取景盒外/读取失败的丢掉），再按"到取景盒中心的距离"
      * 从近到远排序、截断到 {@code limit}。排序键只依赖数据本身，因此结果可复现。
+     *
+     * @param budget    裁剪目标体积；超出即逐键裁剪（不是丢弃实体）
+     * @param hardLimit 裁剪后仍超此值才丢弃实体
+     * @param keepKey   逐键裁剪时永不动的大键（装置传 {@code "Contraption"}，普通实体传 {@code null}）
      */
-    private static List<PreviewSnapshot.EntityRecord> pickNearest(List<Entity> bucket, int limit, int maxBytes,
+    private static List<PreviewSnapshot.EntityRecord> pickNearest(List<Entity> bucket, int limit,
+                                                                 int budget, int hardLimit, String keepKey,
                                                                  BlockPos focusOrigin, int step,
                                                                  int width, int height, int depth, String label) {
         List<PreviewSnapshot.EntityRecord> records = new ArrayList<>(bucket.size());
         List<Double> distanceSqr = new ArrayList<>(bucket.size());
+        List<String> trimNotes = new ArrayList<>();
         int outOfFocus = 0;
         int tooLarge = 0;
         for (Entity entity : bucket) {
@@ -352,8 +380,26 @@ public final class PreviewCapture {
                 outOfFocus++;
                 continue;
             }
-            if (record.data().sizeInBytes() > maxBytes) {
+            int rawSize = record.data().sizeInBytes();
+            if (rawSize > budget) {
+                // 逐键裁剪：先复制一份可变副本，按"键体积从大到小"丢，直到装得下或没有可丢的键
+                net.minecraft.nbt.CompoundTag trimmedData = record.data().copy();
+                List<String> dropped = trimToBudget(trimmedData, budget, keepKey);
+                if (!dropped.isEmpty()) {
+                    record = new PreviewSnapshot.EntityRecord(record.type(), record.x(), record.y(), record.z(),
+                            record.yaw(), record.pitch(), trimmedData);
+                    if (trimNotes.size() < 4) {
+                        trimNotes.add(String.format("%s %d→%d B 丢[%s]", record.type(), rawSize,
+                                trimmedData.sizeInBytes(), String.join(",", dropped)));
+                    }
+                }
+            }
+            if (record.data().sizeInBytes() > hardLimit) {
                 tooLarge++;
+                if (trimNotes.size() < 4) {
+                    trimNotes.add(String.format("%s 裁剪后仍 %d B > %d B，丢弃", record.type(),
+                            record.data().sizeInBytes(), hardLimit));
+                }
                 continue;
             }
             double dx = record.x() - (width - 1) / 2.0;
@@ -376,11 +422,103 @@ public final class PreviewCapture {
             dropped = records.size() - limit;
             records = kept;
         }
-        if (dropped > 0 || tooLarge > 0 || outOfFocus > 0) {
-            CreateCMPOR.LOGGER.info("[预览] {}：保留 {} 条（超条数丢弃 {}、超体积丢弃 {}、取景盒外/读取失败 {}）",
+        if (dropped > 0 || tooLarge > 0 || outOfFocus > 0 || !trimNotes.isEmpty()) {
+            CreateCMPOR.LOGGER.info("[预览] {}：保留 {} 条（超条数丢弃 {}、超硬上限丢弃 {}、取景盒外/读取失败 {}）",
                     label, records.size(), dropped, tooLarge, outOfFocus);
         }
+        for (String note : trimNotes) {
+            // 取证用：直接告诉我们"到底哪个模组往实体上挂了多大的数据"
+            CreateCMPOR.LOGGER.info("[预览] {} 体积裁剪：{}", label, note);
+        }
         return records;
+    }
+
+    /**
+     * 逐键裁剪到预算内：每次挑<b>当前最大的可丢键</b>丢掉，直到体积达标或没有可丢的键。
+     *
+     * <p>为什么按体积从大到小：外观/渲染必需的键都很小（几十字节），真正撑体积的是
+     * 模组挂上去的大块数据（刷怪模板、持久化数据）。{@link #NEVER_TRIM_KEYS} 与
+     * {@code keepKey} 是硬保护，绝不参与排序。
+     *
+     * @return 被丢掉的键明细（{@code 键名(体积B)}），供日志取证
+     */
+    private static List<String> trimToBudget(net.minecraft.nbt.CompoundTag data, int budget, String keepKey) {
+        List<String> dropped = new ArrayList<>();
+        for (int attempt = 0; attempt < 32 && data.sizeInBytes() > budget; attempt++) {
+            String biggest = null;
+            int biggestSize = 0;
+            for (String key : data.getAllKeys()) {
+                if (NEVER_TRIM_KEYS.contains(key) || key.equals(keepKey)) {
+                    continue;
+                }
+                net.minecraft.nbt.Tag value = data.get(key);
+                int size = value == null ? 0 : value.sizeInBytes();
+                if (size > biggestSize) {
+                    biggestSize = size;
+                    biggest = key;
+                }
+            }
+            if (biggest == null || biggestSize <= 0) {
+                break;
+            }
+            data.remove(biggest);
+            dropped.add(biggest + "(" + biggestSize + "B)");
+        }
+        return dropped;
+    }
+
+    /**
+     * 诊断用（{@code /ccmpor preview entities}）：列出区域内每只实体的 NBT 体积与最大的几个键。
+     *
+     * <p>存在的理由：0.4.8 实机出现过"一屋子动物全部因超体积被丢"，而"到底哪个键把体积撑起来的"
+     * 只有在有实体的服务端现场才读得到——这条命令把现场数据直接摊开，
+     * 不必为了诊断去走一遍完整评估（60~120 秒）。判定口径与采集侧一致：跳过玩家、装置单独标注。
+     */
+    public static List<String> describeEntitySizes(net.minecraft.world.level.Level level, AABB bounds) {
+        List<String> lines = new ArrayList<>();
+        List<Entity> entities;
+        try {
+            entities = level.getEntitiesOfClass(Entity.class, bounds);
+        } catch (Throwable error) {
+            lines.add("实体枚举失败：" + error);
+            return lines;
+        }
+        lines.add("区域内实体 " + entities.size() + " 只");
+        for (Entity entity : entities) {
+            try {
+                CompoundTag data = entity.saveWithoutId(new CompoundTag());
+                int raw = data.sizeInBytes();
+                boolean contraption = entity instanceof AbstractContraptionEntity;
+                int budget = contraption ? CONTRAPTION_BUDGET_BYTES : ENTITY_BUDGET_BYTES;
+                int hard = contraption ? CONTRAPTION_HARD_LIMIT_BYTES : ENTITY_HARD_LIMIT_BYTES;
+                String verdict;
+                if (entity instanceof Player) {
+                    verdict = "（玩家，采集侧跳过）";
+                } else if (raw <= budget) {
+                    verdict = "（原样保留）";
+                } else {
+                    CompoundTag trimmed = data.copy();
+                    List<String> dropped = trimToBudget(trimmed, budget, contraption ? "Contraption" : null);
+                    verdict = "（裁剪后 " + trimmed.sizeInBytes() + " B，丢 " + dropped + "，硬上限 " + hard + " B）";
+                }
+                StringBuilder sb = new StringBuilder();
+                sb.append(contraption ? "[装置] " : "").append(entity.getType()).append("  ").append(raw)
+                        .append(" B  预算 ").append(budget).append(" B  ").append(verdict);
+                List<Map.Entry<String, Integer>> sizes = new ArrayList<>();
+                for (String key : data.getAllKeys()) {
+                    net.minecraft.nbt.Tag value = data.get(key);
+                    sizes.add(Map.entry(key, value == null ? 0 : value.sizeInBytes()));
+                }
+                sizes.sort((a, b) -> Integer.compare(b.getValue(), a.getValue()));
+                for (int i = 0; i < Math.min(5, sizes.size()); i++) {
+                    sb.append("\n      ").append(sizes.get(i).getValue()).append(" B  ").append(sizes.get(i).getKey());
+                }
+                lines.add(sb.toString());
+            } catch (Throwable error) {
+                lines.add(entity.getType() + " 读取失败：" + error);
+            }
+        }
+        return lines;
     }
 
     /**

@@ -30,6 +30,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.HoverEvent;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
@@ -75,7 +76,9 @@ public final class EvalWorldCommands {
                                                 IntegerArgumentType.getInteger(context, "value"))))))
                 .then(Commands.literal("preview")
                         .then(Commands.literal("info")
-                                .executes(context -> showPreviewInfo(context.getSource())))));
+                                .executes(context -> showPreviewInfo(context.getSource())))
+                        .then(Commands.literal("entities")
+                                .executes(context -> showEntitySizes(context.getSource())))));
     }
 
     /**
@@ -139,6 +142,27 @@ public final class EvalWorldCommands {
                 source.sendSuccess(() -> Component.literal(String.format("    %s @(%.2f, %.2f, %.2f) yaw %.0f 数据 %d 字节",
                         record.type(), record.x(), record.y(), record.z(), record.yaw(),
                         record.data().sizeInBytes())), false);
+            }
+        }
+        return 1;
+    }
+
+    /**
+     * 诊断命令：列出周围 32 格内每只实体的 NBT 体积与最大的几个键（{@code /ccmpor preview entities}）。
+     *
+     * <p>用途：实体预览依赖"实体存档 NBT"重建，而体积预算有可能把某些实体裁掉或丢弃。
+     * 这条命令把"到底多大、哪个键大、会不会被裁"直接打出来——不必为了诊断跑一遍完整评估。
+     */
+    private static int showEntitySizes(CommandSourceStack source) throws CommandSyntaxException {
+        ServerPlayer player = source.getPlayerOrException();
+        AABB box = player.getBoundingBox().inflate(32.0D);
+        java.util.List<String> lines = PreviewCapture.describeEntitySizes(player.serverLevel(), box);
+        // 同时写进服务端日志：诊断结果可以被日志直接读走，不必手抄聊天栏
+        CreateCMPOR.LOGGER.info("[预览] 实体体积诊断（{}）：\n  {}", player.getName().getString(),
+                String.join("\n  ", lines));
+        for (String line : lines) {
+            for (String part : line.split("\n")) {
+                source.sendSuccess(() -> Component.literal("  " + part), false);
             }
         }
         return 1;
