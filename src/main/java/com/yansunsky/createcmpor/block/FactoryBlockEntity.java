@@ -485,6 +485,25 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         return previewSnapshot;
     }
 
+    /**
+     * <b>仅调试用</b>（{@code /ccmpor preview bumprev}）：把版本号顶一格并**不带数据**地推一次客户端包。
+     *
+     * <p>用途：单机首进时快照总是由 {@code carryPreviewOnce} 随包送达（设计如此），
+     * 于是"按需请求"这条链在正常游玩里几乎不会被触发。这条命令强制让客户端认为本地副本过期
+     * ⇒ 客户端清空快照 ⇒ 渲染时按需索取 ⇒ 请求/响应/装配三段探针全部可观测。
+     * 不影响真实快照内容（{@code previewPayloadTag} 的缓存会失效并按新 rev 重建）。
+     */
+    public void debugBumpPreviewRev() {
+        this.previewRev++;
+        this.previewPayloadCache = null;
+        this.carryPreviewOnce = false;
+        this.skipPreviewInClientPayload = true;
+        setChanged();
+        if (level != null && !level.isClientSide) {
+            sendData();
+        }
+    }
+
     /** 快照版本号：每换一次快照 +1；0 = 从来没有过（旧档）。客户端用它判断本地缓存是否过期。 */
     public int previewRev() {
         return previewRev;

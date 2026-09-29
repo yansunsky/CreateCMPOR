@@ -150,6 +150,10 @@ public final class ClientPreviewSync {
             entry.attempts++;
             entry.lastRequestTick = now;
             requests++;
+            // INFO 而非 DEBUG：本工程环境里我们 logger 的 DEBUG 会被过滤，而请求次数受节流限制（很稀疏），
+            // 写成 INFO 才能让"按需同步到底有没有工作"直接可观测。
+            CreateCMPOR.LOGGER.info("[预览同步] 客户端发出请求：{} knownRev={}（第 {} 次尝试）",
+                    be.getBlockPos(), rev, entry.attempts);
             PacketDistributor.sendToServer(new RequestPreviewPayload(be.getBlockPos(),
                     be.getPreviewSnapshot() == null ? -1 : rev, nextRequestId()));
         } catch (Throwable error) {
@@ -203,9 +207,25 @@ public final class ClientPreviewSync {
                 default -> {
                 }
             }
+            CreateCMPOR.LOGGER.info("[预览同步] 客户端收到响应：{} rev={} {} 数据={} B",
+                    payload.pos(), payload.rev(), statusName(payload.status()),
+                    payload.preview().map(tag -> tag.sizeInBytes()).orElse(0));
         } catch (Throwable error) {
             CreateCMPOR.LOGGER.debug("[预览同步] 处理响应失败", error);
         }
+    }
+
+    /** status 的可读名（日志用）。 */
+    private static String statusName(int status) {
+        return switch (status) {
+            case PreviewResponsePayload.STATUS_OK -> "OK";
+            case PreviewResponsePayload.STATUS_EMPTY -> "EMPTY(确实没有快照)";
+            case PreviewResponsePayload.STATUS_NOT_LOADED -> "NOT_LOADED(稍后重试)";
+            case PreviewResponsePayload.STATUS_TOO_BIG -> "TOO_BIG(超过单包上限)";
+            case PreviewResponsePayload.STATUS_RATE_LIMITED -> "RATE_LIMITED(稍后重试)";
+            case PreviewResponsePayload.STATUS_TOO_FAR -> "TOO_FAR(距离超限)";
+            default -> "status=" + status;
+        };
     }
 
     /** 维度/世界变化就整体清空（客户端 BE 换了，缓存里的坐标也不再有意义）。 */
