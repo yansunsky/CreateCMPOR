@@ -53,8 +53,8 @@ public final class FactoryPreviewRenderer {
     /** 展示区边长（像素）。方块内部空腔约 14px，这里留出 1px 余量。 */
     private static final float BOX_PX = 12.0F;
 
-    /** 展示区距方块底面的高度（像素）。P3 加底座后这里要跟着抬高。 */
-    private static final float BOTTOM_PX = 1.0F;
+    /** 展示区距方块底面的高度（像素）= 展示模型底座高度（y 0..3）。 */
+    private static final float BOTTOM_PX = 3.0F;
 
     /** 超过该距离（格）不渲染也不烘焙。 */
     private static final double MAX_DISTANCE = 64.0;

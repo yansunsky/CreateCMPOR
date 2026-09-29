@@ -54,14 +54,15 @@ public class FactoryVisual extends KineticBlockEntityVisual<FactoryBlockEntity> 
     }
 
     /**
-     * 该面是否显示传动杆。
+     * 该面是否显示传动杆（Flywheel 实例）。
      *
-     * <p>展示模式（{@code encased=false}，0.4.0）只有底面接应力，所以只显示底面那一段；
-     * 传统模式仍按六个 {@code shaft_*} 属性逐面开关。
+     * <p>展示模式（{@code encased=false}，0.4.0）的底面短轴由 vanilla BER 路径缩放渲染
+     * （{@code FactoryRenderer}，把 8px 半轴压进 3px 底座），所以这里六个面**全部不显示**，
+     * 免得 Flywheel 再画一根 8px 的长轴戳进展示区。
      */
     private static boolean shouldShowShaft(BlockState state, Direction d) {
         if (!state.getValue(FactoryBlock.ENCASED)) {
-            return d == Direction.DOWN;
+            return false;
         }
         return state.getValue(FactoryBlock.SHAFT_BY_FACE.get(d));
     }
