@@ -58,6 +58,19 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
 
     public static final Map<Direction, BooleanProperty> SHAFT_BY_FACE = new EnumMap<>(Direction.class);
 
+    /**
+     * 是否处于「传统包壳模式」（0.4.0 展示模式的对立面）。
+     *
+     * <p><b>属性默认值必须是 {@code true}</b>：旧存档的 blockstate palette 里没有这个属性，
+     * 原版解码器（{@code StateDefinition}/{@code StateHolder}）对缺失属性取"属性默认值"，
+     * 于是老工厂自动落回传统六面开口模式，玩家既有应力布局不受影响；
+     * 新放置的工厂由 {@link #getStateForPlacement} 显式返回 {@code false}（展示模式）。
+     *
+     * <p>{@code false} = 展示模式：方块内部渲染微缩产线、<b>只有底面</b>能接应力（轴恒竖直）。
+     * {@code true} = 传统模式：六个 {@code shaft_*} 属性生效，扳手可逐面开关。
+     */
+    public static final BooleanProperty ENCASED = BooleanProperty.create("encased");
+
     static {
         SHAFT_BY_FACE.put(Direction.NORTH, SHAFT_NORTH);
         SHAFT_BY_FACE.put(Direction.SOUTH, SHAFT_SOUTH);
@@ -70,6 +83,9 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
     public FactoryBlock(Properties properties) {
         super(properties);
         registerDefaultState(defaultBlockState()
+                // 注意：这里是"方块默认状态"，不等于"新放置状态"——新放置走 getStateForPlacement(=false)。
+                // 默认状态设为 true 是为了让旧存档缺属性时解析成传统模式（见 ENCASED 注释）。
+                .setValue(ENCASED, true)
                 .setValue(SHAFT_NORTH, false)
                 .setValue(SHAFT_SOUTH, false)
                 .setValue(SHAFT_EAST, false)
@@ -80,7 +96,7 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
 
     @Override
     protected void createBlockStateDefinition(StateDefinition.Builder<Block, BlockState> builder) {
-        builder.add(SHAFT_NORTH, SHAFT_SOUTH, SHAFT_EAST, SHAFT_WEST, SHAFT_UP, SHAFT_DOWN);
+        builder.add(ENCASED, SHAFT_NORTH, SHAFT_SOUTH, SHAFT_EAST, SHAFT_WEST, SHAFT_UP, SHAFT_DOWN);
     }
 
     /** 扳手：点击任意面 → toggle 该面接口轴；开启非当前轴向的面时自动关闭其他轴向开口（共轴约束）。 */
@@ -92,6 +108,10 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
         }
         Direction face = context.getClickedFace();
         BlockPos pos = context.getClickedPos();
+        if (!state.getValue(ENCASED)) {
+            // 展示模式：接口面固定在底面，扳手不开面——要传统六面开口请先用安山机壳包壳
+            return InteractionResult.SUCCESS;
+        }
         boolean open = state.getValue(SHAFT_BY_FACE.get(face));
         BlockState newState = toggleFace(state, face, !open);
         KineticBlockEntity.switchToBlockState(level, pos, newState);
@@ -129,6 +149,13 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
         BlockPos pos = context.getClickedPos();
         Player player = context.getPlayer();
         if (!(level instanceof ServerLevel serverLevel)) {
+            return InteractionResult.SUCCESS;
+        }
+        if (state.getValue(ENCASED)) {
+            // 两段式（用户 2026-09-29 拍板）：有壳时潜行扳手 = 去壳，回到展示模式；
+            // 无壳时才走下面的"拆下工厂并携带完整 NBT"。与 Create 的"潜行扳手去壳"惯例一致。
+            KineticBlockEntity.switchToBlockState(level, pos, state.setValue(ENCASED, false));
+            IWrenchable.playRotateSound(level, pos);
             return InteractionResult.SUCCESS;
         }
         BlockEvent.BreakEvent breakEvent = new BlockEvent.BreakEvent(level, pos, state, player);
@@ -187,10 +214,15 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
                 .removeFactoryPosition(room, net.minecraft.core.GlobalPos.of(level.dimension(), pos));
     }
 
-    /** 接口轴状态变化会改变动力学等价性（网络需重建）。 */
+    /** 接口轴/包壳状态变化都会改变动力学等价性（网络需重建）。 */
     @Override
     protected boolean areStatesKineticallyEquivalent(BlockState oldState, BlockState newState) {
         if (newState.getBlock() instanceof FactoryBlock && oldState.getBlock() instanceof FactoryBlock) {
+            if (newState.getValue(ENCASED) != oldState.getValue(ENCASED)) {
+                // 包壳状态会改变 getRotationAxis（展示模式恒 Y、传统模式取开口面轴）→ 必须报"不等价"。
+                // 返回 true 会让 KineticBlock#updateIndirectNeighbourShapes 的重挂钩子失效 → 网络不重建、轴不转。
+                return false;
+            }
             for (BooleanProperty property : SHAFT_BY_FACE.values()) {
                 if (newState.getValue(property) != oldState.getValue(property)) {
                     return false;
@@ -203,8 +235,9 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
     @Nullable
     @Override
     public BlockState getStateForPlacement(BlockPlaceContext context) {
-        // 六面开口：放置方向不再决定接口面，默认全闭。
-        return defaultBlockState();
+        // 新放置 = 展示模式（encased=false）：方块内渲染微缩产线、只有底面接应力。
+        // 老存档缺 encased 属性时取"属性默认值 true"，落回传统模式——见 ENCASED 注释。
+        return defaultBlockState().setValue(ENCASED, false);
     }
 
     @Nullable
@@ -227,14 +260,21 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
         };
     }
 
-    /** 开口面可接传动轴（应力接口）。 */
+    /** 开口面可接传动轴（应力接口）；展示模式下固定只有底面。 */
     @Override
     public boolean hasShaftTowards(LevelReader world, BlockPos pos, BlockState state, Direction face) {
+        if (!state.getValue(ENCASED)) {
+            // 展示模式：只有底面接应力（轴恒竖直）——底座在方块底部，传动杆只在底座里渲染
+            return face == Direction.DOWN;
+        }
         return state.getValue(SHAFT_BY_FACE.get(face));
     }
 
     @Override
     public Direction.Axis getRotationAxis(BlockState state) {
+        if (!state.getValue(ENCASED)) {
+            return Direction.Axis.Y;
+        }
         for (Map.Entry<Direction, BooleanProperty> entry : SHAFT_BY_FACE.entrySet()) {
             if (state.getValue(entry.getValue())) {
                 return entry.getKey().getAxis();
@@ -247,6 +287,19 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
     @Override
     protected ItemInteractionResult useItemOn(ItemStack stack, BlockState state, Level level, BlockPos pos,
                                               Player player, InteractionHand hand, BlockHitResult hitResult) {
+        if (isAndesiteCasing(stack) && !state.getValue(ENCASED)) {
+            // 包壳（0.4.0）：复用 Create「手持机壳右键包壳」的语义——**不消耗机壳物品**（Create 的
+            // EncasableBlock#tryEncase 全路径没有 shrink，机壳相当于"皮肤"）。
+            // 这里刻意用「单方块 + encased 属性」而不是 Create 的 EncasingRegistry：后者两个方块必须用
+            // 两个 BlockEntityType，原版 LevelChunk 会因 validBlocks 不匹配而销毁旧 BE，
+            // 我们的 FactoryBlockEntity 里装着房间码/还原数据/评估状态，绝不能被丢弃。
+            if (level.isClientSide) {
+                return ItemInteractionResult.SUCCESS;
+            }
+            KineticBlockEntity.switchToBlockState(level, pos, state.setValue(ENCASED, true));
+            playEncaseSound(level, pos);
+            return ItemInteractionResult.SUCCESS;
+        }
         if (level.isClientSide) {
             return stack.is(ModItems.LAUNCHER_STICK.get())
                     ? ItemInteractionResult.SUCCESS
@@ -286,6 +339,19 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
                     Component.translatable("message.createcmpor.factory.revert_failed"), true);
         }
         return ItemInteractionResult.SUCCESS;
+    }
+
+    /** 手持物是否为 Create 的安山机壳（按注册名判断，避免依赖 Create 的静态条目在附属环境下的可见性）。 */
+    private static boolean isAndesiteCasing(ItemStack stack) {
+        return net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem())
+                .equals(net.minecraft.resources.ResourceLocation.fromNamespaceAndPath("create", "andesite_casing"));
+    }
+
+    /** 包壳音效：照抄 Create {@code EncasableBlock#playEncaseSound} 的公式（新方块 place 音、(vol+1)/2、pitch×0.8）。 */
+    private static void playEncaseSound(Level level, BlockPos pos) {
+        net.minecraft.world.level.block.SoundType soundType = level.getBlockState(pos).getSoundType();
+        level.playSound(null, pos, soundType.getPlaceSound(), net.minecraft.sounds.SoundSource.BLOCKS,
+                (soundType.getVolume() + 1.0F) / 2.0F, soundType.getPitch() * 0.8F);
     }
 
     /**

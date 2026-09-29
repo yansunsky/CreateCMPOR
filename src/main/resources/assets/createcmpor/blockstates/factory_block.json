@@ -1,55 +1,138 @@
 {
   "multipart": [
     {
-      "apply": { "model": "createcmpor:block/factory_casing" }
+      "when": {
+        "encased": "false"
+      },
+      "apply": {
+        "model": "createcmpor:block/factory_display"
+      }
     },
     {
-      "when": { "shaft_north": "true" },
-      "apply": { "model": "createcmpor:block/factory_panel" }
+      "apply": {
+        "model": "createcmpor:block/factory_casing"
+      },
+      "when": {
+        "encased": "true"
+      }
     },
     {
-      "when": { "shaft_south": "true" },
-      "apply": { "model": "createcmpor:block/factory_panel", "y": 180 }
+      "when": {
+        "encased": "true",
+        "shaft_north": "true"
+      },
+      "apply": {
+        "model": "createcmpor:block/factory_panel"
+      }
     },
     {
-      "when": { "shaft_east": "true" },
-      "apply": { "model": "createcmpor:block/factory_panel", "y": 90 }
+      "when": {
+        "encased": "true",
+        "shaft_south": "true"
+      },
+      "apply": {
+        "model": "createcmpor:block/factory_panel",
+        "y": 180
+      }
     },
     {
-      "when": { "shaft_west": "true" },
-      "apply": { "model": "createcmpor:block/factory_panel", "y": 270 }
+      "when": {
+        "encased": "true",
+        "shaft_east": "true"
+      },
+      "apply": {
+        "model": "createcmpor:block/factory_panel",
+        "y": 90
+      }
     },
     {
-      "when": { "shaft_up": "true" },
-      "apply": { "model": "createcmpor:block/factory_panel", "x": 270 }
+      "when": {
+        "encased": "true",
+        "shaft_west": "true"
+      },
+      "apply": {
+        "model": "createcmpor:block/factory_panel",
+        "y": 270
+      }
     },
     {
-      "when": { "shaft_down": "true" },
-      "apply": { "model": "createcmpor:block/factory_panel", "x": 90 }
+      "when": {
+        "encased": "true",
+        "shaft_up": "true"
+      },
+      "apply": {
+        "model": "createcmpor:block/factory_panel",
+        "x": 270
+      }
     },
     {
-      "when": { "shaft_north": "false" },
-      "apply": { "model": "createcmpor:block/factory_fill" }
+      "when": {
+        "encased": "true",
+        "shaft_down": "true"
+      },
+      "apply": {
+        "model": "createcmpor:block/factory_panel",
+        "x": 90
+      }
     },
     {
-      "when": { "shaft_south": "false" },
-      "apply": { "model": "createcmpor:block/factory_fill", "y": 180 }
+      "when": {
+        "encased": "true",
+        "shaft_north": "false"
+      },
+      "apply": {
+        "model": "createcmpor:block/factory_fill"
+      }
     },
     {
-      "when": { "shaft_east": "false" },
-      "apply": { "model": "createcmpor:block/factory_fill", "y": 90 }
+      "when": {
+        "encased": "true",
+        "shaft_south": "false"
+      },
+      "apply": {
+        "model": "createcmpor:block/factory_fill",
+        "y": 180
+      }
     },
     {
-      "when": { "shaft_west": "false" },
-      "apply": { "model": "createcmpor:block/factory_fill", "y": 270 }
+      "when": {
+        "encased": "true",
+        "shaft_east": "false"
+      },
+      "apply": {
+        "model": "createcmpor:block/factory_fill",
+        "y": 90
+      }
     },
     {
-      "when": { "shaft_up": "false" },
-      "apply": { "model": "createcmpor:block/factory_fill", "x": 270 }
+      "when": {
+        "encased": "true",
+        "shaft_west": "false"
+      },
+      "apply": {
+        "model": "createcmpor:block/factory_fill",
+        "y": 270
+      }
     },
     {
-      "when": { "shaft_down": "false" },
-      "apply": { "model": "createcmpor:block/factory_fill", "x": 90 }
+      "when": {
+        "encased": "true",
+        "shaft_up": "false"
+      },
+      "apply": {
+        "model": "createcmpor:block/factory_fill",
+        "x": 270
+      }
+    },
+    {
+      "when": {
+        "encased": "true",
+        "shaft_down": "false"
+      },
+      "apply": {
+        "model": "createcmpor:block/factory_fill",
+        "x": 90
+      }
     }
   ]
 }

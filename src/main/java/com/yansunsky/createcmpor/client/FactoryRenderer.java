@@ -30,6 +30,9 @@ public class FactoryRenderer extends KineticBlockEntityRenderer<FactoryBlockEnti
     @Override
     protected void renderSafe(FactoryBlockEntity be, float partialTicks, PoseStack ms,
                               MultiBufferSource buffer, int light, int overlay) {
+        // 微缩预览（0.4.0）：必须放在 Flywheel 早退之前——工厂注册视觉用的是 skipVanillaRender(false)，
+        // 所以 Flywheel 开启时本方法仍每帧被调用；放在早退之后会导致"开 Flywheel 的玩家看不到预览"。
+        FactoryPreviewRenderer.render(be, ms, buffer, light);
         super.renderSafe(be, partialTicks, ms, buffer, light, overlay);
         if (VisualizationManager.supportsVisualization(be.getLevel())) {
             return;
