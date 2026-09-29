@@ -208,6 +208,15 @@ public final class FactoryPreviewRenderer {
                                     continue;
                                 }
                                 ModelData modelData = model.getModelData(world, pos, state, world.getModelData(pos));
+                                if (model instanceof com.simibubi.create.foundation.block.connected.CTModel) {
+                                    // 连通纹理（CTM）在微缩烘焙里会把方块渲染成纯黑（实机证据：create:item_vault ×81 全黑）。
+                                    // 依据：CTModel.getQuads 只在"有 CT 数据"时才用 spriteShift 重写 UV，而实机看到的是
+                                    // **不透明的黑块**（位置正确、能被遮挡），说明四边形画出来了、只是 UV 落到了图集黑色区域。
+                                    // 源码明写：没有 CT 数据 → `return quads`（原始四边形）。所以这里喂空 ModelData，
+                                    // 让 CTM 方块回到普通贴图。微缩尺度只有 1~2px/格，连不连通本来也看不出来。
+                                    // 注意：只对 CTModel 生效，不影响依赖 BE 模型数据的 CopycatModel / FluidTankModel 等。
+                                    modelData = ModelData.EMPTY;
+                                }
                                 long seed = state.getSeed(pos);
                                 random.setSeed(seed);
                                 if (!model.getRenderTypes(state, random, modelData).contains(layer)) {
