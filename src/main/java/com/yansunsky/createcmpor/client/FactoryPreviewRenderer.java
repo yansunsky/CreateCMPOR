@@ -7,6 +7,7 @@ import com.yansunsky.createcmpor.client.preview.FactoryPreviewBaker;
 import com.yansunsky.createcmpor.client.preview.PreviewBakeCache;
 import com.yansunsky.createcmpor.client.preview.PreviewBaked;
 import com.yansunsky.createcmpor.client.preview.PreviewRender;
+import com.yansunsky.createcmpor.client.preview.ClientPreviewSync;
 import com.yansunsky.createcmpor.preview.PreviewSnapshot;
 import net.createmod.catnip.animation.AnimationTickHolder;
 import net.minecraft.client.Minecraft;
@@ -64,6 +65,9 @@ public final class FactoryPreviewRenderer {
         }
         PreviewSnapshot snapshot = be.getPreviewSnapshot();
         if (snapshot == null || snapshot.nonAirCount() == 0) {
+            // 按需同步（0.4.21）：本地没有快照时，问服务端要一份（命中本地缓存则零请求直接装上）。
+            // 放在这里的原因：视锥剔除/渲染距离/区块加载状态由引擎免费提供——背对工厂时根本不会调到这里。
+            ClientPreviewSync.maybeRequest(be);
             return;
         }
         Level level = be.getLevel();
