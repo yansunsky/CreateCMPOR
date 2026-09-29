@@ -7,6 +7,7 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.StringTag;
 import net.minecraft.nbt.Tag;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 
@@ -45,9 +46,10 @@ public final class PreviewSnapshot {
 
     /**
      * 当前格式版本。字段语义变更时递增。v2 = 调色板紧凑字符串 + 连通组表；
-     * v3 = 在 v2 之上追加稀疏转速表（{@code speeds} + {@code animSeconds}）。
+     * v3 = 在 v2 之上追加稀疏转速表（{@code speeds} + {@code animSeconds}）；
+     * v4 = 在 v3 之上追加实体表（{@code entities}，纯增量：没有该键 = 没有实体）。
      */
-    public static final int FORMAT_VERSION = 3;
+    public static final int FORMAT_VERSION = 4;
 
     /** 可加载的最低版本：v2 视为"全静态"（无转速表），再早的版本结构不同，直接丢弃。 */
     public static final int MIN_SUPPORTED_VERSION = 2;
@@ -78,6 +80,26 @@ public final class PreviewSnapshot {
     /** 全表最大 |转速|（构造时算一次；0 表示没有可动格）。 */
     private final float maxAbsSpeed;
 
+    /** v4 实体表：非空气包围盒内、除玩家与装置以外的实体（可能为空，永不为 null）。 */
+    private final List<EntityRecord> entities;
+
+    /**
+     * 一条待重建的实体（v4）。
+     *
+     * <p><b>坐标是"快照局部格坐标"</b>（相对取景包围盒最小角，已按降采样步长折算），
+     * 与 {@code cells} 同一坐标系——客户端直接用它在同一缩放变换下摆位，不需要世界坐标。
+     *
+     * @param type  实体类型注册名（如 {@code minecraft:cow}）
+     * @param data  <b>裁剪后的存档 NBT</b>（外观必需标签：展示框的 Item/Facing、羊的 Color、村民 VillagerData…）。
+     *              刻意不含 {@code Motion}/{@code UUID}/{@code Attributes}/{@code Brain}/背包等渲染无关的大块数据；
+     *              客户端用 {@code EntityType.byString(type) + create(world) + load(data)} 重建。
+     */
+    public record EntityRecord(String type, float x, float y, float z, float yaw, float pitch, CompoundTag data) {
+        public EntityRecord {
+            data = data == null ? new CompoundTag() : data.copy();
+        }
+    }
+
     public PreviewSnapshot(int width, int height, int depth, List<BlockState> palette, byte[] cells) {
         this(width, height, depth, palette, cells, null, null, null, 0.0F);
     }
@@ -93,6 +115,15 @@ public final class PreviewSnapshot {
      */
     public PreviewSnapshot(int width, int height, int depth, List<BlockState> palette, byte[] cells, byte[] groups,
                            int[] speedIndices, float[] speedValues, float animationSeconds) {
+        this(width, height, depth, palette, cells, groups, speedIndices, speedValues, animationSeconds, null);
+    }
+
+    /**
+     * @param entities v4 实体表；{@code null} 等价于空表（v2/v3 快照就是这一支）
+     */
+    public PreviewSnapshot(int width, int height, int depth, List<BlockState> palette, byte[] cells, byte[] groups,
+                           int[] speedIndices, float[] speedValues, float animationSeconds,
+                           List<EntityRecord> entities) {
         if (width <= 0 || height <= 0 || depth <= 0) {
             throw new IllegalArgumentException("预览网格尺寸非法：" + width + "x" + height + "x" + depth);
         }
@@ -136,6 +167,7 @@ public final class PreviewSnapshot {
             }
         }
         this.maxAbsSpeed = max;
+        this.entities = entities == null ? List.of() : List.copyOf(entities);
     }
 
     public int width() {
@@ -272,6 +304,15 @@ public final class PreviewSnapshot {
         return save().sizeInBytes();
     }
 
+    /** v4 实体表（永不为 null）。 */
+    public List<EntityRecord> entities() {
+        return entities;
+    }
+
+    public int entityCount() {
+        return entities.size();
+    }
+
     public CompoundTag save() {
         CompoundTag tag = new CompoundTag();
         tag.putInt("version", FORMAT_VERSION);
@@ -291,7 +332,62 @@ public final class PreviewSnapshot {
             tag.putByteArray("speeds", encodeSpeeds(speedIndices, speedValues));
             tag.putFloat("animSeconds", animationSeconds);
         }
+        if (!entities.isEmpty()) {
+            tag.put("entities", saveEntities(entities));
+        }
         return tag;
+    }
+
+    /**
+     * 实体表编码：每条一个复合标签。
+     *
+     * <p>刻意用 {@code ListTag<CompoundTag>} 而不是自定义紧凑字节流：实体表最多几十条、
+     * 每条自带裁剪 NBT，包装开销（~20 B/条）相对数据本身可忽略，而换来的是
+     * "逐条独立容错 + 可用 {@code /data get} 直接看"的可排查性。
+     */
+    private static ListTag saveEntities(List<EntityRecord> entities) {
+        ListTag list = new ListTag();
+        for (EntityRecord record : entities) {
+            CompoundTag entry = new CompoundTag();
+            entry.putString("id", record.type());
+            entry.putFloat("x", record.x());
+            entry.putFloat("y", record.y());
+            entry.putFloat("z", record.z());
+            entry.putFloat("yaw", record.yaw());
+            entry.putFloat("pitch", record.pitch());
+            if (!record.data().isEmpty()) {
+                entry.put("data", record.data());
+            }
+            list.add(entry);
+        }
+        return list;
+    }
+
+    /**
+     * 实体表解码：<b>逐条独立容错</b>——某一条非法只丢这一条，绝不影响方块网格与其余实体
+     * （与转速表"坏了只丢转速"同一口径）。
+     */
+    private static List<EntityRecord> loadEntities(CompoundTag tag) {
+        ListTag list = tag.getList("entities", Tag.TAG_COMPOUND);
+        if (list.isEmpty()) {
+            return List.of();
+        }
+        List<EntityRecord> records = new ArrayList<>(list.size());
+        for (int i = 0; i < list.size(); i++) {
+            try {
+                CompoundTag entry = list.getCompound(i);
+                String id = entry.getString("id");
+                if (id.isBlank() || ResourceLocation.tryParse(id) == null) {
+                    continue;
+                }
+                records.add(new EntityRecord(id, entry.getFloat("x"), entry.getFloat("y"), entry.getFloat("z"),
+                        entry.getFloat("yaw"), entry.getFloat("pitch"),
+                        entry.contains("data", Tag.TAG_COMPOUND) ? entry.getCompound("data") : new CompoundTag()));
+            } catch (RuntimeException error) {
+                // 单条损坏只丢单条
+            }
+        }
+        return records;
     }
 
     /**
@@ -359,7 +455,9 @@ public final class PreviewSnapshot {
         }
         try {
             return new PreviewSnapshot(width, height, depth, palette, cells, groups,
-                    speedIndices, speedValues, animationSeconds);
+                    speedIndices, speedValues, animationSeconds,
+                    // v4 实体段：v2/v3 快照没有这个键 → 空表（"没有实体"是合法状态，不是损坏）
+                    version >= 4 ? loadEntities(tag) : List.of());
         } catch (IllegalArgumentException error) {
             return null;
         }

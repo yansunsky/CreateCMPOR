@@ -27,6 +27,9 @@ import java.util.Map;
  *         渲染侧用它取网格尺寸算 1/N 缩放；</li>
  *     <li>{@code dynamicCells}：每帧"窄 pass"的绘制计划（转速、旋转轴、相位，已按动画周期整表缩放）。
  *         为空 = 纯静态（v2 旧档、没采到转速、或动画被服务器关成 0 秒）。</li>
+ *     <li>{@code entityScene}（v4）：已重建的实体（生物/掉落物/展示框…），烘焙期一次性造好、
+ *         渲染期逐只交给 {@code EntityRenderDispatcher}。空场景用 {@link PreviewEntityScene#EMPTY}
+ *         （v2/v3 旧档、房间内没有实体、或实体全部重建失败），<b>永不为 null</b>。</li>
  * </ul>
  *
  * <p><b>刻意不含 light 字段</b>：光照不再烘进顶点，而是在渲染期由
@@ -34,7 +37,7 @@ import java.util.Map;
  * 因此光照变化不再触发整块重烘。
  */
 public record PreviewBaked(PreviewSnapshot snapshot, long contentHash, Map<RenderType, SuperByteBuffer> layers,
-                           List<PreviewDynamicCell> dynamicCells) {
+                           List<PreviewDynamicCell> dynamicCells, PreviewEntityScene entityScene) {
 
     /** FNV-1a 64 位哈希（自己实现，避免依赖任何可能随版本变化的哈希工具）。 */
     private static final long FNV_OFFSET_BASIS = 0xcbf29ce484222325L;
@@ -43,11 +46,17 @@ public record PreviewBaked(PreviewSnapshot snapshot, long contentHash, Map<Rende
     public PreviewBaked {
         layers = Collections.unmodifiableMap(new LinkedHashMap<>(layers));
         dynamicCells = List.copyOf(dynamicCells);
+        entityScene = entityScene == null ? PreviewEntityScene.EMPTY : entityScene;
     }
 
     /** 是否有可动的格（无则渲染侧整段跳过，零额外开销）。 */
     public boolean hasDynamicCells() {
         return !dynamicCells.isEmpty();
+    }
+
+    /** 是否有实体要画。 */
+    public boolean hasEntities() {
+        return !entityScene.isEmpty();
     }
 
     /**
@@ -83,6 +92,19 @@ public record PreviewBaked(PreviewSnapshot snapshot, long contentHash, Map<Rende
         for (int i = 0; i < snapshot.movingCount(); i++) {
             hash = mix(hash, snapshot.movingIndexAt(i));
             hash = mix(hash, Float.floatToIntBits(snapshot.movingSpeedAt(i)));
+        }
+        // v4 实体表也进指纹：否则"同布局但换了生物"的两份快照会命中同一条物品侧 LRU 记录。
+        // 用 NBT 的 hashCode（内容哈希）+ 类型名 + 三个坐标/两个朝向的位模式——会话内稳定即可。
+        for (PreviewSnapshot.EntityRecord entity : snapshot.entities()) {
+            for (int i = 0; i < entity.type().length(); i++) {
+                hash = mix(hash, entity.type().charAt(i));
+            }
+            hash = mix(hash, Float.floatToIntBits(entity.x()));
+            hash = mix(hash, Float.floatToIntBits(entity.y()));
+            hash = mix(hash, Float.floatToIntBits(entity.z()));
+            hash = mix(hash, Float.floatToIntBits(entity.yaw()));
+            hash = mix(hash, Float.floatToIntBits(entity.pitch()));
+            hash = mix(hash, entity.data().hashCode());
         }
         return hash;
     }

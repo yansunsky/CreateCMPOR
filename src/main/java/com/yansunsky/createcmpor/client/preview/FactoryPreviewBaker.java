@@ -190,8 +190,18 @@ public final class FactoryPreviewBaker {
                         dynamicCells.size(), snapshot.animationSeconds(),
                         String.format("%.4f", speedScale(snapshot)), PreviewDynamicParts.whitelistSummary());
             }
-            return layers.isEmpty() && dynamicCells.isEmpty() ? null
-                    : new PreviewBaked(snapshot, PreviewBaked.contentHash(snapshot), layers, dynamicCells);
+            // v4：在同一个微缩虚拟世界里重建实体。重建在烘焙期做一次（渲染期零分配、零解析），
+            // 失败按类型锁存、绝不冒泡——实体是纯装饰，丢几只不影响方块内容。
+            PreviewEntityScene entityScene = PreviewEntityScene.EMPTY;
+            if (!snapshot.entities().isEmpty()) {
+                entityScene = PreviewEntityScene.build(world, snapshot.entities());
+                CreateCMPOR.LOGGER.info("[预览] 实体重建：{}/{} 只（失败类型 {} 个，锁存后不再重试）",
+                        entityScene.size(), snapshot.entityCount(),
+                        PreviewEntityScene.failedTypeCount());
+            }
+            return layers.isEmpty() && dynamicCells.isEmpty() && entityScene.isEmpty() ? null
+                    : new PreviewBaked(snapshot, PreviewBaked.contentHash(snapshot), layers, dynamicCells,
+                            entityScene);
         } catch (Throwable error) {
             CreateCMPOR.LOGGER.warn("[预览] 烘焙失败，本次不渲染该工厂的微缩内容", error);
             return null;

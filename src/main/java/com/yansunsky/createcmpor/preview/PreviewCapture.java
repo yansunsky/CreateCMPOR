@@ -2,13 +2,19 @@ package com.yansunsky.createcmpor.preview;
 
 import com.yansunsky.createcmpor.Config;
 import com.yansunsky.createcmpor.CreateCMPOR;
+import com.simibubi.create.content.contraptions.AbstractContraptionEntity;
 import net.minecraft.core.BlockPos;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -205,17 +211,23 @@ public final class PreviewCapture {
 
         int[] finalIndices = speedCount == 0 ? null : Arrays.copyOf(speedIndices, speedCount);
         float[] finalValues = speedCount == 0 ? null : Arrays.copyOf(speedValues, speedCount);
+        // v4：实体表。取景原点 = 房间最小角 + 包围盒最小角（与 cells 同一坐标系），
+        // 采到实体的坐标再按降采样步长折算——于是客户端在同一缩放变换下摆位即可。
+        BlockPos focusOrigin = roomMin.offset(minX, minY, minZ);
+        List<PreviewSnapshot.EntityRecord> entities =
+                collectEntities(level, innerBounds, focusOrigin, step, width, height, depth);
         PreviewSnapshot result = new PreviewSnapshot(width, height, depth, palette, cells, groups,
-                finalIndices, finalValues, speedCount == 0 ? 0.0F : animationSeconds);
+                finalIndices, finalValues, speedCount == 0 ? 0.0F : animationSeconds, entities);
         if (result.nonAirCount() == 0) {
             CreateCMPOR.LOGGER.info("[预览] 房间内没有可用方块，跳过预览");
             return null;
         }
         CreateCMPOR.LOGGER.info(
-                "[预览] 采集完成：房间 {}x{}x{} → 取景 {}x{}x{}（步长 {}）→ 快照 {}x{}x{}，非空气 {} 格，调色板 {} 种，约 {} 字节",
+                "[预览] 采集完成：房间 {}x{}x{} → 取景 {}x{}x{}（步长 {}）→ 快照 {}x{}x{}，非空气 {} 格，"
+                        + "调色板 {} 种，实体 {} 只，约 {} 字节",
                 roomWidth, roomHeight, roomDepth, focusWidth, focusHeight, focusDepth, step,
                 result.width(), result.height(), result.depth(), result.nonAirCount(),
-                result.paletteSize(), result.encodedSize());
+                result.paletteSize(), result.entityCount(), result.encodedSize());
         if (!collectSpeed) {
             CreateCMPOR.LOGGER.info("[预览] 动画已关闭（preview.factoryPreviewAnimationSeconds = 0），预览为静态，快照不含速度表");
         } else if (result.movingCount() == 0) {
@@ -230,6 +242,173 @@ public final class PreviewCapture {
                     result.movingCount(), result.nonAirCount(), animationSeconds);
         }
         return result;
+    }
+
+    // ------------------------------------------------------------------
+    // v4：实体表
+    // ------------------------------------------------------------------
+
+    /**
+     * 单条实体裁剪后 NBT 的体积上限（字节）。超限<b>整只丢弃</b>——宁可少画一只，
+     * 也不让一条自带大背包/大数据的实体把工厂 BE 的 NBT 撑爆（快照是随 BE 同步的）。
+     */
+    private static final int MAX_ENTITY_NBT_BYTES = 3072;
+
+    /**
+     * 单条<b>装置</b>（contraption）裁剪后 NBT 的体积上限（字节）。
+     *
+     * <p>装置体积量级完全不同：它的方块结构就存在自己的 {@code Contraption} 复合里
+     * （Create {@code Contraption.writeNBT} → {@code Blocks{Palette,BlockList}}，
+     * 每方块约 27 字节起 + 每个调色板状态 40~60 字节）⇒ 小型装置 0.5~2 KB、大装置可到 8 KB 以上。
+     * 这里给 16 KB 上限，超过就整只丢弃（宁愿这次不画，也不让工厂 BE 的 NBT 被一条装置撑爆）。
+     */
+    private static final int MAX_CONTRAPTION_NBT_BYTES = 16384;
+
+    /**
+     * 裁剪时直接删掉的键：都是<b>渲染无关</b>的大块数据（AI 记忆、属性修饰符、背包、运动状态）。
+     * 外观必需标签（展示框的 {@code Item}/{@code Facing}、羊的 {@code Color}、
+     * 村民的 {@code VillagerData}、盔甲架的 {@code Pose}、猫/狼/狐狸变体…）一律保留——
+     * 逐类型的"外观必需标签"无法静态穷举（第三方实体），所以采用"黑名单删除 + 体积上限"，
+     * 后续若发现某类型画错，再按实测往这里加键。
+     */
+    private static final List<String> ENTITY_STRIP_KEYS = List.of(
+            "Motion", "UUID", "Attributes", "Brain", "Inventory", "EnderItems",
+            "BrainMemories", "LastDeathLocation", "warden_spawn", "fall_distance");
+
+    /**
+     * 采集实体表（v4）：枚举 {@code innerBounds} 内的实体，分两桶——普通实体与装置（contraption）。
+     *
+     * <p><b>玩家永远不采（源码确认）</b>：{@code AbstractClientPlayer} 的渲染依赖
+     * {@code PlayerInfo}/皮肤，客户端没有可用的构造路径（{@code EntityType.create} 造不出来），
+     * 房间里正常也不会站着玩家。
+     *
+     * <p><b>两桶的差异只有"体积上限 + 条数上限"</b>：装置的方块结构整个存在实体 NBT 里
+     * （{@code Contraption} 复合），所以它的上限必须远大于普通实体（16 KB vs 3 KB），
+     * 条数也要单独限制（一个房间挂 20 个轴承装置的话，快照会变成几十 KB）。
+     *
+     * <p><b>超限截断是确定性的</b>：按"到取景盒中心的距离"从近到远保留——
+     * 与实体遍历顺序无关，同一个房间每次采到的都是同一批（否则快照指纹会随机抖动、反复重烘）。
+     */
+    private static List<PreviewSnapshot.EntityRecord> collectEntities(ServerLevel level, AABB innerBounds,
+                                                                     BlockPos focusOrigin, int step,
+                                                                     int width, int height, int depth) {
+        int entityLimit = Config.PREVIEW_MAX_ENTITIES.get();
+        int contraptionLimit = Config.PREVIEW_MAX_CONTRAPTIONS.get();
+        if (entityLimit <= 0 && contraptionLimit <= 0) {
+            return List.of();
+        }
+        List<Entity> plain = new ArrayList<>();
+        List<Entity> contraptions = new ArrayList<>();
+        int skippedPlayers = 0;
+        try {
+            for (Entity entity : level.getEntitiesOfClass(Entity.class, innerBounds)) {
+                if (entity instanceof Player) {
+                    skippedPlayers++;
+                    continue;
+                }
+                if (entity instanceof AbstractContraptionEntity) {
+                    contraptions.add(entity);
+                    continue;
+                }
+                plain.add(entity);
+            }
+        } catch (Throwable error) {
+            // 实体采集失败只丢实体段：方块网格照常出预览（纯装饰，绝不影响固化）
+            CreateCMPOR.LOGGER.warn("[预览] 实体枚举失败，本次快照不含实体", error);
+            return List.of();
+        }
+
+        List<PreviewSnapshot.EntityRecord> records = new ArrayList<>();
+        if (contraptionLimit > 0 && !contraptions.isEmpty()) {
+            records.addAll(pickNearest(contraptions, contraptionLimit, MAX_CONTRAPTION_NBT_BYTES,
+                    focusOrigin, step, width, height, depth, "装置"));
+        }
+        if (entityLimit > 0 && !plain.isEmpty()) {
+            records.addAll(pickNearest(plain, entityLimit, MAX_ENTITY_NBT_BYTES,
+                    focusOrigin, step, width, height, depth, "实体"));
+        }
+        if (!records.isEmpty() || skippedPlayers > 0) {
+            CreateCMPOR.LOGGER.info(
+                    "[预览] 实体：采到 {} 条（房间内 普通 {} 只 / 装置 {} 个；跳过玩家 {} 只；上限 实体 {} / 装置 {}）",
+                    records.size(), plain.size(), contraptions.size(), skippedPlayers, entityLimit, contraptionLimit);
+        }
+        return records;
+    }
+
+    /**
+     * 一桶实体 → 记录列表：先转记录（取景盒外/读取失败的丢掉），再按"到取景盒中心的距离"
+     * 从近到远排序、截断到 {@code limit}。排序键只依赖数据本身，因此结果可复现。
+     */
+    private static List<PreviewSnapshot.EntityRecord> pickNearest(List<Entity> bucket, int limit, int maxBytes,
+                                                                 BlockPos focusOrigin, int step,
+                                                                 int width, int height, int depth, String label) {
+        List<PreviewSnapshot.EntityRecord> records = new ArrayList<>(bucket.size());
+        List<Double> distanceSqr = new ArrayList<>(bucket.size());
+        int outOfFocus = 0;
+        int tooLarge = 0;
+        for (Entity entity : bucket) {
+            PreviewSnapshot.EntityRecord record = toEntityRecord(entity, focusOrigin, step, width, height, depth);
+            if (record == null) {
+                outOfFocus++;
+                continue;
+            }
+            if (record.data().sizeInBytes() > maxBytes) {
+                tooLarge++;
+                continue;
+            }
+            double dx = record.x() - (width - 1) / 2.0;
+            double dy = record.y() - (height - 1) / 2.0;
+            double dz = record.z() - (depth - 1) / 2.0;
+            records.add(record);
+            distanceSqr.add(dx * dx + dy * dy + dz * dz);
+        }
+        int dropped = 0;
+        if (records.size() > limit) {
+            List<Integer> index = new ArrayList<>(records.size());
+            for (int i = 0; i < records.size(); i++) {
+                index.add(i);
+            }
+            index.sort(Comparator.comparingDouble(distanceSqr::get));
+            List<PreviewSnapshot.EntityRecord> kept = new ArrayList<>(limit);
+            for (int i = 0; i < limit; i++) {
+                kept.add(records.get(index.get(i)));
+            }
+            dropped = records.size() - limit;
+            records = kept;
+        }
+        if (dropped > 0 || tooLarge > 0 || outOfFocus > 0) {
+            CreateCMPOR.LOGGER.info("[预览] {}：保留 {} 条（超条数丢弃 {}、超体积丢弃 {}、取景盒外/读取失败 {}）",
+                    label, records.size(), dropped, tooLarge, outOfFocus);
+        }
+        return records;
+    }
+
+    /**
+     * 单只实体 → 快照记录；坐标落在取景盒外或读取失败都返回 {@code null}。
+     *
+     * <p>坐标用<b>快照局部格坐标</b>（相对取景包围盒最小角、再按降采样步长折算），
+     * 于是客户端在同一套 1/N 缩放变换下直接摆位即可。
+     */
+    private static PreviewSnapshot.EntityRecord toEntityRecord(Entity entity, BlockPos focusOrigin, int step,
+                                                              int width, int height, int depth) {
+        try {
+            float x = (float) ((entity.getX() - focusOrigin.getX()) / step);
+            float y = (float) ((entity.getY() - focusOrigin.getY()) / step);
+            float z = (float) ((entity.getZ() - focusOrigin.getZ()) / step);
+            if (x < 0.0F || y < 0.0F || z < 0.0F || x > width || y > height || z > depth) {
+                return null;
+            }
+            CompoundTag data = entity.saveWithoutId(new CompoundTag());
+            for (String key : ENTITY_STRIP_KEYS) {
+                data.remove(key);
+            }
+            return new PreviewSnapshot.EntityRecord(EntityType.getKey(entity.getType()).toString(),
+                    x, y, z, entity.getYRot(), entity.getXRot(), data);
+        } catch (Throwable error) {
+            // 单只实体失败不影响其余实体
+            CreateCMPOR.LOGGER.debug("[预览] 实体采集失败：{}", entity.getType(), error);
+            return null;
+        }
     }
 
     /**

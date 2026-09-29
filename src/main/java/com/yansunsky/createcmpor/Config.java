@@ -147,6 +147,30 @@ public class Config {
      */
     public static final ModConfigSpec.IntValue PREVIEW_ANIMATION_SECONDS;
 
+    /**
+     * 微缩预览里的实体条数上限（v4 实体表）。0 = 不采集实体。
+     * Maximum number of entities kept in a miniature preview snapshot (v4 entity table); 0 = capture none.
+     * <ul>
+     * <li>实体表是随工厂 BE 的 NBT 一起同步的，所以必须有上限：超限时按"到取景盒中心的距离"
+     *     <b>确定性截断</b>（保留最显眼的那些，且同一房间每次结果一致，避免快照指纹抖动导致反复重烘）；</li>
+     * <li>玩家与机械动力装置（contraption）不在采集范围内（前者客户端造不出来，后者需要单独重建）；</li>
+     * <li>单条实体"NBT 裁剪后 &gt; 3 KB"会被整只丢弃（防一条大数据实体撑爆 BE NBT）。</li>
+     * </ul>
+     */
+    public static final ModConfigSpec.IntValue PREVIEW_MAX_ENTITIES;
+
+    /**
+     * 微缩预览里的机械动力装置（contraption：轴承/活塞/龙门/矿车装置/列车车厢…）条数上限。
+     * Maximum number of Create contraptions kept in a miniature preview snapshot.
+     * <ul>
+     * <li>装置单独限流的原因：它的方块结构整个存在实体 NBT 里（{@code Contraption} 复合，
+     *     每方块 ≥27 字节 + 每个调色板状态 40~60 字节），一个房间挂 20 个装置会让快照膨胀到几十 KB；</li>
+     * <li>单条装置"NBT 裁剪后 &gt; 16 KB"会被整只丢弃；</li>
+     * <li>超限同样按"到取景盒中心的距离"确定性截断。</li>
+     * </ul>
+     */
+    public static final ModConfigSpec.IntValue PREVIEW_MAX_CONTRAPTIONS;
+
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
 
@@ -365,6 +389,33 @@ public class Config {
                         "默认 4 秒（约 4 秒转一圈的可视循环）；范围 0~30。",
                         "Default 4 seconds; range 0-30.")
                 .defineInRange("factoryPreviewAnimationSeconds", 4, 0, 30);
+        PREVIEW_MAX_ENTITIES = builder
+                .comment(
+                        "微缩预览里的实体条数上限（生物/掉落物/展示框…）。0 = 不采集实体（预览只有方块）。",
+                        "Maximum entities kept in the miniature preview (mobs / dropped items / item frames)."
+                                + " 0 = capture no entities (blocks only).",
+                        "实体随快照一起同步，故超限时按「到取景盒中心的距离」确定性截断；",
+                        "The entity table rides the same sync payload, so oversized rooms are truncated"
+                                + " deterministically by distance to the focus centre.",
+                        "玩家与机械动力装置（contraption）不在采集范围内。",
+                        "Players and Create contraptions are never captured.",
+                        "默认 48；范围 0~512。",
+                        "Default 48; range 0-512.")
+                .defineInRange("previewMaxEntities", 48, 0, 512);
+        PREVIEW_MAX_CONTRAPTIONS = builder
+                .comment(
+                        "微缩预览里的机械动力装置（轴承/活塞/龙门/矿车装置/列车车厢…）条数上限。0 = 不采集装置。",
+                        "Maximum Create contraptions (bearings / pistons / gantries / minecart & train contraptions)"
+                                + " kept in the miniature preview. 0 = capture none.",
+                        "装置的方块结构整个存在实体 NBT 里，单条体积远大于普通实体，故单独限流；",
+                        "A contraption carries its whole block structure in entity NBT, so it is rate-limited"
+                                + " separately from plain entities.",
+                        "超限按「到取景盒中心的距离」确定性截断；单条裁剪后 > 16 KB 的装置整只丢弃。",
+                        "Oversized rooms are truncated deterministically by distance; a single contraption whose"
+                                + " trimmed NBT exceeds 16 KB is dropped entirely.",
+                        "默认 8；范围 0~64。",
+                        "Default 8; range 0-64.")
+                .defineInRange("previewMaxContraptions", 8, 0, 64);
         builder.pop();
 
         SPEC = builder.build();
