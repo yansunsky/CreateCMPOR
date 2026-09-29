@@ -269,7 +269,20 @@ public final class PreviewCapture {
      * 上百方块的大装置可以到 30~60 KB。<b>{@code Contraption} 复合永不被裁剪</b>
      * （裁了就没得画），只裁它旁边的大键（挂载数据之类）。
      */
-    private static final int CONTRAPTION_BUDGET_BYTES = 65536;
+    private static final int CONTRAPTION_BUDGET_BYTES = 196608;
+
+    /**
+     * 逐键裁剪<b>只动</b>大于该体积的键（1 KB）。
+     *
+     * <p>血泪教训（0.4.15 修复）：裁剪原先是"从最大的键开始丢，丢到装得下为止"，
+     * 结果一个 116 KB 的装置把 {@code Axis}（38 B）、{@code ControllerRelative}（36 B）这类
+     * <b>结构性小键</b>也一起丢光了——省不下字节，却直接改语义：
+     * Create {@code ControlledContraptionEntity.applyLocalTransforms} 里
+     * {@code if (axis != null) { …rotateDegrees(angle, axis)… }} ⇒ <b>轴没了就不转</b>
+     * （用户实机现象："装置在，但没动画"）。现在的口径是：
+     * <b>小于 1 KB 的键一律保留</b>，裁剪只针对大块数据（模组挂的持久化/刷怪配置之类）。
+     */
+    private static final int TRIM_MIN_KEY_BYTES = 1024;
 
     /**
      * 裁剪后仍然超过该值（= 预算 × 4）才<b>整只丢弃</b>——防的是"某个键大到裁剪也救不回来"，
@@ -277,6 +290,9 @@ public final class PreviewCapture {
      */
     private static final int ENTITY_HARD_LIMIT_BYTES = ENTITY_BUDGET_BYTES * 4;
     private static final int CONTRAPTION_HARD_LIMIT_BYTES = CONTRAPTION_BUDGET_BYTES * 4;
+
+    /** 单条实体超过该体积就打一条 WARN（提醒快照会明显变大），但不丢弃。 */
+    private static final int BIG_ENTITY_WARN_BYTES = 49152;
 
     /**
      * 裁剪时直接删掉的键：都是<b>渲染无关</b>的大块数据（AI 记忆、属性修饰符、背包、运动状态）。
@@ -296,7 +312,10 @@ public final class PreviewCapture {
             "id", "Item", "Facing", "ItemRotation", "Color", "Variant", "VillagerData", "Pose",
             "ShowArms", "NoBasePlate", "Small", "Sheared", "CollarColor", "Type", "BodyId",
             "Size", "Tame", "ChestedHorse", "Saddle", "HandItems", "ArmorItems", "SaddleItem",
-            "DecorItem", "CatType", "FoxType", "Trusting", "Contraption", "Anchor", "Blocks");
+            "DecorItem", "CatType", "FoxType", "Trusting", "Contraption", "Anchor", "Blocks",
+            // 装置的结构性键：少一个就直接改变语义（Axis 没了 = 不转；Angle 没了 = 角度归零）
+            "Axis", "Angle", "PrevAngle", "ControllerRelative", "Pos", "Rotation", "Stalled",
+            "Initialized", "Passengers", "Seats", "Actors", "Superglue", "Interactors");
 
     /**
      * 采集实体表（v4）：枚举 {@code innerBounds} 内的实体，分两桶——普通实体与装置（contraption）。
@@ -408,6 +427,10 @@ public final class PreviewCapture {
                     }
                 }
             }
+            if (record.data().sizeInBytes() > BIG_ENTITY_WARN_BYTES && trimNotes.size() < 4) {
+                trimNotes.add(String.format("%s %d B（超过 %d B，快照会明显变大；未丢弃）", record.type(),
+                        record.data().sizeInBytes(), BIG_ENTITY_WARN_BYTES));
+            }
             if (record.data().sizeInBytes() > hardLimit) {
                 tooLarge++;
                 if (trimNotes.size() < 4) {
@@ -467,6 +490,10 @@ public final class PreviewCapture {
                 }
                 net.minecraft.nbt.Tag value = data.get(key);
                 int size = value == null ? 0 : value.sizeInBytes();
+                // 小于阈值的键一律不碰：结构性小键丢了会改语义，省下的字节却可忽略
+                if (size < TRIM_MIN_KEY_BYTES) {
+                    continue;
+                }
                 if (size > biggestSize) {
                     biggestSize = size;
                     biggest = key;
