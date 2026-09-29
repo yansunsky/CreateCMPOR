@@ -74,8 +74,10 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
     /**
      * 展示模式下是否已用 Create 的「边框玻璃」包壳（0.4.0）。
      *
-     * <p>默认 {@code false}（无边框，只有安山机壳底座）；手持 {@code create:framed_glass} 右键包壳后为 {@code true}，
-     * 外壳改用边框玻璃贴图。只在 {@code ENCASED=false}（展示模式）下有意义。
+     * <p>默认 {@code false} = 自带玻璃罩（模型 {@code factory_display}：3px 底座 + 四角立柱 + 顶部横梁 + 四面原版玻璃）；
+     * {@code true} = 手持 {@code create:framed_glass} 右键后<b>撤掉自带罩子</b>（模型 {@code factory_display_glass}：
+     * 只剩底座）——语义是"卸下自带外壳"，便于无遮挡观察（用户 0.4.0 定稿，见 commit 646c4fe）。
+     * 只在 {@code ENCASED=false}（展示模式）下有意义。
      *
      * <p>与 {@link #ENCASED} 拆成两个属性的理由：现有全部 {@code !ENCASED} 分支的语义恰好等于
      * "新式展示形态（含玻璃壳）"，拆开可以不动一行既有逻辑；旧存档缺该属性时取默认值 false，零迁移。
