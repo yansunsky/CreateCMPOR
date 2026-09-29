@@ -117,11 +117,29 @@ public final class EvalWorldCommands {
         final PreviewSnapshot snapshot = nearest.getPreviewSnapshot();
         final int encoded = snapshot.encodedSize();
         source.sendSuccess(() -> Component.literal(String.format(
-                "预览 @%s 距离 %.1f：网格 %d×%d×%d，非空气 %d 格，调色板 %d 种，编码 %d 字节（%.1f KB）",
+                "预览 @%s 距离 %.1f：网格 %d×%d×%d，非空气 %d 格，调色板 %d 种，实体 %d 只，编码 %d 字节（%.1f KB）",
                 foundPos, Math.sqrt(foundDistance), snapshot.width(), snapshot.height(), snapshot.depth(),
-                snapshot.nonAirCount(), snapshot.paletteSize(), encoded, encoded / 1024.0)), false);
+                snapshot.nonAirCount(), snapshot.paletteSize(), snapshot.entityCount(), encoded,
+                encoded / 1024.0)), false);
         for (String line : PreviewCapture.describePalette(snapshot, 8)) {
             source.sendSuccess(() -> Component.literal("  " + line), false);
+        }
+        // v4 实体表：类型分布 + 逐只坐标（实机核对"实体是否真的被采到、位置对不对"的最直接证据）
+        if (snapshot.entityCount() > 0) {
+            java.util.Map<String, Integer> byType = new java.util.LinkedHashMap<>();
+            for (PreviewSnapshot.EntityRecord record : snapshot.entities()) {
+                byType.merge(record.type(), 1, Integer::sum);
+            }
+            source.sendSuccess(() -> Component.literal("  实体分布：" + byType), false);
+            int shown = 0;
+            for (PreviewSnapshot.EntityRecord record : snapshot.entities()) {
+                if (shown++ >= 8) {
+                    break;
+                }
+                source.sendSuccess(() -> Component.literal(String.format("    %s @(%.2f, %.2f, %.2f) yaw %.0f 数据 %d 字节",
+                        record.type(), record.x(), record.y(), record.z(), record.yaw(),
+                        record.data().sizeInBytes())), false);
+            }
         }
         return 1;
     }

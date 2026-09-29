@@ -103,6 +103,12 @@ public final class PreviewRender {
             if (baked.hasDynamicCells()) {
                 renderDynamicCells(ms, buffers, packedLight, baked.dynamicCells());
             }
+            // v4 实体：与方块同一个姿态（1/N 缩放 + 居中 + 底部对齐），故坐标直接用快照局部格坐标。
+            // 逐只 try/catch(Throwable) 在 PreviewEntityScene 内部完成——dispatcher.render 会把
+            // 任何 Throwable 包成 ReportedException 抛给调用方，绝不能让它冒泡到 BER。
+            if (baked.hasEntities()) {
+                baked.entityScene().render(ms, buffers, packedLight);
+            }
         } catch (Throwable error) {
             // 绝不冒泡：宁可这一帧缺一小块，也不能崩客户端
             CreateCMPOR.LOGGER.debug("[预览] 渲染失败，本帧跳过该微缩内容", error);
