@@ -47,8 +47,14 @@ public class FactoryRenderer extends KineticBlockEntityRenderer<FactoryBlockEnti
      * <p>另：`RotatingInstance` 没有 scale 字段（只有位置与四元数），所以这条路径只能走 vanilla BER；
      * Flywheel 视觉在展示模式下不画轴（见 {@code FactoryVisual#shouldShowShaft}）。
      */
-    private static void renderDisplayStub(BlockState blockState, PoseStack ms, MultiBufferSource buffer) {
+    private static void renderDisplayStub(FactoryBlockEntity be, BlockState blockState, PoseStack ms,
+                                          MultiBufferSource buffer, int light) {
         SuperByteBuffer stub = CachedBuffers.partialFacing(AllPartialModels.SHAFT_HALF, blockState, Direction.DOWN);
+        // 施加真实转角：否则轴是静止的，会被误判成"没接上应力/不能传动"（用户 2026-09-29 反馈）。
+        // 转角在 buffer 内部绕方块中心旋转；随后的姿态栈 Y 压缩发生在旋转之后，而该轴关于 Y 轴对称、
+        // 且压缩把几何朝底面（y=0）收，故不会破坏位置对齐。
+        float angle = getAngleForBe(be, be.getBlockPos(), Direction.Axis.Y);
+        kineticRotationTransform(stub, be, Direction.Axis.Y, angle, light);
         ms.pushPose();
         ms.scale(1.0F, BASE_PX / 8.0F, 1.0F);
         stub.renderInto(ms, buffer.getBuffer(RenderType.solid()));
@@ -67,7 +73,7 @@ public class FactoryRenderer extends KineticBlockEntityRenderer<FactoryBlockEnti
         if (block instanceof FactoryBlock && !blockState.getValue(FactoryBlock.ENCASED)) {
             // 展示模式：底面短轴同样必须在 Flywheel 早退之前画——展示模式下 Flywheel 视觉不画任何轴，
             // 若把这段放到早退之后，开 Flywheel 的玩家会一根轴都看不到。
-            renderDisplayStub(blockState, ms, buffer);
+            renderDisplayStub(be, blockState, ms, buffer, light);
             return;
         }
 
