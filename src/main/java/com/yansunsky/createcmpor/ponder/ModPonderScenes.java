@@ -75,7 +75,11 @@ public final class ModPonderScenes {
                 .addStoryBoard("factory_block/machine2", FactoryScenes::evaluatorStart, AllPonderTags.SYSTEM)
                 .addStoryBoard("factory_block/machine4", FactoryScenes::solidified, AllPonderTags.SYSTEM)
                 .addStoryBoard("factory_block/machine5", FactoryScenes::running, AllPonderTags.SYSTEM)
-                .addStoryBoard("factory_block/machine6", FactoryScenes::reverted, AllPonderTags.SYSTEM);
+                .addStoryBoard("factory_block/machine6", FactoryScenes::reverted, AllPonderTags.SYSTEM)
+                // 包壳（0.4.26）：三节结构 baoke1/2/3 = 展示形态 / 安山机壳 / 边框玻璃
+                .addStoryBoard("factory_block/baoke1", FactoryScenes::casingApply, AllPonderTags.SYSTEM)
+                .addStoryBoard("factory_block/baoke2", FactoryScenes::casingEncased, AllPonderTags.SYSTEM)
+                .addStoryBoard("factory_block/baoke3", FactoryScenes::casingGlass, AllPonderTags.SYSTEM);
         helper.forComponents(launcherStick)
                 .addStoryBoard("factory_block/machine1", FactoryScenes::machine, AllPonderTags.SYSTEM)
                 .addStoryBoard("factory_block/machine2", FactoryScenes::evaluatorStart, AllPonderTags.SYSTEM)
