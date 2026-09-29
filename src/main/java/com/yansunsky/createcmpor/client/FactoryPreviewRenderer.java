@@ -20,7 +20,9 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Vec3i;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.EntityBlock;
 import net.minecraft.world.level.block.RenderShape;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.client.model.data.ModelData;
@@ -137,6 +139,7 @@ public final class FactoryPreviewRenderer {
      */
     private static Baked bake(Level sourceLevel, PreviewSnapshot snapshot, int light) {
         BlockRenderDispatcher dispatcher = Minecraft.getInstance().getBlockRenderer();
+        BakedModel missingModel = Minecraft.getInstance().getModelManager().getMissingModel();
         ModelBlockRenderer modelRenderer = dispatcher.getModelRenderer();
         RandomSource random = RandomSource.create();
         PoseStack pose = new PoseStack();
@@ -149,6 +152,7 @@ public final class FactoryPreviewRenderer {
 
             BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
             int skipped = 0;
+            int proxies = 0;
             for (int y = 0; y < snapshot.height(); y++) {
                 for (int z = 0; z < snapshot.depth(); z++) {
                     for (int x = 0; x < snapshot.width(); x++) {
@@ -156,12 +160,24 @@ public final class FactoryPreviewRenderer {
                         if (state == null) {
                             continue;
                         }
-                        // 方块实体渲染型（箱子/告示牌等）本版不画：既没有代理 BE，也不该在微缩尺度上跑它们的 BER
-                        if (state.getRenderShape() != RenderShape.MODEL) {
-                            skipped++;
-                            continue;
+                        pos.set(x, y, z);
+                        world.setBlock(pos, state, 2);
+                        // 造代理方块实体：连通纹理（CTM）等模型数据来自 BE，缺了 BE 会拿不到 ModelData
+                        // → 渲染成黑块（用户实机反馈：机械动力保险柜在微缩里变黑，其 ItemVaultCTBehaviour 依赖 BE）。
+                        // 做法与参考实现（PE 的 VirtualMicroWorld）一致；失败只记数，绝不冒泡。
+                        if (state.hasBlockEntity() && state.getBlock() instanceof EntityBlock entityBlock) {
+                            try {
+                                BlockEntity proxy = entityBlock.newBlockEntity(pos, state);
+                                if (proxy != null) {
+                                    proxy.setLevel(world);
+                                    proxy.setBlockState(state);
+                                    world.setBlockEntity(proxy);
+                                    proxies++;
+                                }
+                            } catch (Throwable error) {
+                                CreateCMPOR.LOGGER.debug("[预览] 代理方块实体创建失败：{}", state, error);
+                            }
                         }
-                        world.setBlock(pos.set(x, y, z), state, 2);
                     }
                 }
             }
@@ -176,11 +192,19 @@ public final class FactoryPreviewRenderer {
                         for (int z = 0; z < snapshot.depth(); z++) {
                             for (int x = 0; x < snapshot.width(); x++) {
                                 BlockState state = snapshot.stateAt(snapshot.cellIndex(x, y, z));
-                                if (state == null || state.getRenderShape() != RenderShape.MODEL) {
+                                if (state == null) {
                                     continue;
                                 }
                                 pos.set(x, y, z);
                                 BakedModel model = dispatcher.getBlockModel(state);
+                                // 只跳过"没有模型"的方块（缺失模型是紫黑格子，画出来只会更糟）。
+                                // 刻意不再按 RenderShape 过滤：Create 的粉碎轮/飞轮/曲柄/涡轮等把 getRenderShape 覆写成
+                                // ENTITYBLOCK_ANIMATED，只为把渲染让给 Flywheel visual——它们的方块模型其实是完整几何
+                                // （如粉碎轮的 block.json 直接指向 crushing_wheel.obj），所以照画即可复原外观。
+                                if (model == missingModel) {
+                                    skipped++;
+                                    continue;
+                                }
                                 ModelData modelData = model.getModelData(world, pos, state, world.getModelData(pos));
                                 long seed = state.getSeed(pos);
                                 random.setSeed(seed);
@@ -205,7 +229,10 @@ public final class FactoryPreviewRenderer {
                 ModelBlockRenderer.clearCache();
             }
             if (skipped > 0) {
-                CreateCMPOR.LOGGER.debug("[预览] 跳过 {} 个方块实体渲染型方块（本版不渲染箱子/告示牌等）", skipped);
+                CreateCMPOR.LOGGER.debug("[预览] 跳过 {} 个非 MODEL 形状方块（视觉由 Flywheel visual 绘制的机器，本版不渲染）", skipped);
+            }
+            if (proxies > 0) {
+                CreateCMPOR.LOGGER.debug("[预览] 建立 {} 个代理方块实体（供连通纹理等 ModelData 使用）", proxies);
             }
             return layers.isEmpty() ? null : new Baked(snapshot, light, layers);
         } catch (Throwable error) {
