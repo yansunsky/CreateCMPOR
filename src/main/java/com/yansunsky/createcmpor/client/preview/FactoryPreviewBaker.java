@@ -129,11 +129,18 @@ public final class FactoryPreviewBaker {
                                 if (state == null) {
                                     continue;
                                 }
-                                // 动态格（在转 + 机型白名单）**不进静态层**：静态副本会与每帧旋转的副本叠加
-                                // （小齿轮是 4 根十字条，叠加不同角度会变成 8 齿）。它们改由 PreviewRender
-                                // 的每帧窄 pass 绘制；万一动态绘制失败，渲染侧会用"同状态缓存缓冲"补一次静态绘制，
-                                // 保证这一格不会整格消失。
-                                if (isDynamic(snapshot, state, x, y, z)) {
+                                // 动态格**只有"整块旋转"类**才从静态层剔除：静态副本会与每帧旋转的副本叠加
+                                // （小齿轮是 4 根十字条，叠加不同角度会变成 8 齿）。
+                                // **补件类（replacesStatic == false）必须留在静态层**——它的方块模型就是静止外壳
+                                // （轴承底壳、装箱轴外壳、马达外壳…），动态 pass 只额外补一个零件。
+                                //
+                                // ⚠️ 0.4.12 修复：这里原先只判 isDynamic(...)，漏了 replacesStatic，
+                                // 于是所有"在转的补件机型"外壳被踢出静态层、而回退又因 bakedStatically==true 拒绝补画
+                                // ⇒ 整格只剩一个零件（用户实机现象："底部的轴承不渲染了"）。
+                                PreviewDynamicParts.Rotation rotation = PreviewDynamicParts.resolve(state);
+                                boolean dynamic = rotation != null
+                                        && snapshot.isMoving(snapshot.cellIndex(x, y, z));
+                                if (dynamic && rotation.replacesStatic()) {
                                     continue;
                                 }
                                 pos.set(x, y, z);
@@ -186,8 +193,11 @@ public final class FactoryPreviewBaker {
             }
             List<PreviewDynamicCell> dynamicCells = buildDynamicCells(snapshot);
             if (!dynamicCells.isEmpty()) {
-                CreateCMPOR.LOGGER.info("[预览] 动态 pass：{} 个可动格（动画周期 {} 秒，整表缩放 ×{}），白名单 = {}",
-                        dynamicCells.size(), snapshot.animationSeconds(),
+                long whole = dynamicCells.stream().filter(cell -> !cell.bakedStatically()).count();
+                CreateCMPOR.LOGGER.info(
+                        "[预览] 动态 pass：{} 个可动格（整块旋转 {} 个已从静态层剔除 / 补件 {} 个外壳留在静态层；"
+                                + "动画周期 {} 秒，整表缩放 ×{}），白名单 = {}",
+                        dynamicCells.size(), whole, dynamicCells.size() - whole, snapshot.animationSeconds(),
                         String.format("%.4f", speedScale(snapshot)), PreviewDynamicParts.whitelistSummary());
             }
             // v4：在同一个微缩虚拟世界里重建实体。重建在烘焙期做一次（渲染期零分配、零解析），
@@ -230,16 +240,6 @@ public final class FactoryPreviewBaker {
     // ------------------------------------------------------------------
     // 动态格（第一期 A1：纯旋转）
     // ------------------------------------------------------------------
-
-    /**
-     * 这一格是否要走动态 pass——<b>烘焙与渲染必须用同一判据</b>，否则要么叠加（两边都画）
-     * 要么整格消失（两边都不画）。
-     *
-     * <p>判据 = 快照里该格转速非零 <b>且</b> 机型在白名单内。
-     */
-    private static boolean isDynamic(PreviewSnapshot snapshot, BlockState state, int x, int y, int z) {
-        return snapshot.isMoving(snapshot.cellIndex(x, y, z)) && PreviewDynamicParts.resolve(state) != null;
-    }
 
     /**
      * 整表速度缩放系数 {@code k}：把"全表最大 |转速|"缩放到 {@code 60 / 动画秒数} RPM。
