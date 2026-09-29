@@ -1,6 +1,8 @@
 package com.yansunsky.createcmpor.client.preview;
 
 import com.mojang.blaze3d.vertex.PoseStack;
+import com.simibubi.create.content.contraptions.ControlledContraptionEntity;
+import com.simibubi.create.content.contraptions.OrientedContraptionEntity;
 import com.yansunsky.createcmpor.CreateCMPOR;
 import com.yansunsky.createcmpor.preview.PreviewSnapshot;
 import net.minecraft.client.Minecraft;
@@ -12,6 +14,7 @@ import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.level.Level;
 
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -74,6 +77,11 @@ public final class PreviewEntityScene {
      */
     private static final Set<String> FAILED_TYPES = new HashSet<>();
 
+    /** {@code ControlledContraptionEntity.prevAngle} 的反射缓存（懒解析，解析失败保持 null）。 */
+    private static Field PREV_ANGLE_FIELD;
+    private static boolean PREV_FIELD_RESOLVED;
+    private static boolean PREV_FIELD_WARNED;
+
     private final List<Placed> placed;
 
     private PreviewEntityScene(List<Placed> placed) {
@@ -129,6 +137,8 @@ public final class PreviewEntityScene {
                 }
                 // 位置旧值对齐：否则 Mth.lerp(partialTicks, xOld, x) 会把实体从原点插值过来
                 entity.setOldPosAndRot();
+                // 装置额外一步：把"上一帧姿态"对齐到"当前姿态"（影子实体永远不会 tick，见方法注释）
+                alignContraptionPrevFields(entity);
                 built.add(new Placed(entity, record.x(), record.y(), record.z(), record.type()));
             } catch (Throwable error) {
                 FAILED_TYPES.add(record.type());
@@ -140,6 +150,70 @@ public final class PreviewEntityScene {
 
     public boolean isEmpty() {
         return placed.isEmpty();
+    }
+
+    /**
+     * 让装置（contraption）的"上一帧姿态"等于"当前姿态"。
+     *
+     * <h3>为什么必须做（三段源码串起来才是完整结论）</h3>
+     * <ol>
+     *     <li>装置的角度是<b>插值</b>出来的，不是直接读 {@code angle}：
+     *         {@code ControlledContraptionEntity.getAngle(pt)} =
+     *         {@code pt == 1.0F ? angle : AngleHelper.angleLerp(pt, prevAngle, angle)}；</li>
+     *     <li>写 {@code prevAngle} 的只有 {@code tickContraption()}（{@code prevAngle = angle;}）——
+     *         影子实体<b>永远不会 tick</b>；而存档里<b>只写 {@code Angle}</b>
+     *         （{@code ControlledContraptionEntity} 存取键只有 {@code Angle}）
+     *         ⇒ 重建出来的 {@code prevAngle} 恒为 0；</li>
+     *     <li>这条插值发生在 {@code ContraptionMatrices.setup(...)} <b>内部</b>，它自己取
+     *         {@code AnimationTickHolder.getPartialTicks()}
+     *         （= {@code mc.getTimer().getGameTimeDeltaPartialTick(false)}，取值 [0,1)）
+     *         —— <b>不是</b>我们传给 {@code dispatcher.render} 的那个 partialTicks。
+     * </ol>
+     * 三者相乘的后果：存档里 90° 的轴承装置会画成 {@code angleLerp(当帧 partialTick, 0, 90)}
+     * —— 既偏小、又<b>每帧抖动</b>（角度随 20 次/秒的 tick 分数来回扫）。
+     * 所以修法只能从实体字段侧对齐（把 prev 写成 current），而不是调 {@code dispatcher.render} 的参数。
+     *
+     * <h3>为什么用反射而不是 AT / mixin</h3>
+     * {@code OrientedContraptionEntity} 的 {@code prevYaw/prevPitch} 是 <b>public</b> 字段，直接赋值；
+     * {@code ControlledContraptionEntity} 的 {@code prevAngle} 是 <b>protected</b>（且没有公开 setter，
+     * {@code setAngle} 只写 {@code angle}）。AT/Accessor mixin 一旦目标字段改名就是<b>加载期崩溃</b>，
+     * 而这条路径是纯装饰——按本项目"装饰失败绝不崩客户端"的口径，反射 + 一次 WARN 更合适。
+     */
+    private static void alignContraptionPrevFields(Entity entity) {
+        try {
+            if (entity instanceof OrientedContraptionEntity oriented) {
+                oriented.prevYaw = oriented.yaw;
+                oriented.prevPitch = oriented.pitch;
+                return;
+            }
+            if (entity instanceof ControlledContraptionEntity controlled) {
+                Field field = prevAngleField();
+                if (field != null) {
+                    // getAngle(1.0F) 就是 angle 本身（见上面第 1 条），避免再反射读 angle 字段
+                    field.setFloat(controlled, controlled.getAngle(1.0F));
+                }
+            }
+        } catch (Throwable error) {
+            if (!PREV_FIELD_WARNED) {
+                PREV_FIELD_WARNED = true;
+                CreateCMPOR.LOGGER.warn("[预览] 装置上一帧姿态对齐失败：该装置按上一帧角度插值显示（可能偏小/抖动）", error);
+            }
+        }
+    }
+
+    /** 懒解析并缓存 {@code ControlledContraptionEntity.prevAngle}；解析失败返回 {@code null}（只 WARN 一次）。 */
+    private static Field prevAngleField() {
+        if (!PREV_FIELD_RESOLVED) {
+            PREV_FIELD_RESOLVED = true;
+            try {
+                Field field = ControlledContraptionEntity.class.getDeclaredField("prevAngle");
+                field.setAccessible(true);
+                PREV_ANGLE_FIELD = field;
+            } catch (Throwable error) {
+                CreateCMPOR.LOGGER.warn("[预览] 找不到 ControlledContraptionEntity.prevAngle，装置角度将按上一帧值插值", error);
+            }
+        }
+        return PREV_ANGLE_FIELD;
     }
 
     public int size() {
@@ -161,11 +235,12 @@ public final class PreviewEntityScene {
         }
         EntityRenderDispatcher dispatcher = Minecraft.getInstance().getEntityRenderDispatcher();
         // partialTicks 用 1.0F 而不是当帧的动画 partial tick：这些实体是"重建即冻结的雕像"，
-        // 所有 prev* 字段（xOld/yOld/zOld、xRotO、yHeadRotO…）要么是默认值、要么被我们显式对齐过，
-        // 而装置（contraption）的朝向来自 applyLocalTransforms 内部的插值（Create 的
-        // ContraptionMatrices.translateToEntity 用 Mth.lerp(partialTicks, xOld, getX())，
-        // 装置角度也按同样的 prev→current 插值取）——取 t=1 才拿到"当前/NBT 里的那个姿态"，
-        // 取 0 或半途的 t 会得到"上一个采样值"或两者的中间值（这正是静态装置画歪的常见原因）。
+        // 渲染器若按 prev→current 插值，prev 字段要么是默认值、要么被我们显式对齐过，
+        // 取 t=1 一定拿到"当前/NBT 里的那个姿态"。
+        // ⚠️ 注意边界（0.4.9 修正）：这个参数**管不到装置（contraption）的角度**——
+        // ContraptionEntityRenderer → ContraptionMatrices.setup(...) 内部自己取
+        // AnimationTickHolder.getPartialTicks()，我们的参数根本传不进去；装置的角度靠
+        // alignContraptionPrevFields(...) 从实体字段侧对齐（详见该方法注释）。
         float partialTicks = 1.0F;
         try {
             dispatcher.setRenderShadow(false);
