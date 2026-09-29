@@ -147,6 +147,15 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
      */
     private PreviewSnapshot previewSnapshot;
 
+    /** 快照版本号（落盘）：每换一次快照 +1，客户端据此判断本地缓存是否过期。0 = 旧档/从来没换过。 */
+    private int previewRev;
+
+    /** "有没有可渲染内容"（落盘，install 时算一次）：轻量 tag 同步给客户端，避免客户端现算 O(体积)。 */
+    private boolean previewHasContent;
+
+    /** 序列化缓存（不落盘）：按需同步的响应体，随 previewRev 失效。 */
+    private CompoundTag previewPayloadCache;
+
     /** 物品容器表：键 = 身份签名（id + 组件摘要），故同 id 的不同组件变体各自独立成槽。 */
     private final Map<String, Container> inputItems = new LinkedHashMap<>();
     private final Map<String, Container> outputItems = new LinkedHashMap<>();
@@ -453,6 +462,12 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             return;
         }
         this.previewSnapshot = snapshot;
+        // 0.4.20：版本号 +1 —— 客户端据此判断"我本地那份是不是过期了"。
+        // 没有它，按需同步下"重新固化"会显示过期微缩（见 docs/工作日志.md）。
+        this.previewRev++;
+        this.previewHasContent = snapshot.nonAirCount() > 0;
+        this.previewPayloadCache = null;   // 序列化缓存随版本失效（按需同步的响应包要用它）
+        this.carryPreviewOnce = true;      // 固化当场那一包仍带全量：站在机器旁的玩家 0 RTT 看到微缩
         setChanged();
         // 工厂方块刚放置、玩家可能就在旁边：主动推一次，别等下一次网络重挂
         if (level != null && !level.isClientSide) {
@@ -468,6 +483,50 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
     /** 微缩预览快照；无预览返回 {@code null}。 */
     public PreviewSnapshot getPreviewSnapshot() {
         return previewSnapshot;
+    }
+
+    /** 快照版本号：每换一次快照 +1；0 = 从来没有过（旧档）。客户端用它判断本地缓存是否过期。 */
+    public int previewRev() {
+        return previewRev;
+    }
+
+    /** 服务端语义的"有没有可渲染的微缩"（轻量 tag 同步给客户端，避免客户端现算 O(体积) 的 nonAirCount）。 */
+    public boolean previewHasContent() {
+        return previewHasContent;
+    }
+
+    /**
+     * 按需同步的响应体：把快照序列化成 NBT，<b>按版本缓存</b>（每 tick 重建一份 1 MB 的 CompoundTag 太贵）。
+     *
+     * <p>注意：返回的 tag <b>发布后禁止就地修改</b>——它会直接进网络包，netty 线程只读它。
+     */
+    public CompoundTag previewPayloadTag() {
+        if (previewSnapshot == null) {
+            return null;
+        }
+        if (previewPayloadCache == null) {
+            previewPayloadCache = previewSnapshot.save();
+        }
+        return previewPayloadCache;
+    }
+
+    /** 按需同步的占地体积（字节）；用于服务端的单包体积闸门。 */
+    public int previewEncodedSize() {
+        CompoundTag tag = previewPayloadTag();
+        return tag == null ? 0 : tag.sizeInBytes();
+    }
+
+    /**
+     * <b>客户端专用</b>：把服务端按需发来的快照装进这个（客户端的）方块实体。
+     *
+     * <p>渲染层零改动——{@code FactoryPreviewRenderer} / {@code PreviewBakeCache} 的过期判据本来就是
+     * "BE 上的快照对象身份"，装回去就自动重烘。
+     */
+    public void installClientPreview(PreviewSnapshot snapshot, int rev) {
+        this.previewSnapshot = snapshot;
+        this.previewRev = rev;
+        this.previewHasContent = snapshot != null && snapshot.nonAirCount() > 0;
+        this.previewPayloadCache = null;
     }
 
     /** 启动棒还原：工厂变回原 CompactMachines 机器。 */
@@ -578,6 +637,15 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
      * <p>不落盘、不进 NBT（纯瞬时状态）。
      */
     private boolean skipPreviewInClientPayload;
+
+    /**
+     * 下一个客户端包是否<b>携带全量快照</b>（一次性、不落盘）。
+     *
+     * <p>置位时机：① {@code installPreview(...)}（固化那一刻——站在机器旁的玩家 0 RTT 看到微缩）；
+     * ② 从完整 NBT（落盘/物品）里读到非空快照时——"放下自己刚挖的工厂"同样 0 RTT。
+     * 其余玩家走按需请求，这正是设计意图。
+     */
+    private boolean carryPreviewOnce;
 
     /** 工厂是否为输入型（需要外部应力驱动）。 */
     private boolean stressInputRequired() {
@@ -1578,11 +1646,39 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         restoreMachineNbt = tag.contains("restore_machine", Tag.TAG_COMPOUND)
                 ? tag.getCompound("restore_machine") : null;
         // 微缩预览（0.4.0）：解析失败一律降级为"无预览"，绝不影响工厂本体加载。
-        // 0.4.19：**增量包可能刻意不带 preview**（见 skipPreviewInClientPayload 的注释）——
-        // 那种情况下必须保留客户端已有的快照，否则本该显示的微缩会被自己清空。
-        if (!(clientPacket && !tag.contains("preview", Tag.TAG_COMPOUND))) {
+        //
+        // 0.4.20：这里改成**按版本号**判断（此前是"客户端包没有 preview 键就保留旧快照"，
+        // 那个写法在"重新固化后恰好收到一个不带数据的包"时会**保留过期微缩**）。
+        if (!clientPacket) {
+            // 落盘 / 物品 NBT：永远是完整语义
             previewSnapshot = tag.contains("preview", Tag.TAG_COMPOUND)
                     ? PreviewSnapshot.load(tag.getCompound("preview")) : null;
+            previewRev = tag.getInt("preview_rev");
+            previewHasContent = previewSnapshot != null && previewSnapshot.nonAirCount() > 0;
+            previewPayloadCache = null;
+            if (previewHasContent) {
+                // 从完整 NBT（存档 / 工厂物品）读到快照：让下一个客户端包带上它，
+                // 于是"放下自己刚挖的工厂 / 服务器重启后首次加载"都能 0 RTT 看到微缩。
+                carryPreviewOnce = true;
+            }
+        } else {
+            int incomingRev = tag.getInt("preview_rev");
+            boolean incomingHas = tag.getBoolean("has_preview");
+            if (tag.contains("preview", Tag.TAG_COMPOUND)) {
+                previewSnapshot = PreviewSnapshot.load(tag.getCompound("preview"));
+                previewRev = incomingRev;
+                previewHasContent = previewSnapshot != null && previewSnapshot.nonAirCount() > 0;
+                previewPayloadCache = null;
+            } else if (previewSnapshot != null && previewRev == incomingRev && incomingHas) {
+                // 同一版本、服务端也确认有内容 → 保留（区块重发 / 状态翻转走这条，零开销）
+            } else {
+                // 版本变了但数据没跟着来（按需同步），或服务端说没有 → 清掉，
+                // 让渲染侧去按需索取（客户端缓存里若已有同 rev 的副本会被立刻装回来）
+                previewSnapshot = null;
+                previewRev = incomingRev;
+                previewHasContent = incomingHas;
+                previewPayloadCache = null;
+            }
         }
         loadSignatureRateMap(tag, "input_item_rates", inputItemTickRates);
         loadSignatureRateMap(tag, "output_item_rates", outputItemTickRates);
@@ -1626,11 +1722,15 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         if (restoreMachineNbt != null) {
             tag.put("restore_machine", restoreMachineNbt.copy());
         }
-        if (previewSnapshot != null && (!clientPacket || !skipPreviewInClientPayload)) {
+        if (shouldWritePreview(clientPacket)) {
             tag.put("preview", previewSnapshot.save());
         }
         if (clientPacket) {
-            // 一次性标记：只影响这一个客户端包
+            // 轻量元数据：永远写（约 6 字节），客户端靠它判断"本地缓存是否过期"。
+            tag.putInt("preview_rev", previewRev);
+            tag.putBoolean("has_preview", previewHasContent);
+            // 两个一次性标记都只影响这一个客户端包
+            carryPreviewOnce = false;
             skipPreviewInClientPayload = false;
         }
         saveSignatureRateMap(tag, "input_item_rates", inputItemTickRates);
@@ -1641,6 +1741,32 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         tag.putDouble("output_energy_rate", outputEnergyTickRate);
         tag.putDouble("normal_burn_demand", normalBurnDemandPerSecond);
         tag.putDouble("super_burn_demand", superBurnDemandPerSecond);
+    }
+
+    /**
+     * 这个包/NBT 要不要带全量快照。
+     *
+     * <ul>
+     *     <li><b>落盘 / 物品 NBT（{@code clientPacket == false}）永远带</b>——不许动，
+     *         否则存档与工厂物品都会丢快照；</li>
+     *     <li>客户端包：{@code carryPreviewOnce}（固化/放置等一次性时机）带；
+     *         其余按 {@link Config.PreviewSyncMode} 决定——{@code FULL} 时带（但 0.4.19 起
+     *         "运转状态翻转"这类高频包不带，见 {@code skipPreviewInClientPayload}），
+     *         {@code ON_DEMAND} 时一律不带（客户端要渲染时会自己来要）。</li>
+     * </ul>
+     */
+    private boolean shouldWritePreview(boolean clientPacket) {
+        if (previewSnapshot == null || !previewHasContent) {
+            return false;
+        }
+        if (!clientPacket) {
+            return true;
+        }
+        if (carryPreviewOnce) {
+            return true;
+        }
+        return Config.PREVIEW_SYNC_MODE.get() == Config.PreviewSyncMode.FULL
+                && !skipPreviewInClientPayload;
     }
 
     // ===== 物品表：键 = 身份签名（可能含 "#组件摘要"，故原样存取，不做 id 解析） =====

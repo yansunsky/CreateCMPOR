@@ -119,10 +119,11 @@ public final class EvalWorldCommands {
         final double foundDistance = bestDistance;
         final PreviewSnapshot snapshot = nearest.getPreviewSnapshot();
         final int encoded = snapshot.encodedSize();
+        final int rev = nearest.previewRev();
         source.sendSuccess(() -> Component.literal(String.format(
-                "预览 @%s 距离 %.1f：网格 %d×%d×%d，非空气 %d 格，调色板 %d 种，实体 %d 只，编码 %d 字节（%.1f KB）",
-                foundPos, Math.sqrt(foundDistance), snapshot.width(), snapshot.height(), snapshot.depth(),
-                snapshot.nonAirCount(), snapshot.paletteSize(), snapshot.entityCount(), encoded,
+                "预览 @%s 距离 %.1f（rev %d）：网格 %d×%d×%d，非空气 %d 格，调色板 %d 种，实体 %d 只，编码 %d 字节（%.1f KB）",
+                foundPos, Math.sqrt(foundDistance), rev, snapshot.width(), snapshot.height(),
+                snapshot.depth(), snapshot.nonAirCount(), snapshot.paletteSize(), snapshot.entityCount(), encoded,
                 encoded / 1024.0)), false);
         for (String line : PreviewCapture.describePalette(snapshot, 8)) {
             source.sendSuccess(() -> Component.literal("  " + line), false);
