@@ -180,6 +180,13 @@ public final class FactoryPreviewRenderer {
                                     int group = snapshot.groupAt(snapshot.cellIndex(x, y, z));
                                     if (group > 0 && proxy instanceof com.simibubi.create.foundation.blockEntity
                                             .IMultiBlockEntityContainer container) {
+                                        // 必须先 markVirtual()！ItemVaultBlockEntity / FluidTankBlockEntity 的 setController
+                                        // 字节码首三条是 `if (level.isClientSide && !isVirtual()) return;`
+                                        // —— 不标虚拟模式的话，客户端注入是**静默 no-op**（这正是上一版仍然黑的直接原因）。
+                                        // Create 自己的 SchematicHandler#fixControllerBlockEntities 也是同款用法。
+                                        if (proxy instanceof com.simibubi.create.foundation.blockEntity.SmartBlockEntity smart) {
+                                            smart.markVirtual();
+                                        }
                                         container.setController(PreviewSnapshot.syntheticController(group));
                                     }
                                     proxies++;
