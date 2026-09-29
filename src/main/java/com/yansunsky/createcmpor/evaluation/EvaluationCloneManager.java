@@ -693,7 +693,8 @@ public final class EvaluationCloneManager {
                 // 直接替换为工厂，不参与破坏检测（评估开始前已对上方 N-1 格做过预检测）。
                 machineLevel.removeBlockEntity(pos);
                 machineLevel.setBlockAndUpdate(pos,
-                        com.yansunsky.createcmpor.init.ModBlocks.FACTORY.get().defaultBlockState());
+                        com.yansunsky.createcmpor.init.ModBlocks.FACTORY.get().defaultBlockState()
+                                .setValue(com.yansunsky.createcmpor.block.FactoryBlock.ENCASED, false));
                 if (!(machineLevel.getBlockEntity(pos) instanceof com.yansunsky.createcmpor.block.FactoryBlockEntity factory)) {
                     throw new IllegalStateException("工厂方块实体未创建 @" + pos);
                 }
@@ -732,7 +733,8 @@ public final class EvaluationCloneManager {
             }
             machineLevel.removeBlockEntity(pos);
             machineLevel.setBlockAndUpdate(pos,
-                    com.yansunsky.createcmpor.init.ModBlocks.FACTORY.get().defaultBlockState());
+                    com.yansunsky.createcmpor.init.ModBlocks.FACTORY.get().defaultBlockState()
+                            .setValue(com.yansunsky.createcmpor.block.FactoryBlock.ENCASED, false));
             if (!(machineLevel.getBlockEntity(pos) instanceof com.yansunsky.createcmpor.block.FactoryBlockEntity factory)) {
                 throw new IllegalStateException("工厂方块实体未创建 @" + pos);
             }

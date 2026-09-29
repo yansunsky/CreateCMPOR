@@ -21,7 +21,8 @@ import java.util.Map;
  *     <li>若网格体积超过配置上限，按整数步长做<b>盒式降采样</b>（每一组取组内出现次数最多的非空气方块，
  *         而不是简单抽样——抽样会把机器整块漏掉）；</li>
  *     <li>逐格读方块状态，跳过空气，建调色板；</li>
- *     <li>把网格裁剪到非空气方块的包围盒（让微缩内容尽量填满展示罩），</li>
+ *     <li>网格尺寸 = 房间内界尺寸（降采样后）——<b>刻意不裁剪到包围盒</b>：微缩比例必须反映房间实际大小，
+ *         否则大房间里几个方块会被放大填满展示罩，玩家看到的"缩略图"就不是真实比例（用户 2026-09-29 反馈修正）。</li>
  * </ol>
  *
  * <p>任何一步失败（无房间、无副本、调色板超限、空房间、尺寸非法）都返回 {@code null}——
@@ -108,16 +109,12 @@ public final class PreviewCapture {
             }
         }
 
-        PreviewSnapshot cropped = crop(width, height, depth, palette, cells);
-        if (cropped == null) {
-            CreateCMPOR.LOGGER.info("[预览] 房间内没有可用方块，跳过预览");
-            return null;
-        }
+        PreviewSnapshot result = new PreviewSnapshot(width, height, depth, palette, cells);
         CreateCMPOR.LOGGER.info("[预览] 采集完成：源 {}x{}x{}（步长 {}）→ 快照 {}x{}x{}，非空气 {} 格，调色板 {} 种，约 {} 字节",
                 sourceWidth, sourceHeight, sourceDepth, step,
-                cropped.width(), cropped.height(), cropped.depth(), cropped.nonAirCount(),
-                cropped.paletteSize(), cropped.encodedSize());
-        return cropped;
+                result.width(), result.height(), result.depth(), result.nonAirCount(),
+                result.paletteSize(), result.encodedSize());
+        return result.nonAirCount() == 0 ? null : result;
     }
 
     /**
@@ -160,50 +157,6 @@ public final class PreviewCapture {
             }
         }
         return best;
-    }
-
-    /** 裁剪到非空气方块的包围盒；全空气返回 {@code null}。 */
-    private static PreviewSnapshot crop(int width, int height, int depth, List<BlockState> palette, byte[] cells) {
-        int minX = width;
-        int minY = height;
-        int minZ = depth;
-        int maxX = -1;
-        int maxY = -1;
-        int maxZ = -1;
-        for (int z = 0; z < depth; z++) {
-            for (int y = 0; y < height; y++) {
-                for (int x = 0; x < width; x++) {
-                    if (cells[x + width * (y + height * z)] == 0) {
-                        continue;
-                    }
-                    minX = Math.min(minX, x);
-                    minY = Math.min(minY, y);
-                    minZ = Math.min(minZ, z);
-                    maxX = Math.max(maxX, x);
-                    maxY = Math.max(maxY, y);
-                    maxZ = Math.max(maxZ, z);
-                }
-            }
-        }
-        if (maxX < 0) {
-            return null;
-        }
-        int newWidth = maxX - minX + 1;
-        int newHeight = maxY - minY + 1;
-        int newDepth = maxZ - minZ + 1;
-        if (newWidth == width && newHeight == height && newDepth == depth) {
-            return new PreviewSnapshot(width, height, depth, palette, cells);
-        }
-        byte[] cropped = new byte[newWidth * newHeight * newDepth];
-        for (int z = 0; z < newDepth; z++) {
-            for (int y = 0; y < newHeight; y++) {
-                for (int x = 0; x < newWidth; x++) {
-                    cropped[x + newWidth * (y + newHeight * z)] =
-                            cells[(x + minX) + width * ((y + minY) + height * (z + minZ))];
-                }
-            }
-        }
-        return new PreviewSnapshot(newWidth, newHeight, newDepth, palette, cropped);
     }
 
     private static int ceilDiv(int value, int divisor) {
