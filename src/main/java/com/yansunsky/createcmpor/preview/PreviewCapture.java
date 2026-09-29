@@ -261,11 +261,11 @@ public final class PreviewCapture {
      * <p>硬上限记为"预算 × 4"：预算是"裁剪目标"，硬上限是"裁剪也救不回来"的兜底线。
      */
     private static int entityBudgetBytes() {
-        return Config.PREVIEW_ENTITY_MAX_BYTES.get();
+        return Config.PREVIEW_ENTITY_MAX_KB.get() * 1024;
     }
 
     private static int contraptionBudgetBytes() {
-        return Config.PREVIEW_CONTRAPTION_MAX_BYTES.get();
+        return Config.PREVIEW_CONTRAPTION_MAX_KB.get() * 1024;
     }
 
     private static int entityHardLimitBytes() {
@@ -409,7 +409,7 @@ public final class PreviewCapture {
                     }
                 }
             }
-            int warnBytes = Config.PREVIEW_BIG_ENTITY_WARN_BYTES.get();
+            int warnBytes = Config.PREVIEW_BIG_ENTITY_WARN_KB.get() * 1024;
             if (record.data().sizeInBytes() > warnBytes && trimNotes.size() < 4) {
                 trimNotes.add(String.format("%s %d B（超过 %d B，快照会明显变大；未丢弃）", record.type(),
                         record.data().sizeInBytes(), warnBytes));
@@ -474,7 +474,7 @@ public final class PreviewCapture {
                 net.minecraft.nbt.Tag value = data.get(key);
                 int size = value == null ? 0 : value.sizeInBytes();
                 // 小于阈值的键一律不碰：结构性小键丢了会改语义，省下的字节却可忽略
-                if (size < Config.PREVIEW_TRIM_MIN_KEY_BYTES.get()) {
+                if (size < Config.PREVIEW_TRIM_MIN_KEY_KB.get() * 1024) {
                     continue;
                 }
                 if (size > biggestSize) {

@@ -175,21 +175,21 @@ public class Config {
     public static final ModConfigSpec.IntValue PREVIEW_MAX_CONTRAPTIONS;
 
     /**
-     * 微缩预览里<b>单条普通实体</b>的 NBT 预算（字节）。超出即"逐键裁剪"到预算内。
-     * NBT budget per plain entity inside a miniature preview snapshot (bytes); oversized entries are key-trimmed.
+     * 微缩预览里<b>单条普通实体</b>的 NBT 预算（<b>KB</b>，1 KB = 1024 字节）。超出即"逐键裁剪"到预算内。
+     * NBT budget per plain entity inside a miniature preview snapshot (in <b>KB</b>); oversized entries are key-trimmed.
      * <ul>
-     * <li>裁剪只丢<b>大于 {@link #PREVIEW_TRIM_MIN_KEY_BYTES}</b> 的键——小于它的键一律保留，
+     * <li>裁剪只丢<b>大于 {@link #PREVIEW_TRIM_MIN_KEY_KB}</b> 的键——小于它的键一律保留，
      *     因为"结构性小键"（如装置里的 {@code Axis}）丢了会直接改变语义，而省下的字节可以忽略；</li>
      * <li><b>硬上限 = 该值 × 4</b>：逐键裁剪后仍超过它的实体才<b>整只丢弃</b>
      *     （防的是"某个键异常巨大、裁剪也救不回来"的极端存档）；</li>
-     * <li>默认 8192（8 KB）：普通实体通常几百字节，8 KB 足够容纳模组挂的额外数据。</li>
+     * <li>默认 8（KB）：普通实体通常几百字节，8 KB 足够容纳模组挂的额外数据。</li>
      * </ul>
      */
-    public static final ModConfigSpec.IntValue PREVIEW_ENTITY_MAX_BYTES;
+    public static final ModConfigSpec.IntValue PREVIEW_ENTITY_MAX_KB;
 
     /**
-     * 微缩预览里<b>单条装置（contraption）</b>的 NBT 预算（字节）。规则同上，但量级完全不同。
-     * NBT budget per Create contraption inside a miniature preview snapshot (bytes).
+     * 微缩预览里<b>单条装置（contraption）</b>的 NBT 预算（<b>KB</b>）。规则同上，但量级完全不同。
+     * NBT budget per Create contraption inside a miniature preview snapshot (in <b>KB</b>).
      * <ul>
      * <li>装置的方块结构整个存在实体 NBT 的 {@code Contraption} 复合里：每方块 ≥27 字节 +
      *     每个调色板状态 40~60 字节 ⇒ 十来个方块 1~3 KB、上百方块可到 <b>100 KB 以上</b>
@@ -197,31 +197,31 @@ public class Config {
      * <li>{@code Contraption} 复合<b>永不裁剪</b>（裁了就没得画），所以这个预算实际上是
      *     "其它键的裁剪门槛"，低于装置本身体积时会白裁一轮（0.4.15 的教训）；</li>
      * <li>该值同时决定工厂方块实体 NBT / 客户端同步包的增量，请按你的产线规模调整；
-     *     默认 196608（192 KB）、硬上限 = 该值 × 4。</li>
+     *     默认 192（KB）、硬上限 = 该值 × 4。</li>
      * </ul>
      */
-    public static final ModConfigSpec.IntValue PREVIEW_CONTRAPTION_MAX_BYTES;
+    public static final ModConfigSpec.IntValue PREVIEW_CONTRAPTION_MAX_KB;
 
     /**
-     * 逐键裁剪的"<b>小键保护</b>"阈值（字节）：小于该体积的键一律不裁。
+     * 逐键裁剪的"<b>小键保护</b>"阈值（<b>KB</b>）：小于该体积的键一律不裁。
      * Keys smaller than this are never trimmed (structural small keys carry semantics, not bytes).
      * <ul>
      * <li>0 = 关闭保护（回到"从最大的键开始丢到装得下为止"的旧行为，<b>不推荐</b>：
      *     实测会把装置的 {@code Axis}(38 B) 丢掉 ⇒ Create 静默不再旋转该装置）；</li>
-     * <li>默认 1024（1 KB）。</li>
+     * <li>默认 1（KB）。</li>
      * </ul>
      */
-    public static final ModConfigSpec.IntValue PREVIEW_TRIM_MIN_KEY_BYTES;
+    public static final ModConfigSpec.IntValue PREVIEW_TRIM_MIN_KEY_KB;
 
     /**
-     * 快照日志里"单条实体过大"的提醒阈值（字节）：超过就打一条 INFO/WARN，但<b>不丢弃</b>。
+     * 快照日志里"单条实体过大"的提醒阈值（<b>KB</b>）：超过就打一条日志，但<b>不丢弃</b>。
      * Log a warning when a single captured entity exceeds this size (it is still kept).
      * <ul>
      * <li>用来提前发现"快照会明显变大、客户端同步变重"的情况；</li>
-     * <li>默认 49152（48 KB）。</li>
+     * <li>默认 48（KB）。</li>
      * </ul>
      */
-    public static final ModConfigSpec.IntValue PREVIEW_BIG_ENTITY_WARN_BYTES;
+    public static final ModConfigSpec.IntValue PREVIEW_BIG_ENTITY_WARN_KB;
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
@@ -468,48 +468,48 @@ public class Config {
                         "默认 8；范围 0~64。",
                         "Default 8; range 0-64.")
                 .defineInRange("previewMaxContraptions", 8, 0, 64);
-        PREVIEW_ENTITY_MAX_BYTES = builder
+        PREVIEW_ENTITY_MAX_KB = builder
                 .comment(
-                        "微缩预览里单条普通实体的 NBT 预算（字节）。超出即按「键体积从大到小」裁剪，裁剪只动大于"
-                                + " previewTrimMinKeyBytes 的键。",
-                        "NBT budget per plain entity in the miniature preview snapshot (bytes). Oversized entries are"
-                                + " trimmed key-by-key; only keys larger than previewTrimMinKeyBytes are removed.",
+                        "微缩预览里单条普通实体的 NBT 预算（单位 KB）。超出即按「键体积从大到小」裁剪，裁剪只动大于"
+                                + " previewTrimMinKeyKb 的键。",
+                        "NBT budget per plain entity in the miniature preview snapshot (in KB). Oversized entries are"
+                                + " trimmed key-by-key; only keys larger than previewTrimMinKeyKb are removed.",
                         "硬上限 = 该值 × 4：裁剪后仍超过才整只丢弃。",
                         "Hard limit = 4x this value: an entity is dropped only when it still exceeds that after trimming.",
-                        "默认 8192；范围 256~1048576。",
-                        "Default 8192; range 256-1048576.")
-                .defineInRange("previewEntityMaxBytes", 8192, 256, 1048576);
-        PREVIEW_CONTRAPTION_MAX_BYTES = builder
+                        "默认 8（KB）；范围 1~1024。",
+                        "Default 8 (KB); range 1-1024.")
+                .defineInRange("previewEntityMaxKb", 8, 1, 1024);
+        PREVIEW_CONTRAPTION_MAX_KB = builder
                 .comment(
-                        "微缩预览里单条装置（contraption）的 NBT 预算（字节）。装置把整套方块结构存在实体 NBT 的"
+                        "微缩预览里单条装置（contraption）的 NBT 预算（单位 KB）。装置把整套方块结构存在实体 NBT 的"
                                 + " Contraption 复合里，实测可到 100 KB 以上。",
-                        "NBT budget per Create contraption in the miniature preview (bytes). A contraption stores its"
+                        "NBT budget per Create contraption in the miniature preview (in KB). A contraption stores its"
                                 + " whole block structure in entity NBT - 100 KB+ has been observed in practice.",
                         "Contraption 复合本身永不裁剪，所以该值实际是「其它键的裁剪门槛」，同时决定工厂 BE 的 NBT"
                                 + " 与客户端同步包的体积增量。",
                         "The Contraption compound itself is never trimmed, so this value bounds the other keys and the"
                                 + " resulting block-entity NBT / client sync payload growth.",
-                        "硬上限 = 该值 × 4。默认 196608（192 KB）；范围 4096~8388608。",
-                        "Hard limit = 4x this value. Default 196608 (192 KB); range 4096-8388608.")
-                .defineInRange("previewContraptionMaxBytes", 196608, 4096, 8388608);
-        PREVIEW_TRIM_MIN_KEY_BYTES = builder
+                        "硬上限 = 该值 × 4。默认 192（KB）；范围 4~8192。",
+                        "Hard limit = 4x this value. Default 192 (KB); range 4-8192.")
+                .defineInRange("previewContraptionMaxKb", 192, 4, 8192);
+        PREVIEW_TRIM_MIN_KEY_KB = builder
                 .comment(
-                        "裁剪时的「小键保护」阈值（字节）：小于该体积的键一律保留。",
-                        "Small-key protection threshold for trimming (bytes): keys smaller than this are never removed.",
+                        "裁剪时的「小键保护」阈值（单位 KB）：小于该体积的键一律保留。",
+                        "Small-key protection threshold for trimming (in KB): keys smaller than this are never removed.",
                         "为什么不建议设 0：实测把装置的 Axis(38 字节) 丢掉后，Create 会静默不再旋转该装置"
                                 + "（ControlledContraptionEntity.applyLocalTransforms 里 if (axis != null) 才旋转）。",
                         "Why 0 is discouraged: dropping a contraption's Axis (38 bytes) silently stops Create from"
                                 + " rotating it (applyLocalTransforms only rotates when axis != null).",
-                        "默认 1024（1 KB）；范围 0~65536。",
-                        "Default 1024; range 0-65536.")
-                .defineInRange("previewTrimMinKeyBytes", 1024, 0, 65536);
-        PREVIEW_BIG_ENTITY_WARN_BYTES = builder
+                        "默认 1（KB）；范围 0~64（0 = 关闭保护）。",
+                        "Default 1 (KB); range 0-64 (0 disables the protection).")
+                .defineInRange("previewTrimMinKeyKb", 1, 0, 64);
+        PREVIEW_BIG_ENTITY_WARN_KB = builder
                 .comment(
-                        "单条实体超过该体积时打一条日志（提醒快照/同步会明显变大），但不丢弃。",
-                        "Log when a single captured entity exceeds this size (payload grows noticeably); it is still kept.",
-                        "默认 49152（48 KB）；范围 1024~8388608。",
-                        "Default 49152; range 1024-8388608.")
-                .defineInRange("previewBigEntityWarnBytes", 49152, 1024, 8388608);
+                        "单条实体超过该体积时打一条日志（提醒快照/同步会明显变大），但不丢弃（单位 KB）。",
+                        "Log when a single captured entity exceeds this size (payload grows noticeably); it is still kept (in KB).",
+                        "默认 48（KB）；范围 1~8192。",
+                        "Default 48 (KB); range 1-8192.")
+                .defineInRange("previewBigEntityWarnKb", 48, 1, 8192);
         builder.pop();
 
         SPEC = builder.build();
