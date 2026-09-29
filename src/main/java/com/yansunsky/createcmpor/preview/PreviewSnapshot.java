@@ -10,11 +10,15 @@ import net.minecraft.nbt.Tag;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
- * 工厂方块的「微缩预览快照」——把房间产线压成 <b>调色板 + 字节网格</b>（外加可选的连通组表）。
+ * 工厂方块的「微缩预览快照」——把房间产线压成 <b>调色板 + 字节网格</b>（外加可选的连通组表，
+ * 以及 v3 起的稀疏转速表）。
  *
  * <p>结构：
  * <ul>
@@ -26,6 +30,13 @@ import java.util.List;
  *     <li>{@code groups}（可选）：与 cells 等长的字节数组，<b>多方块连通组号</b>（0 = 无/单方块）。
  *         同一组号的方块在客户端会被赋予同一个"控制器坐标"，让 Create 的
  *         {@code ConnectivityHandler.isConnected} 判定为连通，从而正确渲染连接纹理（CTM）。</li>
+ *     <li>{@code speeds}（v3 可选）：<b>稀疏转速表</b>——只记录"确实在转"的格（{@code |speed| > 1e-4}），
+ *         编码成单条字节数组（varint 的<b>格索引增量</b> + 4 字节 big-endian float32），按格索引升序。
+ *         表里"有没有这一格"本身就是"这格要走动态 pass"的天然标志位，同时避免稠密 float[] 的 4 倍膨胀
+ *         （8192 格稠密表最坏 +32KB；稀疏表典型 50~300 格 → 约 0.3~2.5KB）。</li>
+ *     <li>{@code animSeconds}（v3 可选）：采集侧配置的动画循环时长（秒）。客户端据此算整表缩放系数，
+ *         <b>因此客户端完全不读配置</b>——服务器与客户端配置不一致也不会出错（行为由数据决定）。
+ *         缺失或 &le;0 时客户端一律走静态路径。</li>
  * </ul>
  *
  * <p>本类只做数据与 NBT 编解码，<b>不依赖任何客户端类</b>。
@@ -33,16 +44,22 @@ import java.util.List;
 public final class PreviewSnapshot {
 
     /**
-     * 格式版本。字段语义变更时递增，加载侧不认的版本直接丢弃
-     * （预览属于装饰，宁可没有也不要读出脏数据）。v2 = 调色板紧凑字符串 + 连通组表。
+     * 当前格式版本。字段语义变更时递增。v2 = 调色板紧凑字符串 + 连通组表；
+     * v3 = 在 v2 之上追加稀疏转速表（{@code speeds} + {@code animSeconds}）。
      */
-    public static final int FORMAT_VERSION = 2;
+    public static final int FORMAT_VERSION = 3;
+
+    /** 可加载的最低版本：v2 视为"全静态"（无转速表），再早的版本结构不同，直接丢弃。 */
+    public static final int MIN_SUPPORTED_VERSION = 2;
 
     /** 调色板上限：索引 0 占一个，其余用无符号 byte 表达，故最多 255 种非空气方块。 */
     public static final int MAX_PALETTE = 255;
 
     /** 连通组上限（组号用无符号 byte 表达，0 保留给"无组"）。 */
     public static final int MAX_GROUPS = 255;
+
+    /** 低于该绝对值的转速视为静止（Create 的转速是 float，1e-4 远小于任何真实转速）。 */
+    public static final float SPEED_EPSILON = 1.0E-4F;
 
     private final int width;
     private final int height;
@@ -51,11 +68,31 @@ public final class PreviewSnapshot {
     private final byte[] cells;
     private final byte[] groups;
 
+    /** 稀疏转速表：与 {@link #speedValues} 等长、按格索引严格升序；无转速时为长度 0 的数组，永不为 null。 */
+    private final int[] speedIndices;
+    private final float[] speedValues;
+
+    /** 动画循环时长（秒）。0 = 静态（客户端不渲染动态 pass）。 */
+    private final float animationSeconds;
+
+    /** 全表最大 |转速|（构造时算一次；0 表示没有可动格）。 */
+    private final float maxAbsSpeed;
+
     public PreviewSnapshot(int width, int height, int depth, List<BlockState> palette, byte[] cells) {
-        this(width, height, depth, palette, cells, null);
+        this(width, height, depth, palette, cells, null, null, null, 0.0F);
     }
 
     public PreviewSnapshot(int width, int height, int depth, List<BlockState> palette, byte[] cells, byte[] groups) {
+        this(width, height, depth, palette, cells, groups, null, null, 0.0F);
+    }
+
+    /**
+     * @param speedIndices     稀疏转速表的格索引（严格升序）；{@code null} 等价于空表
+     * @param speedValues      与 {@code speedIndices} 一一对应的转速（RPM，可为负）
+     * @param animationSeconds 动画循环时长（秒）；0 = 静态
+     */
+    public PreviewSnapshot(int width, int height, int depth, List<BlockState> palette, byte[] cells, byte[] groups,
+                           int[] speedIndices, float[] speedValues, float animationSeconds) {
         if (width <= 0 || height <= 0 || depth <= 0) {
             throw new IllegalArgumentException("预览网格尺寸非法：" + width + "x" + height + "x" + depth);
         }
@@ -69,12 +106,36 @@ public final class PreviewSnapshot {
         if (palette.isEmpty() || !palette.getFirst().isAir()) {
             throw new IllegalArgumentException("调色板索引 0 必须是空气");
         }
+        int[] indices = speedIndices == null ? new int[0] : speedIndices;
+        float[] values = speedValues == null ? new float[0] : speedValues;
+        if (indices.length != values.length) {
+            throw new IllegalArgumentException("转速表的索引与取值长度不一致");
+        }
+        for (int i = 0; i < indices.length; i++) {
+            if (indices[i] < 0 || indices[i] >= cells.length) {
+                throw new IllegalArgumentException("转速表格索引越界：" + indices[i]);
+            }
+            if (i > 0 && indices[i] <= indices[i - 1]) {
+                throw new IllegalArgumentException("转速表格索引必须严格升序");
+            }
+        }
         this.width = width;
         this.height = height;
         this.depth = depth;
         this.palette = List.copyOf(palette);
         this.cells = cells;
         this.groups = groups;
+        this.speedIndices = indices;
+        this.speedValues = values;
+        this.animationSeconds = Math.max(0.0F, animationSeconds);
+        float max = 0.0F;
+        for (float value : values) {
+            float abs = Math.abs(value);
+            if (abs > max) {
+                max = abs;
+            }
+        }
+        this.maxAbsSpeed = max;
     }
 
     public int width() {
@@ -149,6 +210,63 @@ public final class PreviewSnapshot {
         return x + width * (y + height * z);
     }
 
+    // ------------------------------------------------------------------
+    // v3：稀疏转速表
+    // ------------------------------------------------------------------
+
+    /** 是否有可动格（即是否有资格走动态 pass）。 */
+    public boolean hasSpeeds() {
+        return speedIndices.length > 0;
+    }
+
+    /** 可动格数量。 */
+    public int movingCount() {
+        return speedIndices.length;
+    }
+
+    /** 动画循环时长（秒）；0 = 静态。v2 快照（无该字段）同样返回 0。 */
+    public float animationSeconds() {
+        return animationSeconds;
+    }
+
+    /** 全表最大 |转速|（RPM）；0 表示没有可动格。 */
+    public float maxAbsSpeed() {
+        return maxAbsSpeed;
+    }
+
+    /** 第 {@code i} 个可动格的线性格索引（要求 {@code 0 <= i < movingCount()}）。 */
+    public int movingIndexAt(int i) {
+        return speedIndices[i];
+    }
+
+    /** 第 {@code i} 个可动格的转速（RPM，带符号）。 */
+    public float movingSpeedAt(int i) {
+        return speedValues[i];
+    }
+
+    /** 按线性下标取转速；静止格返回 0（表里没有这一格就是静止）。 */
+    public float speedAt(int linearIndex) {
+        int low = 0;
+        int high = speedIndices.length - 1;
+        while (low <= high) {
+            int mid = (low + high) >>> 1;
+            int value = speedIndices[mid];
+            if (value < linearIndex) {
+                low = mid + 1;
+            } else if (value > linearIndex) {
+                high = mid - 1;
+            } else {
+                return speedValues[mid];
+            }
+        }
+        return 0.0F;
+    }
+
+    /** 该格是否"在转"（即是否被采进转速表）。 */
+    public boolean isMoving(int linearIndex) {
+        return speedAt(linearIndex) != 0.0F;
+    }
+
     /** 编解码后的 NBT 体积（字节），用于调试与上限校验。 */
     public int encodedSize() {
         return save().sizeInBytes();
@@ -169,20 +287,29 @@ public final class PreviewSnapshot {
         if (groups != null) {
             tag.putByteArray("groups", groups);
         }
+        if (speedIndices.length > 0 && animationSeconds > 0.0F) {
+            tag.putByteArray("speeds", encodeSpeeds(speedIndices, speedValues));
+            tag.putFloat("animSeconds", animationSeconds);
+        }
         return tag;
     }
 
     /**
      * 从 NBT 还原；任何异常/版本不符/结构非法都返回 {@code null}。
      *
+     * <p><b>兼容策略</b>：接受 v{@value #MIN_SUPPORTED_VERSION}（视为全静态）与 v{@value #FORMAT_VERSION}，
+     * 其余版本（含更高版本）一律丢弃——新字段是纯增量的，旧档没必要让预览消失。
+     *
      * <p>预览是纯装饰数据，解析失败必须静默降级为"没有预览"，绝不能影响工厂方块的正常加载。
+     * 转速表单独解析、单独容错：表坏了只丢转速（退化为静态），不影响方块网格本身。
      */
     public static PreviewSnapshot load(CompoundTag tag) {
         if (!tag.contains("w", Tag.TAG_INT) || !tag.contains("h", Tag.TAG_INT)
                 || !tag.contains("d", Tag.TAG_INT) || !tag.contains("cells", Tag.TAG_BYTE_ARRAY)) {
             return null;
         }
-        if (tag.getInt("version") != FORMAT_VERSION) {
+        int version = tag.getInt("version");
+        if (version < MIN_SUPPORTED_VERSION || version > FORMAT_VERSION) {
             return null;
         }
         int width = tag.getInt("w");
@@ -213,16 +340,126 @@ public final class PreviewSnapshot {
                 return null;
             }
         }
+
+        int[] speedIndices = null;
+        float[] speedValues = null;
+        float animationSeconds = 0.0F;
+        if (version >= 3 && tag.contains("speeds", Tag.TAG_BYTE_ARRAY)) {
+            SparseTable table = decodeSpeeds(tag.getByteArray("speeds"), cells.length);
+            if (table != null) {
+                if (tag.contains("animSeconds", Tag.TAG_FLOAT)) {
+                    animationSeconds = tag.getFloat("animSeconds");
+                }
+                if (animationSeconds > 0.0F) {
+                    speedIndices = table.indices();
+                    speedValues = table.values();
+                }
+                // 没有循环时长（或时长非法）的转速表没有意义：客户端无从算整表缩放系数，退化为静态。
+            }
+        }
         try {
-            return new PreviewSnapshot(width, height, depth, palette, cells, groups);
+            return new PreviewSnapshot(width, height, depth, palette, cells, groups,
+                    speedIndices, speedValues, animationSeconds);
         } catch (IllegalArgumentException error) {
             return null;
         }
     }
 
+    /** 稀疏转速表的解码结果。 */
+    private record SparseTable(int[] indices, float[] values) {
+    }
+
+    /**
+     * 稀疏转速表编码：按格索引升序写 (varint 增量, 4 字节 big-endian float32)。
+     *
+     * <p>增量编码让 varint 绝大多数情况只占 1 字节（相邻可动格通常挨得很近），
+     * 于是每格成本约 5 字节——远小于稠密 float[]（4 字节/格，且静止格也要占位）。
+     */
+    private static byte[] encodeSpeeds(int[] indices, float[] values) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream(indices.length * 5);
+        int previous = -1;
+        for (int i = 0; i < indices.length; i++) {
+            writeVarInt(out, indices[i] - previous);
+            previous = indices[i];
+            int bits = Float.floatToIntBits(values[i]);
+            out.write((bits >>> 24) & 0xFF);
+            out.write((bits >>> 16) & 0xFF);
+            out.write((bits >>> 8) & 0xFF);
+            out.write(bits & 0xFF);
+        }
+        return out.toByteArray();
+    }
+
+    /**
+     * 稀疏转速表解码。<b>任何结构异常都返回 {@code null}</b>（只丢转速，不影响方块网格）。
+     *
+     * <p>校验：增量必须 &ge;1（保证索引严格升序、无重复）、索引必须落在网格内、
+     * varint 最多 5 字节、float 必须是有限非零值。
+     */
+    private static SparseTable decodeSpeeds(byte[] data, int volume) {
+        if (data.length == 0) {
+            return null;
+        }
+        ByteBuffer buffer = ByteBuffer.wrap(data);
+        int[] indices = new int[Math.min(volume, 64)];
+        float[] values = new float[indices.length];
+        int count = 0;
+        int previous = -1;
+        while (buffer.hasRemaining()) {
+            int delta = 0;
+            int shift = 0;
+            int read;
+            do {
+                if (!buffer.hasRemaining() || shift > 28) {
+                    return null;
+                }
+                read = buffer.get() & 0xFF;
+                delta |= (read & 0x7F) << shift;
+                shift += 7;
+            } while ((read & 0x80) != 0);
+            if (delta <= 0) {
+                return null;
+            }
+            int index = previous + delta;
+            if (index >= volume || buffer.remaining() < 4) {
+                return null;
+            }
+            float value = buffer.getFloat();
+            if (!Float.isFinite(value) || Math.abs(value) <= SPEED_EPSILON) {
+                return null;
+            }
+            if (count == indices.length) {
+                if (count >= volume) {
+                    return null;
+                }
+                int grown = Math.min(volume, Math.max(count + 1, count * 2));
+                indices = Arrays.copyOf(indices, grown);
+                values = Arrays.copyOf(values, grown);
+            }
+            indices[count] = index;
+            values[count] = value;
+            count++;
+            previous = index;
+        }
+        if (count == 0) {
+            return null;
+        }
+        return new SparseTable(Arrays.copyOf(indices, count), Arrays.copyOf(values, count));
+    }
+
+    private static void writeVarInt(ByteArrayOutputStream out, int value) {
+        int remaining = value;
+        while ((remaining & ~0x7F) != 0) {
+            out.write((remaining & 0x7F) | 0x80);
+            remaining >>>= 7;
+        }
+        out.write(remaining);
+    }
+
     /**
      * 连通组号 → 稳定的"伪控制器坐标"，供客户端给代理 BE 注入，使
-     * {@code ConnectivityHandler.isConnected} 的 {@code one.getController().equals(two.getController())} 判为连通。
+     * {@code ConnectivityHandler.isConnected} 的 {@code one.getController().equals(two.getController())}
+     * 判为连通。
      *
      * <p>取值**刻意远离快照坐标空间**（0..w/h/d）：否则可能和"无组"空壳 BE 回退出的自身坐标撞车，
      * 把本该判为不连通的两格误判成连通。

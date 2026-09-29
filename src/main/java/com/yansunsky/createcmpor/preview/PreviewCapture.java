@@ -1,5 +1,6 @@
 package com.yansunsky.createcmpor.preview;
 
+import com.yansunsky.createcmpor.Config;
 import com.yansunsky.createcmpor.CreateCMPOR;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
@@ -7,6 +8,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,6 +31,17 @@ import java.util.Map;
  *
  * <p>降采样刻意不把空气计入票数：大房间里孤零零一台机器（周围全空）必须能被保留，
  * 否则"稀疏摆几个方块"的场景会整片消失。
+ *
+ * <p><b>v3 附带采集：每格转速</b>（"让微缩预览转起来"）。在第二遍的<b>同一次格遍历</b>里顺带读
+ * {@link com.simibubi.create.content.kinetics.base.KineticBlockEntity#getTheoreticalSpeed()}：
+ * <ul>
+ *     <li>必须用 {@code getTheoreticalSpeed()} 而<b>不是</b> {@code getSpeed()}——后者在 overStressed
+ *         或 {@code /tick freeze} 时静默返回 0，会把"在转但过载"的部件误采成静止；</li>
+ *     <li>只记 {@code |speed| > }{@value PreviewSnapshot#SPEED_EPSILON} 的格，稀疏存；</li>
+ *     <li>{@code Config#PREVIEW_ANIMATION_SECONDS} 为 0 时<b>完全不读转速</b>（快照里不写速度表，省带宽）；</li>
+ *     <li><b>防御式兜底</b>：采集点位于停 IO 之后约 2 个相位，此时副本 kinetic 网络是否还保速
+ *         <b>尚未实机确认</b>。因此"一格都没采到"只当静止处理（不报错、不崩），并打 INFO 便于实机定位。</li>
+ * </ul>
  *
  * <p>任何失败（无房间、副本未加载、调色板超限、空房间、尺寸非法）都返回 {@code null}——
  * 预览是纯装饰，采集失败绝不允许影响固化的正确性。
@@ -132,7 +145,16 @@ public final class PreviewCapture {
         byte[] groups = step == 1 ? new byte[cells.length] : null;
         Map<BlockPos, Integer> groupIds = groups == null ? null : new HashMap<>();
         Map<BlockState, int[]> histogram = step > 1 ? new HashMap<>() : null;
+        Map<BlockState, Long> dominantPositionOf = step > 1 ? new HashMap<>() : null;
         BlockPos.MutableBlockPos sample = new BlockPos.MutableBlockPos();
+        BlockPos.MutableBlockPos dominantPos = new BlockPos.MutableBlockPos();
+
+        // v3：稀疏转速表。animationSeconds == 0 时**完全不读** BE（省服务端开销，快照也就不含速度表）。
+        float animationSeconds = Config.PREVIEW_ANIMATION_SECONDS.get();
+        boolean collectSpeed = animationSeconds > 0.0F;
+        int[] speedIndices = new int[32];
+        float[] speedValues = new float[32];
+        int speedCount = 0;
 
         for (int z = 0; z < depth; z++) {
             for (int y = 0; y < height; y++) {
@@ -141,10 +163,12 @@ public final class PreviewCapture {
                             ? level.getBlockState(sample.set(roomMin.getX() + minX + x,
                                     roomMin.getY() + minY + y, roomMin.getZ() + minZ + z))
                             : dominantState(level, roomMin, minX, minY, minZ, x, y, z, step,
-                                    focusWidth, focusHeight, focusDepth, histogram, sample);
+                                    focusWidth, focusHeight, focusDepth, histogram, sample, dominantPos,
+                                    dominantPositionOf);
                     if (state == null || state.isAir()) {
                         continue;
                     }
+                    int linear = x + width * (y + height * z);
                     Integer index = indexByState.get(state);
                     if (index == null) {
                         if (palette.size() > PreviewSnapshot.MAX_PALETTE) {
@@ -156,15 +180,33 @@ public final class PreviewCapture {
                         index = palette.size() - 1;
                         indexByState.put(state, index);
                     }
-                    cells[x + width * (y + height * z)] = index.byteValue();
+                    cells[linear] = index.byteValue();
                     if (groups != null) {
-                        recordGroup(level, sample, groups, groupIds, x + width * (y + height * z));
+                        recordGroup(level, sample, groups, groupIds, linear);
+                    }
+                    if (collectSpeed && state.hasBlockEntity()) {
+                        // 只有带方块实体的方块才可能有 kinetic BE —— 这一步把"每格一次 chunk 查表"
+                        // 压缩到"每格一次 boolean 判断"，采集开销可忽略。
+                        float speed = readKineticSpeed(level, step == 1 ? sample : dominantPos);
+                        if (Math.abs(speed) > PreviewSnapshot.SPEED_EPSILON) {
+                            if (speedCount == speedIndices.length) {
+                                int grown = speedCount * 2;
+                                speedIndices = Arrays.copyOf(speedIndices, grown);
+                                speedValues = Arrays.copyOf(speedValues, grown);
+                            }
+                            speedIndices[speedCount] = linear;
+                            speedValues[speedCount] = speed;
+                            speedCount++;
+                        }
                     }
                 }
             }
         }
 
-        PreviewSnapshot result = new PreviewSnapshot(width, height, depth, palette, cells, groups);
+        int[] finalIndices = speedCount == 0 ? null : Arrays.copyOf(speedIndices, speedCount);
+        float[] finalValues = speedCount == 0 ? null : Arrays.copyOf(speedValues, speedCount);
+        PreviewSnapshot result = new PreviewSnapshot(width, height, depth, palette, cells, groups,
+                finalIndices, finalValues, speedCount == 0 ? 0.0F : animationSeconds);
         if (result.nonAirCount() == 0) {
             CreateCMPOR.LOGGER.info("[预览] 房间内没有可用方块，跳过预览");
             return null;
@@ -174,7 +216,42 @@ public final class PreviewCapture {
                 roomWidth, roomHeight, roomDepth, focusWidth, focusHeight, focusDepth, step,
                 result.width(), result.height(), result.depth(), result.nonAirCount(),
                 result.paletteSize(), result.encodedSize());
+        if (!collectSpeed) {
+            CreateCMPOR.LOGGER.info("[预览] 动画已关闭（preview.factoryPreviewAnimationSeconds = 0），预览为静态，快照不含速度表");
+        } else if (result.movingCount() == 0) {
+            // 防御式兜底：不报错、不崩，只提示——采集点位于停 IO 之后约 2 个相位，
+            // 届时评估副本的 kinetic 网络是否还保速**尚未实机确认**，这条日志就是实机定位入口。
+            CreateCMPOR.LOGGER.info(
+                    "[预览] 未采到转速（非空气 {} 格全部 getTheoreticalSpeed()≈0），预览保持静态。"
+                            + "可能原因：房间内没有正在运转的传动部件，或停 IO 后副本 kinetic 网络已停转",
+                    result.nonAirCount());
+        } else {
+            CreateCMPOR.LOGGER.info("[预览] 动态格 {}/{}（转速非零），动画周期 {} 秒（速度表每格约 5 字节）",
+                    result.movingCount(), result.nonAirCount(), animationSeconds);
+        }
         return result;
+    }
+
+    /**
+     * 读一格的转速（RPM，带符号）；不是 kinetic 方块或读取失败都返回 0。
+     *
+     * <p><b>必须用 {@code getTheoreticalSpeed()} 而不是 {@code getSpeed()}</b>：
+     * {@code getSpeed()} 在 {@code overStressed} 或 {@code level.tickRateManager().isFrozen()} 时
+     * 静默返回 0（Create {@code KineticBlockEntity:289-297}），而过载/冻结在评估副本里完全可能发生，
+     * 会把"在转"的部件误采成静止。{@code getTheoreticalSpeed()} 直接返回原始 speed 字段。
+     */
+    private static float readKineticSpeed(ServerLevel level, BlockPos pos) {
+        try {
+            if (!(level.getBlockEntity(pos)
+                    instanceof com.simibubi.create.content.kinetics.base.KineticBlockEntity kinetic)) {
+                return 0.0F;
+            }
+            float speed = kinetic.getTheoreticalSpeed();
+            return Float.isFinite(speed) ? speed : 0.0F;
+        } catch (Throwable error) {
+            CreateCMPOR.LOGGER.debug("[预览] 读取转速失败：{}", pos, error);
+            return 0.0F;
+        }
     }
 
     /**
@@ -205,13 +282,25 @@ public final class PreviewCapture {
         groups[cellIndex] = group.byteValue();
     }
 
-    /** 盒式降采样：取 {@code step³} 组内出现次数最多的非空气方块（全空气则返回 null）。 */
+    /**
+     * 盒式降采样：取 {@code step³} 组内出现次数最多的非空气方块（全空气则返回 null）。
+     *
+     * <p>选取逻辑与 0.4.0 逐字一致（同一份 histogram + 同一套"严格大于"比较），
+     * 只是顺带把"每个候选方块第一次出现的位置"记进 {@code positionOf}，用于给 {@code winner} 出参定位。
+     *
+     * <p>{@code winner} 为出参：降采样格的代表位置（胜出方块首次出现的坐标）。v3 采集转速时按它读 BE
+     * ——渲染画的就是这个"代表方块"，转速自然也该取它的，否则会把一个没被画出来的方块的速度
+     * 安到代表方块身上。<b>已知局限</b>：降采样格只能表达一个转速，同一格里同时有外壳与传动轴时
+     * 只有代表方块的速度可用。
+     */
     private static BlockState dominantState(ServerLevel level, BlockPos roomMin,
                                             int focusMinX, int focusMinY, int focusMinZ,
                                             int x, int y, int z, int step,
                                             int focusWidth, int focusHeight, int focusDepth,
-                                            Map<BlockState, int[]> histogram, BlockPos.MutableBlockPos cursor) {
+                                            Map<BlockState, int[]> histogram, BlockPos.MutableBlockPos cursor,
+                                            BlockPos.MutableBlockPos winner, Map<BlockState, Long> positionOf) {
         histogram.clear();
+        positionOf.clear();
         for (int dz = 0; dz < step; dz++) {
             int sz = z * step + dz;
             if (sz >= focusDepth) {
@@ -234,7 +323,10 @@ public final class PreviewCapture {
                     if (state.isAir()) {
                         continue;
                     }
-                    histogram.computeIfAbsent(state, ignored -> new int[1])[0]++;
+                    if (histogram.computeIfAbsent(state, ignored -> new int[1])[0] == 0) {
+                        positionOf.put(state, cursor.asLong());
+                    }
+                    histogram.get(state)[0]++;
                 }
             }
         }
@@ -245,6 +337,11 @@ public final class PreviewCapture {
                 best = entry.getKey();
                 bestCount = entry.getValue()[0];
             }
+        }
+        Long packed = best == null ? null : positionOf.get(best);
+        winner.set(0, 0, 0);
+        if (packed != null) {
+            winner.set(BlockPos.getX(packed), BlockPos.getY(packed), BlockPos.getZ(packed));
         }
         return best;
     }

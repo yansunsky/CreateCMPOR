@@ -81,10 +81,16 @@ public final class PreviewBakeCache {
         ITEM_FAILURES.add(contentHash);
     }
 
-    /** 清空全部缓存（资源重载/退出世界时调用，避免持有旧 BakedModel 产生的顶点数据）。 */
+    /**
+     * 清空全部缓存（资源重载/退出世界时调用，避免持有旧 BakedModel 产生的顶点数据）。
+     *
+     * <p>动态部件的解析缓存（含"某状态已锁存为动态失败"的标记）必须一起清——它同样持有
+     * {@code SuperByteBuffer}，资源重载后旧实例的顶点数据已失效。
+     */
     public static void clear() {
         BLOCKS.clear();
         ITEMS.clear();
         ITEM_FAILURES.clear();
+        PreviewDynamicParts.clear();
     }
 }

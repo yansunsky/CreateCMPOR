@@ -3,10 +3,14 @@ package com.yansunsky.createcmpor.client.preview;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.yansunsky.createcmpor.CreateCMPOR;
 import com.yansunsky.createcmpor.preview.PreviewSnapshot;
+import net.createmod.catnip.animation.AnimationTickHolder;
 import net.createmod.catnip.render.SuperByteBuffer;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
+import net.minecraft.core.Direction;
+import net.minecraft.core.Direction.AxisDirection;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -85,16 +89,122 @@ public final class PreviewRender {
         try {
             ms.translate(offsetX, offsetY, offsetZ);
             ms.scale(scale, scale, scale);
-            for (Map.Entry<RenderType, SuperByteBuffer> entry : baked.layers().entrySet()) {
-                // light() 是"与顶点自带光照取 max"（ShadeSeparatingSuperByteBuffer.renderInto），
-                // 但两侧都是 sky=15 与 max(block(light), emission) 的组合，故结果与旧的"烘进光照"逐位相同——见类注释。
-                entry.getValue().light(packedLight).renderInto(ms, buffers.getBuffer(entry.getKey()));
+            // 静态层与动态 pass 各自独立 try：动态那一小步失败绝不能连累已经烤好的静态内容。
+            try {
+                for (Map.Entry<RenderType, SuperByteBuffer> entry : baked.layers().entrySet()) {
+                    // light() 是"与顶点自带光照取 max"（ShadeSeparatingSuperByteBuffer.renderInto），
+                    // 但两侧都是 sky=15 与 max(block(light), emission) 的组合，故结果与旧的"烘进光照"逐位相同——见类注释。
+                    entry.getValue().light(packedLight).renderInto(ms, buffers.getBuffer(entry.getKey()));
+                }
+            } catch (Throwable error) {
+                // 绝不冒泡：宁可这一帧缺一小块，也不能崩客户端
+                CreateCMPOR.LOGGER.debug("[预览] 静态层渲染失败，本帧跳过该微缩内容", error);
+            }
+            if (baked.hasDynamicCells()) {
+                renderDynamicCells(ms, buffers, packedLight, baked.dynamicCells());
             }
         } catch (Throwable error) {
             // 绝不冒泡：宁可这一帧缺一小块，也不能崩客户端
             CreateCMPOR.LOGGER.debug("[预览] 渲染失败，本帧跳过该微缩内容", error);
         } finally {
             ms.popPose();
+        }
+    }
+
+    /**
+     * 每帧的"窄 pass"：只对<b>在转且机型在白名单内</b>的格子做一次
+     * {@code light + rotateCentered + renderInto}。
+     *
+     * <h3>成本</h3>
+     * 每格只做一次 {@code rotateCentered}（往 {@code PoseStack} 压两个矩阵）+ 把该模型已有顶点重写进
+     * {@code VertexConsumer}，<b>没有 tessellate、没有分配</b>。M 个可动格 ≈ M × 2~6 µs（报告估算），
+     * M=100 → 0.2~0.6 ms。静态层完全不受影响（仍是 4 次 {@code renderInto}）。
+     *
+     * <h3>复用同一份缓存缓冲（报告 §3.3 的实测结论）</h3>
+     * {@code DefaultSuperByteBuffer.renderInto} 末尾会清空自身 transform 栈
+     * （catnip {@code DefaultSuperByteBuffer:186-187}：{@code while (!transforms.clear()) transforms.popPose();}），
+     * 而 {@code CachedBuffers.*} 又是 Guava 缓存里<b>同一实例</b>——所以一份 {@code SuperByteBuffer}
+     * 可以被 M 个格子逐帧复用，<b>零逐格拷贝、零逐帧分配</b>。
+     *
+     * <h3>失败绝不退化成"整格消失"</h3>
+     * 逐格 {@code try/catch(Throwable)}：
+     * <ul>
+     *     <li>绘制抛异常 → 把该 BlockState 锁存进 {@link PreviewDynamicParts#markFailed}（避免每帧重抛），
+     *         然后立刻走下面的静态回退；</li>
+     *     <li>静态回退用<b>另一份</b>缓存缓冲（{@link PreviewDynamicParts} 自己的 {@code FALLBACK_COMPARTMENT}，
+     *         与动态用的 Create {@code KINETIC_BLOCK} compartment 不同实例），不旋转地画在该格位置——
+     *         与"这格从没被踢出静态层"逐像素等价；</li>
+     *     <li>对 {@code bakedStatically == true} 的格（外壳已在静态图层里）不重复画，
+     *         避免半透明几何在同一位置画两遍。</li>
+     * </ul>
+     */
+    private static void renderDynamicCells(PoseStack ms, MultiBufferSource buffers, int packedLight,
+                                           List<PreviewDynamicCell> cells) {
+        float time = AnimationTickHolder.getRenderTime();
+        for (PreviewDynamicCell cell : cells) {
+            ms.pushPose();
+            try {
+                ms.translate(cell.x(), cell.y(), cell.z());
+                if (drawRotated(ms, buffers, packedLight, cell, time)) {
+                    continue;
+                }
+                drawStaticFallback(ms, buffers, packedLight, cell);
+            } catch (Throwable error) {
+                // 逐格兜底：姿态栈在 finally 里一定配平地弹回，异常绝不冒泡
+                CreateCMPOR.LOGGER.debug("[预览] 动态格绘制失败：{} @({},{},{})",
+                        cell.state(), cell.x(), cell.y(), cell.z(), error);
+            } finally {
+                ms.popPose();
+            }
+        }
+    }
+
+    /** 旋转绘制；成功返回 {@code true}。任何异常都被吞掉并把该状态锁存为"走静态回退"。 */
+    private static boolean drawRotated(PoseStack ms, MultiBufferSource buffers, int packedLight,
+                                       PreviewDynamicCell cell, float time) {
+        if (PreviewDynamicParts.isFailed(cell.state())) {
+            return false;
+        }
+        PreviewDynamicParts.Rotation rotation = cell.rotation();
+        PreviewDynamicParts.Part[] parts = rotation.parts();
+        try {
+            for (int i = 0; i < parts.length; i++) {
+                PreviewDynamicParts.Part part = parts[i];
+                // 角度口径与 Create KineticBlockEntityRenderer.getAngleForBe 完全一致：
+                //   angle_deg = renderTime × speed × 3/10 + 相位；再 /180×π 转弧度。
+                // 渲染时间用 catnip AnimationTickHolder（客户端静态 tick + partial tick），
+                // 与 Create 各渲染器同源，避免两条路径相位差一个常量。
+                float degrees = (time * cell.speed() * 0.3F + cell.phaseAt(i)) % 360.0F;
+                float radians = degrees / 180.0F * (float) Math.PI;
+                part.buffer()
+                        .light(packedLight)
+                        .rotateCentered(radians, Direction.get(AxisDirection.POSITIVE, part.axis()))
+                        .renderInto(ms, buffers.getBuffer(part.layer()));
+            }
+            return true;
+        } catch (Throwable error) {
+            PreviewDynamicParts.markFailed(cell.state());
+            CreateCMPOR.LOGGER.debug("[预览] 动态部件渲染失败，该机型锁存为静态：{}", cell.state(), error);
+            return false;
+        }
+    }
+
+    /** 静态回退：不旋转地把该格的方块模型画一次，等价于"这一格从没被踢出静态层"。 */
+    private static void drawStaticFallback(PoseStack ms, MultiBufferSource buffers, int packedLight,
+                                           PreviewDynamicCell cell) {
+        if (cell.bakedStatically()) {
+            // 外壳本来就在静态图层里 → 不重复画（多画一遍会让半透明几何叠加变脏）
+            return;
+        }
+        try {
+            SuperByteBuffer fallback = PreviewDynamicParts.fallback(cell.state());
+            if (fallback == null) {
+                return;
+            }
+            fallback.light(packedLight)
+                    .renderInto(ms, buffers.getBuffer(PreviewDynamicParts.fallbackLayer(cell.state())));
+        } catch (Throwable error) {
+            CreateCMPOR.LOGGER.debug("[预览] 静态回退也失败，本帧放弃这一格：{}", cell.state(), error);
         }
     }
 }
