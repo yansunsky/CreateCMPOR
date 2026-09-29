@@ -174,6 +174,14 @@ public final class FactoryPreviewRenderer {
                                     proxy.setLevel(world);
                                     proxy.setBlockState(state);
                                     world.setBlockEntity(proxy);
+                                    // 连通组 → 伪控制器坐标：Create 的 ConnectivityHandler.isConnected 实现是
+                                    // `one.getController().equals(two.getController())`，装上同一个伪坐标即判为连通，
+                                    // 连通纹理（CTM）才能算对。伪坐标只参与 equals 比较，不是真实位置。
+                                    int group = snapshot.groupAt(snapshot.cellIndex(x, y, z));
+                                    if (group > 0 && proxy instanceof com.simibubi.create.foundation.blockEntity
+                                            .IMultiBlockEntityContainer container) {
+                                        container.setController(PreviewSnapshot.syntheticController(group));
+                                    }
                                     proxies++;
                                 }
                             } catch (Throwable error) {
@@ -208,13 +216,11 @@ public final class FactoryPreviewRenderer {
                                     continue;
                                 }
                                 ModelData modelData = model.getModelData(world, pos, state, world.getModelData(pos));
-                                if (model instanceof com.simibubi.create.foundation.block.connected.CTModel) {
-                                    // 连通纹理（CTM）在微缩烘焙里会把方块渲染成纯黑（实机证据：create:item_vault ×81 全黑）。
-                                    // 依据：CTModel.getQuads 只在"有 CT 数据"时才用 spriteShift 重写 UV，而实机看到的是
-                                    // **不透明的黑块**（位置正确、能被遮挡），说明四边形画出来了、只是 UV 落到了图集黑色区域。
-                                    // 源码明写：没有 CT 数据 → `return quads`（原始四边形）。所以这里喂空 ModelData，
-                                    // 让 CTM 方块回到普通贴图。微缩尺度只有 1~2px/格，连不连通本来也看不出来。
-                                    // 注意：只对 CTModel 生效，不影响依赖 BE 模型数据的 CopycatModel / FluidTankModel 等。
+                                if (model instanceof com.simibubi.create.foundation.block.connected.CTModel
+                                        && snapshot.groupAt(snapshot.cellIndex(x, y, z)) == 0) {
+                                    // CTM 且**没有连通信息**（单方块、或降采样快照没有组表）：走 CTModel 源码里的回落分支
+                                    // `if (!extraData.has(CT_PROPERTY)) return quads;`，用原始四边形保证不出现黑块。
+                                    // 有连通信息的（多方块机器）保留真实 CT 数据 → 连接纹理正确显示。
                                     modelData = ModelData.EMPTY;
                                 }
                                 long seed = state.getSeed(pos);
