@@ -1,6 +1,7 @@
 package com.yansunsky.createcmpor.client.preview;
 
 import com.mojang.blaze3d.vertex.PoseStack;
+import com.simibubi.create.content.kinetics.base.KineticBlockEntityVisual;
 import com.simibubi.create.foundation.blockEntity.IMultiBlockEntityContainer;
 import com.simibubi.create.foundation.blockEntity.SmartBlockEntity;
 import com.simibubi.create.foundation.virtualWorld.VirtualRenderWorld;
@@ -23,7 +24,9 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.neoforge.client.model.data.ModelData;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -126,6 +129,13 @@ public final class FactoryPreviewBaker {
                                 if (state == null) {
                                     continue;
                                 }
+                                // 动态格（在转 + 机型白名单）**不进静态层**：静态副本会与每帧旋转的副本叠加
+                                // （小齿轮是 4 根十字条，叠加不同角度会变成 8 齿）。它们改由 PreviewRender
+                                // 的每帧窄 pass 绘制；万一动态绘制失败，渲染侧会用"同状态缓存缓冲"补一次静态绘制，
+                                // 保证这一格不会整格消失。
+                                if (isDynamic(snapshot, state, x, y, z)) {
+                                    continue;
+                                }
                                 pos.set(x, y, z);
                                 BakedModel model = dispatcher.getBlockModel(state);
                                 // 只跳过"没有模型"的方块（缺失模型是紫黑格子，画出来只会更糟）。
@@ -174,7 +184,14 @@ public final class FactoryPreviewBaker {
                 CreateCMPOR.LOGGER.info("[预览] 内容 = {}", String.join(" | ",
                         com.yansunsky.createcmpor.preview.PreviewCapture.describePalette(snapshot, 16)));
             }
-            return layers.isEmpty() ? null : new PreviewBaked(snapshot, PreviewBaked.contentHash(snapshot), layers);
+            List<PreviewDynamicCell> dynamicCells = buildDynamicCells(snapshot);
+            if (!dynamicCells.isEmpty()) {
+                CreateCMPOR.LOGGER.info("[预览] 动态 pass：{} 个可动格（动画周期 {} 秒，整表缩放 ×{}），白名单 = {}",
+                        dynamicCells.size(), snapshot.animationSeconds(),
+                        String.format("%.4f", speedScale(snapshot)), PreviewDynamicParts.whitelistSummary());
+            }
+            return layers.isEmpty() && dynamicCells.isEmpty() ? null
+                    : new PreviewBaked(snapshot, PreviewBaked.contentHash(snapshot), layers, dynamicCells);
         } catch (Throwable error) {
             CreateCMPOR.LOGGER.warn("[预览] 烘焙失败，本次不渲染该工厂的微缩内容", error);
             return null;
@@ -198,5 +215,94 @@ public final class FactoryPreviewBaker {
         public boolean supportsVisualization() {
             return false;
         }
+    }
+
+    // ------------------------------------------------------------------
+    // 动态格（第一期 A1：纯旋转）
+    // ------------------------------------------------------------------
+
+    /**
+     * 这一格是否要走动态 pass——<b>烘焙与渲染必须用同一判据</b>，否则要么叠加（两边都画）
+     * 要么整格消失（两边都不画）。
+     *
+     * <p>判据 = 快照里该格转速非零 <b>且</b> 机型在白名单内。
+     */
+    private static boolean isDynamic(PreviewSnapshot snapshot, BlockState state, int x, int y, int z) {
+        return snapshot.isMoving(snapshot.cellIndex(x, y, z)) && PreviewDynamicParts.resolve(state) != null;
+    }
+
+    /**
+     * 整表速度缩放系数 {@code k}：把"全表最大 |转速|"缩放到 {@code 60 / 动画秒数} RPM。
+     *
+     * <p>为什么要缩放（报告 §2.5 的实测口径）：
+     * <ul>
+     *     <li>不缩放时 256 RPM 的轴 ≈ 4.3 圈/秒 → 在 1~2 像素/格的微缩尺度上严重频闪；</li>
+     *     <li>不缩放时 2 RPM 的转盘 30 秒才转一圈 → 看起来就是静止；</li>
+     *     <li>整表<b>统一</b>缩放（同一个 k）而不是逐格 clamp：传动比与啮合相位的关系被完整保留，
+     *         大齿轮依旧比小齿轮慢一半、方向依旧相反。</li>
+     * </ul>
+     *
+     * <p>快照没有速度表 / 没有正时长 / 最大转速为 0 时返回 0（调用侧据此整体走静态路径）。
+     */
+    private static float speedScale(PreviewSnapshot snapshot) {
+        float seconds = snapshot.animationSeconds();
+        float maxAbs = snapshot.maxAbsSpeed();
+        if (seconds <= 0.0F || maxAbs <= PreviewSnapshot.SPEED_EPSILON) {
+            return 0.0F;
+        }
+        return (60.0F / seconds) / maxAbs;
+    }
+
+    /**
+     * 构建每帧动态 pass 的绘制计划（烘焙时算一次，渲染侧每帧零计算、零分配）。
+     *
+     * <p>相位用 {@code KineticBlockEntityVisual.rotationOffset(state, axis, 微缩坐标)}——
+     * 与 Create 自己的公式同源，于是相邻齿轮的齿能互相咬合，而不是随机错位。
+     * （Create 还额外加 {@code be.getRotationAngleOffset(axis)}，但那在整个 Create 里只有
+     * {@code PoweredShaftBlockEntity} 覆写；v3 快照不含 BE 数据，故此处不加，见
+     * {@link PreviewDynamicParts} 的已知局限。）
+     */
+    private static List<PreviewDynamicCell> buildDynamicCells(PreviewSnapshot snapshot) {
+        if (!snapshot.hasSpeeds()) {
+            return List.of();
+        }
+        float scale = speedScale(snapshot);
+        if (scale == 0.0F) {
+            return List.of();
+        }
+        List<PreviewDynamicCell> cells = new ArrayList<>();
+        int width = snapshot.width();
+        int height = snapshot.height();
+        for (int i = 0; i < snapshot.movingCount(); i++) {
+            int linear = snapshot.movingIndexAt(i);
+            BlockState state = snapshot.stateAt(linear);
+            if (state == null) {
+                continue;
+            }
+            PreviewDynamicParts.Rotation rotation;
+            try {
+                rotation = PreviewDynamicParts.resolve(state);
+            } catch (Throwable error) {
+                continue;
+            }
+            if (rotation == null || rotation.parts().length == 0) {
+                continue;
+            }
+            int x = linear % width;
+            int y = (linear / width) % height;
+            int z = linear / (width * height);
+            float[] phases = new float[rotation.parts().length];
+            for (int p = 0; p < phases.length; p++) {
+                try {
+                    phases[p] = KineticBlockEntityVisual.rotationOffset(state, rotation.parts()[p].axis(),
+                            new BlockPos(x, y, z));
+                } catch (Throwable error) {
+                    phases[p] = 0.0F;
+                }
+            }
+            cells.add(new PreviewDynamicCell(x, y, z, state, snapshot.movingSpeedAt(i) * scale,
+                    rotation, phases, !rotation.replacesStatic()));
+        }
+        return cells;
     }
 }

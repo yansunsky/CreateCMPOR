@@ -122,6 +122,20 @@ public class Config {
      */
     public static final ModConfigSpec.IntValue PREVIEW_MAX_VOLUME;
 
+    /**
+     * 微缩预览动画的循环时长（秒）。0 = 静态预览。
+     * Loop duration of the miniature preview animation, in seconds; 0 = static preview.
+     * <ul>
+     * <li>{@code 0}：<b>完全不采集转速</b>，快照里不写速度表 → 客户端按"数据决定行为"走静态路径
+     *     （服务器与客户端配置不一致也不会出错，因为客户端从不读这个值）；</li>
+     * <li>{@code >0}：采集每格转速并让"会转的部件"动起来，该值同时是<b>速度整表缩放的目标周期</b>
+     *     （目标最大转速 = {@code 60 / 秒数} RPM，按 {@code k = 目标 / 全表最大转速} 统一缩放，保留啮合比例）。</li>
+     * <li>带宽：速度表为稀疏编码（varint 格索引 + float，约 5 字节/可动格），
+     *     典型 50~300 个可动格 → 约 0.3~2.5 KB/工厂；{@code 0} 时这部分体积为 0。</li>
+     * </ul>
+     */
+    public static final ModConfigSpec.IntValue PREVIEW_ANIMATION_SECONDS;
+
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
 
@@ -315,6 +329,20 @@ public class Config {
                         "默认 8192（约等于 20×20×20）。",
                         "Default 8192 (about 20x20x20).")
                 .defineInRange("previewMaxVolume", 8192, 64, 32768);
+        PREVIEW_ANIMATION_SECONDS = builder
+                .comment(
+                        "微缩预览动画的循环时长（秒）。0 = 静态预览（完全不采集转速，快照里不写速度表）。",
+                        "Loop duration of the miniature preview animation, in seconds. 0 = static preview"
+                                + " (no rotation speed is captured at all, so no speed table is written).",
+                        "0：不采集转速 → 快照最小（省同步带宽），预览完全不转。",
+                        "0: no speeds captured -> smallest snapshot (saves sync bandwidth), nothing rotates.",
+                        ">0：采集转速并让纯旋转部件动起来；该值同时是速度整表缩放的目标周期"
+                                + "（目标最大转速 = 60/秒数 RPM，整表统一缩放以保留传动比与啮合相位）。",
+                        ">0: capture speeds and animate pure-rotation parts; this value is also the normalized"
+                                + " revolution period (target max speed = 60/seconds RPM, applied table-wide).",
+                        "默认 4 秒（约 4 秒转一圈的可视循环）；范围 0~30。",
+                        "Default 4 seconds; range 0-30.")
+                .defineInRange("factoryPreviewAnimationSeconds", 4, 0, 30);
         builder.pop();
 
         SPEC = builder.build();
