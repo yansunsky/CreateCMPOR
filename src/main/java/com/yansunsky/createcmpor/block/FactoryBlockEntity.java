@@ -5,6 +5,7 @@ import com.yansunsky.createcmpor.Config;
 import com.yansunsky.createcmpor.evaluation.EvaluationTrace;
 import com.yansunsky.createcmpor.evaluation.ItemIdentity;
 import com.yansunsky.createcmpor.init.ModBlockEntities;
+import com.yansunsky.createcmpor.preview.PreviewSnapshot;
 import com.yansunsky.createcmpor.stress.FactoryStressAccess;
 import com.yansunsky.createcmpor.stress.StressProfile;
 import com.simibubi.create.api.equipment.goggles.IHaveGoggleInformation;
@@ -137,6 +138,14 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
 
     private boolean replayMode;
     private boolean installed;
+
+    /**
+     * 房间产线的微缩预览快照（0.4.0）。
+     *
+     * <p>固化那一刻从评估副本采集，只存方块 + 调色板，不含方块实体数据；为空表示"无预览"
+     * （旧存档、采集失败、超限降级都落在这里），渲染侧必须按"没有预览"优雅处理。
+     */
+    private PreviewSnapshot previewSnapshot;
 
     /** 物品容器表：键 = 身份签名（id + 组件摘要），故同 id 的不同组件变体各自独立成槽。 */
     private final Map<String, Container> inputItems = new LinkedHashMap<>();
@@ -433,6 +442,32 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
 
     public boolean hasRestoreData() {
         return restoreMachineState != null && restoreMachineNbt != null;
+    }
+
+    /**
+     * 安装微缩预览快照（固化时调用一次）。传 {@code null} 表示本次不采集——
+     * 保持现状而不是清空，避免多分支固化时后续分支的采集失败把已装好的预览抹掉。
+     */
+    public void installPreview(PreviewSnapshot snapshot) {
+        if (snapshot == null) {
+            return;
+        }
+        this.previewSnapshot = snapshot;
+        setChanged();
+        // 工厂方块刚放置、玩家可能就在旁边：主动推一次，别等下一次网络重挂
+        if (level != null && !level.isClientSide) {
+            sendData();
+        }
+    }
+
+    /** 是否有可渲染的微缩预览。 */
+    public boolean hasPreview() {
+        return previewSnapshot != null && previewSnapshot.nonAirCount() > 0;
+    }
+
+    /** 微缩预览快照；无预览返回 {@code null}。 */
+    public PreviewSnapshot getPreviewSnapshot() {
+        return previewSnapshot;
     }
 
     /** 启动棒还原：工厂变回原 CompactMachines 机器。 */
@@ -1523,6 +1558,9 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
                 ? tag.getCompound("restore_state") : null;
         restoreMachineNbt = tag.contains("restore_machine", Tag.TAG_COMPOUND)
                 ? tag.getCompound("restore_machine") : null;
+        // 微缩预览（0.4.0）：解析失败一律降级为"无预览"，绝不影响工厂本体加载
+        previewSnapshot = tag.contains("preview", Tag.TAG_COMPOUND)
+                ? PreviewSnapshot.load(tag.getCompound("preview")) : null;
         loadSignatureRateMap(tag, "input_item_rates", inputItemTickRates);
         loadSignatureRateMap(tag, "output_item_rates", outputItemTickRates);
         loadRateMap(tag, "input_fluid_rates", inputFluidTickRates);
@@ -1564,6 +1602,9 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         }
         if (restoreMachineNbt != null) {
             tag.put("restore_machine", restoreMachineNbt.copy());
+        }
+        if (previewSnapshot != null) {
+            tag.put("preview", previewSnapshot.save());
         }
         saveSignatureRateMap(tag, "input_item_rates", inputItemTickRates);
         saveSignatureRateMap(tag, "output_item_rates", outputItemTickRates);

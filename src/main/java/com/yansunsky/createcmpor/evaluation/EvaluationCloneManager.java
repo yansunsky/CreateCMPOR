@@ -2,6 +2,8 @@ package com.yansunsky.createcmpor.evaluation;
 
 import com.yansunsky.createcmpor.Config;
 import com.yansunsky.createcmpor.CreateCMPOR;
+import com.yansunsky.createcmpor.preview.PreviewCapture;
+import com.yansunsky.createcmpor.preview.PreviewSnapshot;
 import dev.compactmods.machines.api.CompactMachines;
 import dev.compactmods.machines.api.room.RoomInstance;
 import net.minecraft.nbt.CompoundTag;
@@ -15,6 +17,7 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.chunk.storage.ChunkStorage;
+import net.minecraft.world.phys.AABB;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
@@ -609,6 +612,52 @@ public final class EvaluationCloneManager {
                 session.id(), manifest.railwayRecords().size(), manifest.chunks().size());
     }
 
+    /**
+     * 采集房间产线的微缩预览快照（0.4.0）。
+     *
+     * <p>数据源必须是<b>评估副本</b>：固化阶段源房间早已卸载（评估开始前就要求源房间卸载），
+     * 而副本此刻仍被强制加载，且内容 = 评估终态。多分支时各副本内容相同，取第一个可用副本即可。
+     *
+     * <p>任何失败都返回 {@code null}——预览是纯装饰，绝不允许影响固化。
+     */
+    @Nullable
+    private static PreviewSnapshot capturePreview(MinecraftServer server, EvaluationSession session) {
+        if (!Config.ENABLE_FACTORY_PREVIEW.get()) {
+            return null;
+        }
+        if (session.roomCode() == null || session.roomCode().isBlank()) {
+            return null;
+        }
+        Optional<RoomInstance> room = CompactMachines.room(server, session.roomCode());
+        if (room.isEmpty()) {
+            CreateCMPOR.LOGGER.warn("[预览] 会话 {} 找不到房间 {}，跳过预览采集", session.id(), session.roomCode());
+            return null;
+        }
+        ServerLevel copyLevel = null;
+        for (EvaluationManifest manifest : session.parallelBranchManifests()) {
+            ServerLevel candidate = server.getLevel(manifest.targetDimension());
+            if (candidate != null) {
+                copyLevel = candidate;
+                break;
+            }
+        }
+        if (copyLevel == null) {
+            var singleDimension = session.liveCopyDimension();
+            copyLevel = singleDimension == null ? null : server.getLevel(singleDimension);
+        }
+        if (copyLevel == null) {
+            CreateCMPOR.LOGGER.warn("[预览] 会话 {} 的评估副本维度未加载，跳过预览采集", session.id());
+            return null;
+        }
+        try {
+            AABB inner = room.get().boundaries().innerBounds();
+            return PreviewCapture.capture(copyLevel, inner, Config.PREVIEW_MAX_VOLUME.get());
+        } catch (Throwable error) {
+            CreateCMPOR.LOGGER.warn("[预览] 采集异常，跳过预览", error);
+            return null;
+        }
+    }
+
     private void tickSolidifying(MinecraftServer server, EvaluationSavedData data,
                                  EvaluationSession session) {
         EvaluationVerdict.Result lastResult = session.evaluationResult();
@@ -627,6 +676,8 @@ public final class EvaluationCloneManager {
         }
         BlockPos basePos = session.machinePos().pos();
         int count = results.size();
+        // 微缩预览（0.4.0）：固化是唯一采集窗口——此后源房间已卸载、staging 已删、manifest 只剩区块 hash
+        PreviewSnapshot preview = capturePreview(server, session);
         // 发布前提示：工厂将占用主位置向上 N 个方块（含覆盖掉落）
         if (count > 1) {
             notifyOwner(server, session, Component.literal(
@@ -662,6 +713,7 @@ public final class EvaluationCloneManager {
                 }
                 factory.installRestoreData(session.originalState(), session.originalBlockEntityNbt(),
                         branchResult.stressProfile());
+                factory.installPreview(preview);
                 continue;
             }
             // 上方位置：破坏重叠方块（掉落）；遇不可破坏方块（如基岩）→ 发布失败（评估开始前已预检测，此处兜底）
@@ -700,6 +752,7 @@ public final class EvaluationCloneManager {
             }
             factory.installRestoreData(session.originalState(), session.originalBlockEntityNbt(),
                     branchResult.stressProfile());
+            factory.installPreview(preview);
         }
         // 登记 roomCode → 全部工厂位置（第一个=主位置；玩家进入压缩空间自动还原防复制 + 多工厂组还原数量校验用）
         List<GlobalPos> groupPositions = new ArrayList<>();
