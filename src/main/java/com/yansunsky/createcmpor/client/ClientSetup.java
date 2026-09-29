@@ -93,6 +93,10 @@ public class ClientSetup {
             CreateCMPOR.LOGGER.debug("[预览] 未找到 {} ，物品侧微缩预览未启用", location);
             return;
         }
+        if (original instanceof FactoryPreviewItemModel) {
+            CreateCMPOR.LOGGER.debug("[预览] {} 已经是包装模型，跳过重复换模", location);
+            return; // 幂等护栏：重复包装会让机壳自画的拆包装多一层
+        }
         models.put(location, new FactoryPreviewItemModel(original));
         CreateCMPOR.LOGGER.debug("[预览] 已接管 {} 的物品渲染（BEWLR）", location);
     }

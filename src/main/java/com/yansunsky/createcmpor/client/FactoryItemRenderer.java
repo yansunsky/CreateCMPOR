@@ -27,7 +27,7 @@ import net.minecraft.world.level.Level;
  * （{@link PreviewBakeCache} + {@link com.yansunsky.createcmpor.client.preview.FactoryPreviewBaker}
  * + {@link PreviewRender}），不另起一套。
  *
- * <h3>调用链与姿态（实测）</h3>
+ * <h3>调用链与姿态（实测 + 实机校核）</h3>
  * {@code ItemRenderer.render:123-124}（NeoForge 21.1.235 源码）：
  * <pre>
  * p_model = ClientHooks.handleCameraTransforms(poseStack, p_model, ctx, leftHand);   // 压入 M_ctx
@@ -35,11 +35,21 @@ import net.minecraft.world.level.Level;
  * if (!p_model.isCustomRenderer()) { ...原版四边形路径... }
  * else { IClientItemExtensions.of(stack).getCustomRenderer().renderByItem(...); }
  * </pre>
- * 即<b>进入本方法时姿态 = M_ctx · T(-0.5,-0.5,-0.5)</b>。而方块模型四边形在烘焙时已经除以 16
- * （{@code FaceBakery.bakeQuad} → 0..1 空间），所以只要在这里 {@code translate(0.5,0.5,0.5)} 抵消，
- * 坐标系就与 BER 的方块空间<b>逐位同构</b>，{@link PreviewRender} 里那套
- * {@code BOX_PX/BOTTOM_PX/居中/缩放} 数学可以逐行复用（与 Create 的
- * {@code CustomRenderedItemModelRenderer:24-25} 完全同款做法）。
+ * 即<b>进入本方法时姿态 = M_ctx · T(-0.5,-0.5,-0.5)</b>。方块模型四边形在烘焙时已经除以 16
+ * （{@code FaceBakery.bakeQuad} → 0..1 空间），于是 {@code T(-0.5)} 把 0..1 的方块模型搬到
+ * {@code -0.5..0.5}（以物品原点为中心）——<b>但坐标系本身没变</b>：在这一层，坐标 {@code c ∈ [0,1]³}
+ * 就是方块模型空间（原点 = 方块最小角、1 单位 = 1 格），与 BER 里 {@code FactoryPreviewRenderer}
+ * 所处空间<b>逐位同构</b>。所以 {@link PreviewRender} 的 {@code BOX_PX/BOTTOM_PX/居中/缩放} 数学
+ * 可以原样复用，且<b>不需要任何额外平移</b>（只要与机壳画在同一层即可）。
+ *
+ * <p><b>实机教训（0.4.2 的 bug，0.4.3 修正）</b>：0.4.2 曾照抄 Create 的
+ * {@code CustomRenderedItemModelRenderer:24-25} 写了 {@code translate(0.5,0.5,0.5)}，实机结果是
+ * 手持/物品栏里预览被整体推出方块（贴方块左上方半格，只剩一角露在外面）。
+ * 根因：Create 那个 {@code +0.5} 是把坐标系换成「<b>以方块中心为原点</b>」的居中空间，
+ * 所以它的 {@code PartialItemModelRenderer.render:64-65} 在画模型四边形时要再
+ * {@code translate(-0.5,-0.5,-0.5)} 抵消回来；而本类要的是「方块最小角为原点」的模型空间
+ * ——两者恰好差半格。判据不依赖推理：本类在同一层先画的机壳（{@link #drawShell}，同样是 0..1 空间、
+ * 同样在入口姿态、同样零额外变换）位置正确，就证明入口姿态的坐标系正是预览需要的那个空间。
  *
  * <h3>降级（必须，绝不冒泡）</h3>
  * <ul>
@@ -84,18 +94,14 @@ public final class FactoryItemRenderer extends BlockEntityWithoutLevelRenderer {
             }
             // ① 机壳：先画，与今天的物品外观逐位一致（GUI/掉落物/手持的 display 变换由 M_ctx 提供）。
             drawShell(stack, ms, buffers, packedLight, packedOverlay);
-            // ② 微缩预览：进 0..1 方块空间，交给与方块侧共用的绘制器。
+            // ② 微缩预览：**就在这一层**画，与机壳同一个坐标系（方块模型空间 0..1）。
+            //    千万不要再加 translate(±0.5)：入口姿态 T(-0.5) 只是把方块搬到了"以物品原点为中心"的位置，
+            //    坐标系仍是方块最小角为原点的模型空间；再加 +0.5 会让预览整体偏移半格跑出方块（0.4.2 的 bug）。
+            //    PreviewRender 自带 push/pop 与全部缩放/居中数学，这里不做任何变换。
             if (Config.ENABLE_FACTORY_ITEM_PREVIEW.get()) {
                 PreviewBaked baked = resolvePreview(stack);
                 if (baked != null) {
-                    ms.pushPose();
-                    try {
-                        // 抵消 ItemRenderer 的 translate(-0.5,-0.5,-0.5) → 与 BER 的方块空间同构
-                        ms.translate(0.5F, 0.5F, 0.5F);
-                        PreviewRender.render(ms, buffers, packedLight, baked);
-                    } finally {
-                        ms.popPose();
-                    }
+                    PreviewRender.render(ms, buffers, packedLight, baked);
                 }
             }
         } catch (Throwable error) {
@@ -120,6 +126,7 @@ public final class FactoryItemRenderer extends BlockEntityWithoutLevelRenderer {
         if (level == null) {
             return null; // 主菜单等：VirtualRenderWorld 构造必 NPE，连快照都不必解析
         }
+        PreviewBakeCache.ensureLevel(level); // 退出/切换世界（含切维度）后整体作废旧产物
         return PreviewBakeCache.resolveItem(data, level);
     }
 
@@ -144,7 +151,9 @@ public final class FactoryItemRenderer extends BlockEntityWithoutLevelRenderer {
         Minecraft minecraft = Minecraft.getInstance();
         ItemRenderer itemRenderer = minecraft.getItemRenderer();
         BakedModel model = itemRenderer.getModel(stack, minecraft.level, null, 0);
-        if (model instanceof FactoryPreviewItemModel wrapper) {
+        // 逐层拆包装：正常情况下只有我们这一层，但别的模组也换同一个物品模型时会套多层，
+        // 只拆一层会让 getQuads 落在别人的包装上（最坏：机壳消失、只剩预览）。
+        for (int depth = 0; depth < 4 && model instanceof FactoryPreviewItemModel wrapper; depth++) {
             model = wrapper.originalModel();
         }
         if (model.isCustomRenderer()) {

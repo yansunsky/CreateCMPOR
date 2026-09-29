@@ -64,17 +64,42 @@ public final class PreviewBakeCache {
     });
 
     /**
-     * 物品侧"按组件身份"的已解析表（{@code null} 值 = 已知失败，别再重试）。
+     * 物品侧"按组件身份"的解析结果表：值 = 内容指纹（{@link #ITEM_FAILED} 哨兵 = 已知失败，别再重试）。
      *
      * <p>键必须是 {@link IdentityHashMap}：{@code CustomData.hashCode()} 是
      * {@code CompoundTag.hashCode()}（整棵 NBT 递归哈希），比解析快照本身还贵。
+     *
+     * <p><b>值只放指纹、绝不放 {@link PreviewBaked}</b>：一次烘焙的顶点缓冲是重对象，
+     * 若在这张"上限 512"的表里各存一份，就等于把"LRU 32"的持有效果放大 16 倍
+     * （每个快照约 0.1~0.35 MB，最坏上百 MB 常驻）。重对象的唯一持有者是 {@link #ITEMS}。
      */
-    private static final Map<CustomData, PreviewBaked> ITEM_RESOLVED = new IdentityHashMap<>();
+    private static final Map<CustomData, Long> ITEM_RESOLVED = new IdentityHashMap<>();
+
+    /** {@link #ITEM_RESOLVED} 的"已知失败"哨兵（真指纹是 64 位哈希，取 -1 不可能是合法指纹值）。 */
+    private static final long ITEM_FAILED = -1L;
 
     /** 物品侧上一次"真正开烘"的客户端 tick（每 tick 一份的烘焙预算，见 {@link #resolveItem}）。 */
     private static long lastItemBakeTick = Long.MIN_VALUE;
 
+    /**
+     * 上一次解析时用的客户端世界。世界对象变了（退出存档 / 切换维度 / 进服务器）就整体清空——
+     * 烘焙产物握着旧世界的 {@code BakedModel} 与图集，跨世界复用会出现花屏。
+     */
+    private static Level lastItemLevel;
+
     private PreviewBakeCache() {
+    }
+
+    /**
+     * 世界变化就清空物品侧缓存（报告 §4.5 的必备清理时机之一）。
+     *
+     * <p>方块侧不需要这一步：方块缓存以 BE 为弱键，旧世界的 BE 一被回收条目就自动消失。
+     */
+    public static void ensureLevel(Level level) {
+        if (level != lastItemLevel) {
+            lastItemLevel = level;
+            clear();
+        }
     }
 
     public static PreviewBaked getBlock(FactoryBlockEntity be) {
@@ -115,35 +140,49 @@ public final class PreviewBakeCache {
      * {@code BlockStateParser} 解析——每帧几十个槽位就是几百次字符串解析。
      *
      * <p>返回 {@code null} = 本帧不画预览（无数据 / 解析失败 / 已记失败 / 本 tick 的烘焙预算已用完）。
-     * 三种"不画"的区别只影响<b>下次是否重试</b>：
+     * 几种"不画"的区别只影响<b>下次是否重试</b>：
      * <ul>
-     *     <li>无数据/解析失败/烘焙失败 → 记进身份表（{@code null} 值）与失败集，之后不再重试；</li>
-     *     <li>预算用尽 → <b>不记</b>，下一 tick 自然重试（首个未命中的槽位先画）。</li>
+     *     <li>无数据/解析失败/烘焙失败 → 身份表记 {@link #ITEM_FAILED}（+ 指纹进失败集），之后不再重试；</li>
+     *     <li>预算用尽 → <b>不记</b>，下一 tick 自然重试（首个未命中的槽位先画）。
+     *         代价：这一小段"排队期"里，排队的每个槽位每帧都要重新解析一次快照并算指纹
+     *         （有界：每次调用 ≤ 可见槽位数，排队在 N 个 tick 内必然清空，且 LRU 命中后不再发生）；</li>
+     *     <li>指纹命中了 LRU 但该条目已被淘汰 → 身份表里的指纹作废，本帧重新走解析（下一帧起重新烘焙）。</li>
      * </ul>
      *
      * <p>每客户端 tick 最多新烘一份：进入物品栏的第一帧可能同时出现几十个携带不同快照的工厂物品，
      * 不设预算会出现数百 ms 级尖峰；未中签的槽位这一帧只画机壳，观感是"逐个亮起来"。
      */
     public static PreviewBaked resolveItem(CustomData data, Level level) {
-        if (ITEM_RESOLVED.containsKey(data)) {
-            return ITEM_RESOLVED.get(data); // 命中（含"已知失败"= null 值）
+        Long known = ITEM_RESOLVED.get(data);
+        if (known != null) {
+            if (known == ITEM_FAILED) {
+                return null; // 已知失败（无数据/解析失败/烘失败）：不再重试
+            }
+            PreviewBaked cached = getItem(known);
+            if (cached != null) {
+                return cached; // 身份命中 + LRU 命中 = 完全零解析（绝大多数帧走这条）
+            }
+            ITEM_RESOLVED.remove(data); // 被 LRU 淘汰了：让下面重新解析
         }
         PreviewSnapshot snapshot = readSnapshot(data);
         if (snapshot == null || snapshot.nonAirCount() == 0) {
-            remember(data, null);
+            remember(data, ITEM_FAILED);
             return null;
         }
         long contentHash = PreviewBaked.contentHash(snapshot);
         PreviewBaked cached = getItem(contentHash);
         if (cached != null) {
-            remember(data, cached);
+            remember(data, contentHash);
             return cached;
         }
         if (ITEM_FAILURES.contains(contentHash)) { // 已知失败的内容：不再重试
-            remember(data, null);
+            remember(data, ITEM_FAILED);
             return null;
         }
-        long tick = AnimationTickHolder.getTicks();
+        // getTicks(true) 把"暂停中走过的 tick"也算进去：暂停界面里 tick() 只推进 pausedTicks，
+        // 用 getTicks() 会让预算退化成"整个暂停期只烘一份"。正常物品栏/容器界面本就不暂停
+        // （AbstractContainerScreen.isPauseScreen()==false），这里只是把极端情况也堵上。
+        long tick = AnimationTickHolder.getTicks(true);
         if (tick == lastItemBakeTick) {
             return null; // 本 tick 的烘焙预算已用完：不记失败，下一 tick 重试
         }
@@ -151,11 +190,11 @@ public final class PreviewBakeCache {
         PreviewBaked baked = FactoryPreviewBaker.bake(level, snapshot);
         if (baked == null) {
             markItemFailed(contentHash);
-            remember(data, null);
+            remember(data, ITEM_FAILED);
             return null;
         }
         putItem(contentHash, baked);
-        remember(data, baked);
+        remember(data, contentHash);
         return baked;
     }
 
@@ -187,19 +226,24 @@ public final class PreviewBakeCache {
     /**
      * 写入身份表。超限时<b>整体丢弃</b>而不是逐条淘汰：这张表只是"省一次 NBT 解析"的快路径，
      * 丢掉最坏后果是下一帧重新解析一次，但能保证它不会随"见过的 ItemStack 数"无限增长。
+     *
+     * <p>值只放指纹（或 {@link #ITEM_FAILED} 哨兵），不放重对象——重对象只由 {@link #ITEMS} 持有。
      */
-    private static void remember(CustomData data, PreviewBaked baked) {
+    private static void remember(CustomData data, long contentHashOrFailed) {
         if (ITEM_RESOLVED.size() >= ITEM_RESOLVED_LIMIT) {
             ITEM_RESOLVED.clear();
         }
-        ITEM_RESOLVED.put(data, baked);
+        ITEM_RESOLVED.put(data, contentHashOrFailed);
     }
 
     /**
-     * 清空全部缓存（资源重载/退出世界时调用，避免持有旧 BakedModel 产生的顶点数据）。
+     * 清空全部缓存（资源重载、切换/退出世界时调用，避免持有旧 BakedModel 产生的顶点数据）。
      *
      * <p>动态部件的解析缓存（含"某状态已锁存为动态失败"的标记）必须一起清——它同样持有
      * {@code SuperByteBuffer}，资源重载后旧实例的顶点数据已失效。
+     *
+     * <p>刻意<b>不动</b> {@link #lastItemLevel}：本方法也会被资源重载调用，而那时世界并没有变；
+     * 谁改了它由 {@link #ensureLevel} 负责。
      */
     public static void clear() {
         BLOCKS.clear();
