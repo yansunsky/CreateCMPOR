@@ -236,6 +236,59 @@ public class Config {
      */
     public static final ModConfigSpec.IntValue PREVIEW_ENTITY_TABLE_MAX_KB;
 
+    /** 微缩预览快照的同步模式。 */
+    public enum PreviewSyncMode {
+        /** 快照随方块实体 NBT 一起发（0.4.19 及以前的行为）。 */
+        FULL,
+        /** 只在客户端真正要渲染这个工厂时才按需索取（省流量，见 docs/工作日志.md 0.4.20 起）。 */
+        ON_DEMAND
+    }
+
+    /**
+     * <b>服务端</b>语义：快照是否随方块实体 NBT 一起发给客户端。
+     * Server-side: whether the snapshot rides the block-entity update tag.
+     * <ul>
+     * <li>{@code FULL}（默认，0.4.20 起可改）：与 0.4.19 行为逐位一致，任何装了本模组的客户端都能看到微缩；</li>
+     * <li>{@code ON_DEMAND}：tag 里只留 {@code preview_rev}/{@code has_preview} 两个轻量键，
+     *     数据由客户端按需索取（C2S 请求 / S2C 响应，带限流与体积闸门）。
+     *     <b>注意</b>：装旧版本本模组的客户端在 ON_DEMAND 下会静默看不到微缩（不崩、不断线），
+     *     服务端登录时会用 {@code NetworkRegistry.hasChannel} 检测并自动整体回退到 FULL。</li>
+     * </ul>
+     */
+    public static final ModConfigSpec.EnumValue<PreviewSyncMode> PREVIEW_SYNC_MODE;
+
+    /**
+     * <b>客户端</b>语义：渲染工厂时是否主动索取快照。
+     * Client-side: whether the client asks for the snapshot when it is about to render a factory.
+     * <ul>
+     * <li>默认 {@code ON_DEMAND}：本地缓存命中就不发请求；服务端若是旧版本/未开启按需同步，
+     *     通道不存在（{@code NetworkRegistry.hasChannel == false}）⇒ 一次都不发；</li>
+     * <li>{@code FULL}：从不主动请求，完全等服务端推。</li>
+     * </ul>
+     */
+    public static final ModConfigSpec.EnumValue<PreviewSyncMode> PREVIEW_REQUEST_MODE;
+
+    /** 客户端主动请求的生效半径（格）。比渲染 LOD（64）小，天然滞回，避免边缘反复请求。 */
+    public static final ModConfigSpec.IntValue PREVIEW_REQUEST_RADIUS;
+
+    /** 同一工厂两次请求之间的最小间隔（tick）。 */
+    public static final ModConfigSpec.IntValue PREVIEW_REQUEST_COOLDOWN_TICKS;
+
+    /** 同一工厂最多尝试几次（含指数退避），超过就本会话放弃。 */
+    public static final ModConfigSpec.IntValue PREVIEW_REQUEST_MAX_ATTEMPTS;
+
+    /** 每 tick 最多发起几个请求（一次性走进一堆工厂时的全局闸门）。 */
+    public static final ModConfigSpec.IntValue PREVIEW_REQUEST_PER_TICK;
+
+    /** 单个响应包的体积上限（KB）；超过则服务端回 {@code TOO_BIG} 不发。依据：客户端 NBT 读配额 2 MB。 */
+    public static final ModConfigSpec.IntValue PREVIEW_SYNC_MAX_KB;
+
+    /** 服务端愿意响应请求的最大距离（格）；比请求半径宽，防远程探测。 */
+    public static final ModConfigSpec.IntValue PREVIEW_SYNC_MAX_DISTANCE;
+
+    /** 客户端快照缓存的软上限（KB），超出按 LRU 淘汰。 */
+    public static final ModConfigSpec.IntValue PREVIEW_CACHE_MAX_KB;
+
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
 
@@ -536,6 +589,59 @@ public class Config {
                         "默认 1024（1 MB）；范围 64~2048。配套地，previewContraptionMaxKb 的上限收到 1024。",
                         "Default 1024 (1 MB); range 64-2048. Consequently previewContraptionMaxKb caps at 1024.")
                 .defineInRange("previewEntityTableMaxKb", 1024, 64, 2048);
+        PREVIEW_SYNC_MODE = builder
+                .comment(
+                        "服务端：微缩快照是否随方块实体 NBT 一起发给客户端。FULL = 随包发（旧行为）；"
+                                + "ON_DEMAND = 只发轻量版本号，客户端要渲染时才索取（省流量）。",
+                        "Server: whether the miniature snapshot rides the block-entity update tag. FULL = yes (old"
+                                + " behaviour); ON_DEMAND = only a revision number, the client asks when it renders.",
+                        "ON_DEMAND 下装旧版本本模组的客户端会静默看不到微缩（不崩不断线），"
+                                + "服务端登录时检测到会自动整体回退到 FULL。",
+                        "With ON_DEMAND an outdated client of this mod silently shows no miniature; the server detects"
+                                + " that on login and falls back to FULL globally.")
+                .defineEnum("previewSyncMode", PreviewSyncMode.FULL);
+        PREVIEW_REQUEST_MODE = builder
+                .comment(
+                        "客户端：渲染工厂时是否主动索取快照（本地缓存命中就不请求；服务端不支持时一次都不发）。",
+                        "Client: whether to request the snapshot when rendering a factory (cache hits send nothing;"
+                                + " nothing is sent when the server does not support it).")
+                .defineEnum("previewRequestMode", PreviewSyncMode.ON_DEMAND);
+        PREVIEW_REQUEST_RADIUS = builder
+                .comment("客户端请求半径（格）。比渲染 LOD 小，避免在边缘反复请求。默认 48；范围 8~128。",
+                        "Client request radius in blocks; smaller than the render LOD to avoid edge thrash."
+                                + " Default 48; range 8-128.")
+                .defineInRange("previewRequestRadius", 48, 8, 128);
+        PREVIEW_REQUEST_COOLDOWN_TICKS = builder
+                .comment("同一工厂两次请求的最小间隔（tick）。默认 20；范围 1~200。",
+                        "Minimum ticks between two requests for the same factory. Default 20; range 1-200.")
+                .defineInRange("previewRequestCooldownTicks", 20, 1, 200);
+        PREVIEW_REQUEST_MAX_ATTEMPTS = builder
+                .comment("同一工厂最多尝试几次（指数退避），超过本会话放弃。默认 4；范围 1~16。",
+                        "Max attempts per factory (exponential backoff), then give up for the session."
+                                + " Default 4; range 1-16.")
+                .defineInRange("previewRequestMaxAttempts", 4, 1, 16);
+        PREVIEW_REQUEST_PER_TICK = builder
+                .comment("每 tick 最多发起几个请求（一次性走进一堆工厂时的闸门）。默认 2；范围 1~16。",
+                        "Max requests issued per tick (burst guard when many factories come into view)."
+                                + " Default 2; range 1-16.")
+                .defineInRange("previewRequestPerTick", 2, 1, 16);
+        PREVIEW_SYNC_MAX_KB = builder
+                .comment("单个响应包的体积上限（KB），超过则服务端回 TOO_BIG 不发（客户端读 NBT 有 2 MB 硬配额）。",
+                        "Max size of a single response payload (KB); larger ones are answered with TOO_BIG"
+                                + " (the client enforces a 2 MB NBT quota).",
+                        "默认 1024（1 MB）；范围 16~2048。",
+                        "Default 1024 (1 MB); range 16-2048.")
+                .defineInRange("previewSyncMaxKb", 1024, 16, 2048);
+        PREVIEW_SYNC_MAX_DISTANCE = builder
+                .comment("服务端愿意响应请求的最大距离（格），比请求半径宽，防远程探测。默认 128；范围 16~512。",
+                        "Server-side max distance to answer requests (blocks); wider than the request radius to"
+                                + " prevent remote probing. Default 128; range 16-512.")
+                .defineInRange("previewSyncMaxDistance", 128, 16, 512);
+        PREVIEW_CACHE_MAX_KB = builder
+                .comment("客户端快照缓存软上限（KB），超出按 LRU 淘汰。默认 16384（16 MB）；范围 1024~262144。",
+                        "Soft cap of the client-side snapshot cache (KB); LRU eviction beyond it."
+                                + " Default 16384 (16 MB); range 1024-262144.")
+                .defineInRange("previewCacheMaxKb", 16384, 1024, 262144);
         builder.pop();
 
         SPEC = builder.build();
