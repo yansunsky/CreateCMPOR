@@ -552,6 +552,10 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             // 客户端护目镜"应力/容量"行显示的是 lastCapacityProvided（经 write/read 的 Network.AddedCapacity 同步）。
             // 强制 sendData 立即推给客户端（否则只在网络 sync/入网时更新——"创建时设定"旧值）。
             if (level != null && !level.isClientSide) {
+                // 0.4.19 省流量：这条包是**高频**的（运转状态每次翻转都会发），而微缩快照只在固化时变，
+                // 重发它纯粹是浪费（大装置一次可达上百 KB/玩家）。标记后这一个客户端包不带 preview，
+                // 客户端保留已有快照（见 read 里对应的处理）。区块加载/固化/放置那几条路径照常携带。
+                skipPreviewInClientPayload = true;
                 sendData();
             }
         }
@@ -559,6 +563,21 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
 
     /** 上次上报运转状态的快照（输出型工厂触发网络重报用）。 */
     private boolean lastSuccessReported = false;
+
+    /**
+     * 下一个<b>客户端包</b>是否刻意省略 {@code preview}（0.4.19 省流量）。
+     *
+     * <p>背景：微缩快照是随方块实体 NBT 一起同步的，而快照里最重的是装置（contraption）的
+     * 方块结构（实测一台 116 KB）。它只在<b>固化那一刻</b>变，但 {@code sendData()} 的调用点里
+     * 有一条是<b>高频</b>的——"输出型工厂运转状态翻转"（{@code lastSuccess} 变化，启停一次发一次），
+     * 每次重发整份快照纯属浪费。
+     *
+     * <p>因此：高位翻转那条路径置位本标记后再 {@code sendData()}，让这一个包不带 {@code preview}
+     * （客户端保留已有快照，见 {@code read(...)} 里的对应判断）；区块加载、固化、放置三条路径照常携带。
+     *
+     * <p>不落盘、不进 NBT（纯瞬时状态）。
+     */
+    private boolean skipPreviewInClientPayload;
 
     /** 工厂是否为输入型（需要外部应力驱动）。 */
     private boolean stressInputRequired() {
@@ -1558,9 +1577,13 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
                 ? tag.getCompound("restore_state") : null;
         restoreMachineNbt = tag.contains("restore_machine", Tag.TAG_COMPOUND)
                 ? tag.getCompound("restore_machine") : null;
-        // 微缩预览（0.4.0）：解析失败一律降级为"无预览"，绝不影响工厂本体加载
-        previewSnapshot = tag.contains("preview", Tag.TAG_COMPOUND)
-                ? PreviewSnapshot.load(tag.getCompound("preview")) : null;
+        // 微缩预览（0.4.0）：解析失败一律降级为"无预览"，绝不影响工厂本体加载。
+        // 0.4.19：**增量包可能刻意不带 preview**（见 skipPreviewInClientPayload 的注释）——
+        // 那种情况下必须保留客户端已有的快照，否则本该显示的微缩会被自己清空。
+        if (!(clientPacket && !tag.contains("preview", Tag.TAG_COMPOUND))) {
+            previewSnapshot = tag.contains("preview", Tag.TAG_COMPOUND)
+                    ? PreviewSnapshot.load(tag.getCompound("preview")) : null;
+        }
         loadSignatureRateMap(tag, "input_item_rates", inputItemTickRates);
         loadSignatureRateMap(tag, "output_item_rates", outputItemTickRates);
         loadRateMap(tag, "input_fluid_rates", inputFluidTickRates);
@@ -1603,8 +1626,12 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         if (restoreMachineNbt != null) {
             tag.put("restore_machine", restoreMachineNbt.copy());
         }
-        if (previewSnapshot != null) {
+        if (previewSnapshot != null && (!clientPacket || !skipPreviewInClientPayload)) {
             tag.put("preview", previewSnapshot.save());
+        }
+        if (clientPacket) {
+            // 一次性标记：只影响这一个客户端包
+            skipPreviewInClientPayload = false;
         }
         saveSignatureRateMap(tag, "input_item_rates", inputItemTickRates);
         saveSignatureRateMap(tag, "output_item_rates", outputItemTickRates);
