@@ -291,6 +291,14 @@ public class Config {
     /** 客户端快照缓存的软上限（KB），超出按 LRU 淘汰。 */
     public static final ModConfigSpec.IntValue PREVIEW_CACHE_MAX_KB;
 
+    /**
+     * 物品侧体积兜底：单个工厂物品的方块实体 NBT（含整份微缩快照）超过该值（KB）时逐级瘦身。
+     *
+     * <p>物品侧没有别的闸门：NBT 随 ItemStack 走进容器/槽位/实体同步包，而客户端读包内 NBT 有
+     * 2 MB 硬配额（{@code FriendlyByteBuf.DEFAULT_NBT_QUOTA}），单品越界 = 收包方解析失败/断线。
+     */
+    public static final ModConfigSpec.IntValue PREVIEW_ITEM_MAX_KB;
+
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
 
@@ -588,9 +596,32 @@ public class Config {
                                 + "（FriendlyByteBuf.DEFAULT_NBT_QUOTA），越界会导致区块包解析失败/断线。",
                         "Why mandatory: the table rides the block-entity update tag and the client enforces a 2 MB NBT"
                                 + " quota (FriendlyByteBuf.DEFAULT_NBT_QUOTA); exceeding it breaks chunk packets.",
-                        "默认 1024（1 MB）；范围 64~2048。配套地，previewContraptionMaxKb 的上限收到 1024。",
-                        "Default 1024 (1 MB); range 64-2048. Consequently previewContraptionMaxKb caps at 1024.")
-                .defineInRange("previewEntityTableMaxKb", 1024, 64, 2048);
+                        "默认 1024（1 MB）；范围 64~1536。上限收到 1536 而不是 2048："
+                                + "这条路会把快照随包一次性送给客户端（carryPreviewOnce / FULL 模式），"
+                                + "贴着 2 MB 的 NBT 配额太险。配套地，previewContraptionMaxKb 的上限收到 1024。",
+                        "Default 1024 (1 MB); range 64-1536. The cap is 1536 rather than 2048 because this path can"
+                                + " send the snapshot in a single packet (carryPreviewOnce / FULL mode), which is too"
+                                + " close to the 2 MB NBT quota. Consequently previewContraptionMaxKb caps at 1024.")
+                .defineInRange("previewEntityTableMaxKb", 1024, 64, 1536);
+        PREVIEW_ITEM_MAX_KB = builder
+                .comment(
+                        "物品侧体积兜底（单位 KB）：单个工厂物品的方块实体 NBT 超过它时逐级瘦身——"
+                                + "先丢掉预览的快照实体段（装置/动物），仍越界则丢掉整份微缩预览。",
+                        "Item-side size guard (in KB): when one factory item's block-entity NBT exceeds it, it is"
+                                + " trimmed step by step - the snapshot entity section first, then the whole preview.",
+                        "为什么需要：物品侧原先一道闸门都没有。NBT 随 ItemStack 走进容器/槽位/实体同步包，"
+                                + "而客户端读包内 NBT 有 2 MB 硬配额（FriendlyByteBuf.DEFAULT_NBT_QUOTA），"
+                                + "单品越界 = 收包方解析失败/断线（方块侧已有 previewSyncMaxKb，物品侧没有）。",
+                        "Why: the item path previously had no gate at all. The NBT rides ItemStack sync packets while"
+                                + " the client enforces a 2 MB NBT quota (FriendlyByteBuf.DEFAULT_NBT_QUOTA); one oversized"
+                                + " item breaks the receiver (the block path is gated by previewSyncMaxKb, the item path"
+                                + " was not).",
+                        "正常工厂 ~130 KB，一分不动；默认 1024（1 MB）；范围 16~1792。"
+                                + "设成 16 = 故意让正常工厂越界，用于自测这条兜底（会看到 INFO/WARN 日志）。",
+                        "A normal factory is ~130 KB and is untouched. Default 1024 (1 MB); range 16-1792."
+                                + " Setting 16 deliberately trips the guard on a normal factory for self-testing"
+                                + " (an INFO/WARN line is logged).")
+                .defineInRange("previewItemMaxKb", 1024, 16, 1792);
         PREVIEW_SYNC_MODE = builder
                 .comment(
                         "服务端：微缩快照是否随方块实体 NBT 一起发给客户端。FULL = 随包发（旧行为）；"
