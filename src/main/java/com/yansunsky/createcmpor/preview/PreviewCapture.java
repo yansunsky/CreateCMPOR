@@ -3,6 +3,8 @@ package com.yansunsky.createcmpor.preview;
 import com.yansunsky.createcmpor.Config;
 import com.yansunsky.createcmpor.CreateCMPOR;
 import com.simibubi.create.content.contraptions.AbstractContraptionEntity;
+import net.minecraft.nbt.NbtUtils;
+import com.simibubi.create.content.contraptions.ControlledContraptionEntity;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
@@ -349,6 +351,18 @@ public final class PreviewCapture {
             records.addAll(pickNearest(plain, entityLimit, ENTITY_BUDGET_BYTES, ENTITY_HARD_LIMIT_BYTES, null,
                     focusOrigin, step, width, height, depth, "实体"));
         }
+        int animated = 0;
+        float maxDeg = 0.0F;
+        for (PreviewSnapshot.EntityRecord record : records) {
+            if (record.animDegPerTick() != 0.0F) {
+                animated++;
+                maxDeg = Math.max(maxDeg, Math.abs(record.animDegPerTick()));
+            }
+        }
+        if (animated > 0) {
+            CreateCMPOR.LOGGER.info("[预览] 装置动画：{} 个装置带动画（最大角速度 {} 度/tick，口径 = 控制器转速 × 0.3）",
+                    animated, String.format("%.3f", maxDeg));
+        }
         if (!records.isEmpty() || skippedPlayers > 0) {
             CreateCMPOR.LOGGER.info(
                     "[预览] 实体：采到 {} 条（房间内 普通 {} 只 / 装置 {} 个；跳过玩家 {} 只；上限 实体 {} / 装置 {}）",
@@ -387,7 +401,7 @@ public final class PreviewCapture {
                 List<String> dropped = trimToBudget(trimmedData, budget, keepKey);
                 if (!dropped.isEmpty()) {
                     record = new PreviewSnapshot.EntityRecord(record.type(), record.x(), record.y(), record.z(),
-                            record.yaw(), record.pitch(), trimmedData);
+                            record.yaw(), record.pitch(), trimmedData, record.animDegPerTick());
                     if (trimNotes.size() < 4) {
                         trimNotes.add(String.format("%s %d→%d B 丢[%s]", record.type(), rawSize,
                                 trimmedData.sizeInBytes(), String.join(",", dropped)));
@@ -468,6 +482,50 @@ public final class PreviewCapture {
     }
 
     /**
+     * 读"装置（contraption）的角速度"（度/tick，0 = 静止/不可动）。
+     *
+     * <h3>为什么只覆盖这一种装置</h3>
+     * 装置的位姿由它的<b>控制器方块</b>驱动：机械轴承/风车轴承持续把转角推给
+     * {@code ControlledContraptionEntity.setAngle(...)}（Create {@code MechanicalBearingBlockEntity:286}），
+     * 所以"绕轴匀速转"这件事可以由客户端用 {@code angle = 基准角 + 时间 × 角速度} 复现。
+     * 其余控制器做不到：绳索滑轮/电梯是<b>平移</b>、机械活塞/线性致动器是<b>平移</b>、
+     * 发条轴承是<b>排程</b>（走走停停），龙门/列车车厢的位姿来自服务端网络同步。
+     * 这些一律返回 0（保持静态），不猜。
+     *
+     * <h3>角速度怎么来（源码口径）</h3>
+     * {@code MechanicalBearingBlockEntity.tick()}：{@code angle += convertToAngular(getSpeed())}
+     * （{@code :265-266}），而 {@code convertToAngular(speed)} 就是 {@code speed * 3 / 10} 度/tick
+     * ⇒ 本方法直接用控制器方块的 {@code getTheoreticalSpeed() × 0.3}，与转速表的采集口径一致。
+     * 控制器坐标从实体 NBT 的 {@code ControllerRelative} 反推（Create 在实体里就是这么存的）。
+     */
+    private static float readContraptionAngularSpeed(Entity entity, CompoundTag data) {
+        try {
+            if (!(entity instanceof ControlledContraptionEntity)) {
+                return 0.0F;
+            }
+            if (!data.contains("ControllerRelative", net.minecraft.nbt.Tag.TAG_INT_ARRAY)) {
+                return 0.0F;
+            }
+            BlockPos controllerPos = NbtUtils.readBlockPos(data, "ControllerRelative")
+                    .map(relative -> relative.offset(entity.blockPosition()))
+                    .orElse(null);
+            if (controllerPos == null) {
+                return 0.0F;
+            }
+            if (!(entity.level().getBlockEntity(controllerPos)
+                    instanceof com.simibubi.create.content.contraptions.bearing.MechanicalBearingBlockEntity bearing)) {
+                return 0.0F;
+            }
+            float rpm = bearing.getTheoreticalSpeed();
+            float degPerTick = rpm * 0.3F;
+            return Math.abs(degPerTick) < 1.0E-4F ? 0.0F : degPerTick;
+        } catch (Throwable error) {
+            CreateCMPOR.LOGGER.debug("[预览] 装置角速度读取失败：{}", entity.getType(), error);
+            return 0.0F;
+        }
+    }
+
+    /**
      * 诊断用（{@code /ccmpor preview entities}）：列出区域内每只实体的 NBT 体积与最大的几个键。
      *
      * <p>存在的理由：0.4.8 实机出现过"一屋子动物全部因超体积被丢"，而"到底哪个键把体积撑起来的"
@@ -541,7 +599,8 @@ public final class PreviewCapture {
                 data.remove(key);
             }
             return new PreviewSnapshot.EntityRecord(EntityType.getKey(entity.getType()).toString(),
-                    x, y, z, entity.getYRot(), entity.getXRot(), data);
+                    x, y, z, entity.getYRot(), entity.getXRot(), data,
+                    readContraptionAngularSpeed(entity, data));
         } catch (Throwable error) {
             // 单只实体失败不影响其余实体
             CreateCMPOR.LOGGER.debug("[预览] 实体采集失败：{}", entity.getType(), error);

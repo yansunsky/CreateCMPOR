@@ -10,6 +10,9 @@ import net.createmod.catnip.render.CachedBuffers;
 import net.createmod.catnip.render.SuperBufferFactory;
 import net.createmod.catnip.render.SuperByteBuffer;
 import net.createmod.catnip.render.SuperByteBufferCache;
+import com.simibubi.create.content.contraptions.bearing.BearingBlock;
+import net.createmod.catnip.math.AngleHelper;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.core.Direction;
@@ -65,6 +68,12 @@ import java.util.Set;
  *         {@code PoweredShaftBlockEntity:129-131}），本实现与相位计算一律不读 BE，故这一项相位可能差一点。</li>
  *     <li>飞轮块：Create 的 {@code FlywheelRenderer} 用 BE 字段 {@code angle} 与 {@code visualSpeed}
  *         算相位（不是 {@code getAngleForBe}），本实现用统一公式 → 转速一致，<b>相位可能漂移</b>。</li>
+ *     <li>机械轴承的顶板朝向<b>原样搬运</b>了 Create 的两条 {@code rotateCentered} 修正
+ *         （水平 facing 先绕 UP、再绕 EAST；垂直 facing 只绕 EAST 且 UP 时为 0 弧度），顺序与 Create 一致；
+ *         风车轴承按 Create 源码走 {@code BEARING_TOP}（{@code isWoodenTop()} 在机械轴承里返回 false、
+ *         风车轴承继承之）。发条轴承<b>不在白名单</b>：它的转角由排程驱动，不是"转速×时间"的纯函数。</li>
+ *     <li>鼓风机扇叶：Create 的可见转速是 {@code getSpeed()×5} 再 clamp 到 [80, 64×20]（保证看起来总在狂转），
+ *         本实现用统一的"转速×0.3×整表缩放"公式，<b>低转速下会比真实世界慢</b>（与其它部件保持一致性优先）。</li>
  *     <li>装箱系列的半轴/内部件用 partial 补件绘制，但<b>不画</b> Create 额外补的 SHAFT_HALF
  *         （只有几像素、微缩后不足 0.2 像素，且需要 {@code be.hasShaftTowards} 的邻居信息）。</li>
  * </ul>
@@ -75,8 +84,22 @@ import java.util.Set;
  */
 public final class PreviewDynamicParts {
 
-    /** 一个可旋转子模型：顶点缓冲 + 所属 {@link RenderType} + 它的旋转轴。 */
-    public record Part(SuperByteBuffer buffer, RenderType layer, Axis axis) {
+    /** 一个可旋转子模型：顶点缓冲 + 所属 {@link RenderType} + 它的旋转轴 + 自旋之后追加的固定朝向修正。 */
+    public record Part(SuperByteBuffer buffer, RenderType layer, Axis axis, List<FixedRotation> tail) {
+
+        public Part(SuperByteBuffer buffer, RenderType layer, Axis axis) {
+            this(buffer, layer, axis, List.of());
+        }
+    }
+
+    /**
+     * 自旋之后追加的固定旋转（Create 的 renderSafe 在 {@code kineticRotationTransform(...)} 之后
+     * 还会补朝向修正，例如机械轴承的顶板按 facing 再转两下）。
+     *
+     * <p><b>必须按 Create 的调用顺序原样施加</b>：{@code rotateCentered} 是往缓冲自己的变换栈上叠加，
+     * 顺序不同结果不同（项目里"JOML 叠加式旋转"的老坑）。这里只搬运 Create 的顺序，不重新推导。
+     */
+    public record FixedRotation(Axis axis, float radians) {
     }
 
     /**
@@ -282,6 +305,52 @@ public final class PreviewDynamicParts {
             return wheel == null ? null : partial(new Part(wheel, RenderType.solid(), axis), false);
         }
 
+        // ---- 机械轴承 / 风车轴承：底壳静止，顶板 + 半轴转（照抄 Create BearingRenderer.renderSafe；
+        //      getRotatedModel 另给 SHAFT_HALF 朝向 facing.getOpposite()）----
+        if (block == AllBlocks.MECHANICAL_BEARING.get() || block == AllBlocks.WINDMILL_BEARING.get()) {
+            if (!(state.hasProperty(BearingBlock.FACING))) {
+                return null;
+            }
+            Direction facing = state.getValue(BearingBlock.FACING);
+            // isWoodenTop()：机械轴承返回 false，风车轴承继承它（Create 源码核实），故两者都用 BEARING_TOP
+            List<FixedRotation> tail = new java.util.ArrayList<>(2);
+            if (facing.getAxis().isHorizontal()) {
+                tail.add(new FixedRotation(Axis.Y,
+                        AngleHelper.rad(AngleHelper.horizontalAngle(facing.getOpposite()))));
+            }
+            tail.add(new FixedRotation(Axis.Z, AngleHelper.rad(-90 - AngleHelper.verticalAngle(facing))));
+            Part top = new Part(CachedBuffers.partial(AllPartialModels.BEARING_TOP, state),
+                    RenderType.solid(), facing.getAxis(), List.copyOf(tail));
+            Part shaftHalf = new Part(
+                    CachedBuffers.partialFacing(AllPartialModels.SHAFT_HALF, state, facing.getOpposite()),
+                    RenderType.solid(), facing.getAxis());
+            return partial(new Part[]{top, shaftHalf}, false);
+        }
+
+        // ---- 鼓风机：外壳静止，扇叶（propeller）+ 半轴转（照抄 Create EncasedFanRenderer.renderSafe）----
+        if (block == AllBlocks.ENCASED_FAN.get() && state.hasProperty(BlockStateProperties.FACING)) {
+            Direction facing = state.getValue(BlockStateProperties.FACING);
+            Part blades = new Part(
+                    CachedBuffers.partialFacing(AllPartialModels.ENCASED_FAN_INNER, state, facing.getOpposite()),
+                    RenderType.cutoutMipped(), facing.getAxis());
+            Part shaftHalf = new Part(
+                    CachedBuffers.partialFacing(AllPartialModels.SHAFT_HALF, state, facing.getOpposite()),
+                    RenderType.solid(), facing.getAxis());
+            return partial(new Part[]{blades, shaftHalf}, false);
+        }
+
+        // ---- 动力泵：外壳静止，内部齿轮 = MECHANICAL_PUMP_COG（照抄 Create PumpRenderer.getRotatedModel）----
+        if (block == AllBlocks.MECHANICAL_PUMP.get()) {
+            return partial(new Part(CachedBuffers.partialFacing(AllPartialModels.MECHANICAL_PUMP_COG, state),
+                    RenderType.solid(), axis), false);
+        }
+
+        // ---- 动力钻头：外壳静止，钻头 = DRILL_HEAD（照抄 Create DrillRenderer.getRotatedModel）----
+        if (block == AllBlocks.MECHANICAL_DRILL.get()) {
+            return partial(new Part(CachedBuffers.partialFacing(AllPartialModels.DRILL_HEAD, state),
+                    RenderType.solid(), axis), false);
+        }
+
         return null;
     }
 
@@ -401,6 +470,7 @@ public final class PreviewDynamicParts {
      */
     public static String whitelistSummary() {
         return "轴/小齿轮/大齿轮/粉碎轮/飞轮块/转盘/动力轴/龙门轴（整块）"
-                + " + 装箱轴/装箱齿轮/磨石/变速箱/离合/换挡/创造马达/小水车（补件）";
+                + " + 装箱轴/装箱齿轮/磨石/变速箱/离合/换挡/创造马达/小水车/机械轴承+风车轴承（顶板+半轴）"
+                + "/鼓风机（扇叶+半轴）/动力泵/动力钻头（补件）";
     }
 }

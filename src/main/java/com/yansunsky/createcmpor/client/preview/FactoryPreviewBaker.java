@@ -194,7 +194,7 @@ public final class FactoryPreviewBaker {
             // 失败按类型锁存、绝不冒泡——实体是纯装饰，丢几只不影响方块内容。
             PreviewEntityScene entityScene = PreviewEntityScene.EMPTY;
             if (!snapshot.entities().isEmpty()) {
-                entityScene = PreviewEntityScene.build(world, snapshot.entities());
+                entityScene = PreviewEntityScene.build(world, snapshot.entities(), speedScale(snapshot));
                 CreateCMPOR.LOGGER.info("[预览] 实体重建：{}/{} 只（失败类型 {} 个，锁存后不再重试）",
                         entityScene.size(), snapshot.entityCount(),
                         PreviewEntityScene.failedTypeCount());
