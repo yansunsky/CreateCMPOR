@@ -21,7 +21,7 @@ import net.neoforged.neoforge.client.model.BakedModelWrapper;
  *     <li>{@link #isCustomRenderer()} 返回 {@code true} —— 否则 {@code ItemRenderer.render} 根本不会走到
  *         {@code IClientItemExtensions#getCustomRenderer().renderByItem(...)}，<b>且没有任何报错</b>；</li>
  *     <li>{@link #applyTransform} <b>必须返回 {@code this}</b> —— {@link BakedModelWrapper} 的默认实现是
- *         {@code return originalModel.applyTransform(...)}（NeoForge 源码 {@code BakedModelWrapper:84-87}），
+ *         {@code return originalModel.applyTransform(...)}（NeoForge 源码 {@code BakedModelWrapper:85-88}），
  *         返回的是原模型；{@code ItemRenderer} 拿这个返回值去问 {@code isCustomRenderer()}，于是"改了
  *         isCustomRenderer 也白改"。正确写法：先让 {@code super} 把 display 变换<b>施加到姿态栈</b>（副作用要留），
  *         再把返回值换成自己。</li>
