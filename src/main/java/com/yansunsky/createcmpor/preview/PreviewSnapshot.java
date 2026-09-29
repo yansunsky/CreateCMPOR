@@ -220,8 +220,14 @@ public final class PreviewSnapshot {
         }
     }
 
-    /** 供调试：把连通组号换算成稳定的伪控制器坐标（客户端注入代理 BE 用，只用于相等比较）。 */
+    /**
+     * 连通组号 → 稳定的"伪控制器坐标"，供客户端给代理 BE 注入，使
+     * {@code ConnectivityHandler.isConnected} 的 {@code one.getController().equals(two.getController())} 判为连通。
+     *
+     * <p>取值**刻意远离快照坐标空间**（0..w/h/d）：否则可能和"无组"空壳 BE 回退出的自身坐标撞车，
+     * 把本该判为不连通的两格误判成连通。
+     */
     public static BlockPos syntheticController(int group) {
-        return new BlockPos(group, 0, 0);
+        return new BlockPos(-65536 - group, -65536, -65536);
     }
 }
