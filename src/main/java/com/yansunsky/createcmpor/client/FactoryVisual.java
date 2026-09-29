@@ -47,11 +47,23 @@ public class FactoryVisual extends KineticBlockEntityVisual<FactoryBlockEntity> 
             // rotateToFace 是叠加式旋转：必须先重置单位四元数，防止实例池复用脏 rotation。
             instance.rotation.identity();
             instance.rotateToFace(Direction.SOUTH, d);
-            BooleanProperty property = FactoryBlock.SHAFT_BY_FACE.get(d);
-            instance.setVisible(state.getValue(property));
+            instance.setVisible(shouldShowShaft(state, d));
             instance.setChanged();
             shafts.put(d, instance);
         }
+    }
+
+    /**
+     * 该面是否显示传动杆。
+     *
+     * <p>展示模式（{@code encased=false}，0.4.0）只有底面接应力，所以只显示底面那一段；
+     * 传统模式仍按六个 {@code shaft_*} 属性逐面开关。
+     */
+    private static boolean shouldShowShaft(BlockState state, Direction d) {
+        if (!state.getValue(FactoryBlock.ENCASED)) {
+            return d == Direction.DOWN;
+        }
+        return state.getValue(FactoryBlock.SHAFT_BY_FACE.get(d));
     }
 
     @Override
@@ -60,7 +72,7 @@ public class FactoryVisual extends KineticBlockEntityVisual<FactoryBlockEntity> 
         BlockState state = blockEntity.getBlockState();
         for (Map.Entry<Direction, RotatingInstance> entry : shafts.entrySet()) {
             RotatingInstance instance = entry.getValue();
-            boolean show = state.getValue(FactoryBlock.SHAFT_BY_FACE.get(entry.getKey()));
+            boolean show = shouldShowShaft(state, entry.getKey());
             if (show) {
                 instance.setup(blockEntity);
             }
