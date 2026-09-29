@@ -248,7 +248,9 @@ public class Config {
      * <b>服务端</b>语义：快照是否随方块实体 NBT 一起发给客户端。
      * Server-side: whether the snapshot rides the block-entity update tag.
      * <ul>
-     * <li>{@code FULL}（默认，0.4.20 起可改）：与 0.4.19 行为逐位一致，任何装了本模组的客户端都能看到微缩；</li>
+     * <li>{@code ON_DEMAND}（<b>0.4.25 起默认</b>，实机验收通过后翻的默认值）：tag 里只留
+     *     {@code preview_rev}/{@code has_preview} 两个轻量键，数据由客户端按需索取；</li>
+     *     <li>{@code FULL}：与 0.4.19 行为逐位一致（快照随包发）。旧客户端连上来时服务端会自动回退到它；</li>
      * <li>{@code ON_DEMAND}：tag 里只留 {@code preview_rev}/{@code has_preview} 两个轻量键，
      *     数据由客户端按需索取（C2S 请求 / S2C 响应，带限流与体积闸门）。
      *     <b>注意</b>：装旧版本本模组的客户端在 ON_DEMAND 下会静默看不到微缩（不崩、不断线），
@@ -599,7 +601,7 @@ public class Config {
                                 + "服务端登录时检测到会自动整体回退到 FULL。",
                         "With ON_DEMAND an outdated client of this mod silently shows no miniature; the server detects"
                                 + " that on login and falls back to FULL globally.")
-                .defineEnum("previewSyncMode", PreviewSyncMode.FULL);
+                .defineEnum("previewSyncMode", PreviewSyncMode.ON_DEMAND);
         PREVIEW_REQUEST_MODE = builder
                 .comment(
                         "客户端：渲染工厂时是否主动索取快照（本地缓存命中就不请求；服务端不支持时一次都不发）。",
