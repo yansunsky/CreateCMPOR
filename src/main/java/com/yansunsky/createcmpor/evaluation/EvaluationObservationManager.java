@@ -14,6 +14,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
@@ -49,6 +50,15 @@ import java.util.UUID;
  *
  * <p><b>退出时机</b>：飞出房间外边界（含 Y 轴）、会话结束、玩家重新登录（自愈）。
  * 退出时传回进入前位置并恢复原游戏模式。
+ *
+ * <p><b>OP 豁免的范围（0.4.5 修正）</b>：豁免只针对<b>没有观察记录</b>的 OP
+ * （保留 {@code /ccmpor room enter eval} 调试自由、不强制转观察者）；
+ * 玩家一旦自己用缩小设备进入观察，就必须和普通玩家一样受越界/会话监管——
+ * 否则"飞出房间 → 倒计时 → 自动退出"整条对 OP 失效（0.3.49 起如此，0.4.4 实机报告）。
+ *
+ * <p><b>诊断探针（低频）</b>：进入/切换、退出（带原因与目的地）、越界倒计时开始、飞回取消
+ * 各打一条 INFO；"OP 未被观察记录接管"与"拿不到房间信息致越界判定跳过"各打一条——
+ * 全部只在<b>状态变化</b>时打，不刷屏。
  *
  * <p><b>离线/崩溃安全</b>：观察记录写在玩家 {@code PersistentData}（随玩家存档持久化），
  * 与既有启动棒事务（{@code EvaluationManager.markLauncherTransaction}）同一模式，
@@ -136,6 +146,10 @@ public final class EvaluationObservationManager {
             player.setGameMode(GameType.SPECTATOR);
         }
         teleportIntoRoom(player, target, roomCode);
+        // 低频探针：每次进入/切换只打一条，便于实机从日志确认"到底有没有进入观察记录"
+        CreateCMPOR.LOGGER.info("观察：{} {}评估副本（房间 {}，维度 {}）",
+                player.getName().getString(), switching ? "切换到" : "进入", roomCode,
+                targetKey.location());
 
         if (switching && readyLanes.size() > 1) {
             int position = readyLanes.indexOf(targetKey) + 1;
@@ -239,6 +253,10 @@ public final class EvaluationObservationManager {
         float yRot = data.contains("return_yrot") ? data.getFloat("return_yrot") : 0.0F;
         float xRot = data.contains("return_xrot") ? data.getFloat("return_xrot") : 0.0F;
         player.teleportTo(target, x, y, z, yRot, xRot);
+        // 低频探针：每次退出只打一条，注明原因与目的地（排查"退出被拦/坐标丢失"）
+        CreateCMPOR.LOGGER.info("观察：{} 退出观察（原因 {}），已传回 {} @({}, {}, {})",
+                player.getName().getString(), reasonKey, returnDimension.location(),
+                (int) x, (int) y, (int) z);
         if (reasonKey != null) {
             message(player, reasonKey);
         }
@@ -269,17 +287,25 @@ public final class EvaluationObservationManager {
         for (ServerPlayer player : List.copyOf(server.getPlayerList().getPlayers())) {
             ResourceKey<Level> dimension = player.level().dimension();
             if (!ParallelEvaluationWorlds.isAnyEvaluationWorld(dimension)) {
-                continue;
-            }
-            // OP 豁免：保留管理员自由进出评估维度的调试能力
-            if (player.hasPermissions(OP_PERMISSION_LEVEL)) {
+                clearRegulationState(player);
                 continue;
             }
             if (!INSTANCE.isObserving(player)) {
+                // OP 豁免**只在"没有观察记录"时生效**：保留管理员自由进出评估维度的调试能力
+                // （含 /ccmpor room enter eval），不强制转观察者、不纳入越界/会话监管。
+                // 关键：玩家一旦通过缩小设备进入观察（PersistentData 里有记录），即使是 OP
+                // 也必须纳入监管——否则"飞出 outerBounds → 倒计时 → 自动退出"对 OP 整条失效
+                // （0.3.49 起一直如此；0.4.4 用户实机报告"飞出墙外不再回主世界"）。
+                if (player.hasPermissions(OP_PERMISSION_LEVEL)) {
+                    noteOpExempt(player);
+                    continue;
+                }
+                markRegulated(player);
                 // 被传送模组/指令送进来：下一 tick 转为观察者并纳入监管
                 adoptTeleportedPlayer(server, player);
                 continue;
             }
+            markRegulated(player);
             CompoundTag record = player.getPersistentData().getCompound(OBSERVATION_KEY);
             if (record.hasUUID("session_id") && data.session(record.getUUID("session_id")).isEmpty()) {
                 INSTANCE.exit(player, "message.createcmpor.observation.finished");
@@ -287,10 +313,19 @@ public final class EvaluationObservationManager {
             }
             // 越界不立即退出：给 OUT_OF_BOUNDS_GRACE_TICKS 的缓冲倒计时（屏幕中央大字提示），
             // 飞回房间内立即取消并清除字样。超时才真正退出观察。
-            if (isOutsideRoom(player, record)) {
+            Bounds bounds = boundsOf(player, record);
+            if (bounds == Bounds.OUTSIDE) {
                 INSTANCE.tickOutOfBounds(player);
             } else {
-                INSTANCE.cancelOutOfBounds(player);
+                if (INSTANCE.cancelOutOfBounds(player)) {
+                    CreateCMPOR.LOGGER.info("观察：{} 飞回评估房间内，取消越界倒计时",
+                            player.getName().getString());
+                }
+                if (bounds == Bounds.UNKNOWN) {
+                    noteBoundsUnknown(player, record);
+                } else {
+                    markRegulated(player);
+                }
             }
         }
     }
@@ -310,7 +345,13 @@ public final class EvaluationObservationManager {
      */
     public void tickOutOfBounds(ServerPlayer player) {
         UUID id = player.getUUID();
-        int remaining = OUT_OF_BOUNDS_TIMERS.getOrDefault(id, OUT_OF_BOUNDS_GRACE_TICKS);
+        Integer tracked = OUT_OF_BOUNDS_TIMERS.get(id);
+        if (tracked == null) {
+            // 低频探针：只在"开始倒计时"这一次打（每 tick 调用，但只有 crossing 才命中）
+            CreateCMPOR.LOGGER.info("观察：{} 飞出评估房间外壁，{} 秒后自动退出（飞回房间内立即取消）",
+                    player.getName().getString(), OUT_OF_BOUNDS_GRACE_TICKS / 20);
+        }
+        int remaining = tracked == null ? OUT_OF_BOUNDS_GRACE_TICKS : tracked;
         if (remaining <= 0) {
             OUT_OF_BOUNDS_TIMERS.remove(id);
             clearOutOfBoundsTitle(player);
@@ -326,12 +367,18 @@ public final class EvaluationObservationManager {
         OUT_OF_BOUNDS_TIMERS.put(id, remaining - 1);
     }
 
-    /** 飞回房间内：取消倒计时并清除屏幕字样（下次飞出重新从整段开始）。 */
-    public void cancelOutOfBounds(ServerPlayer player) {
+    /**
+     * 飞回房间内：取消倒计时并清除屏幕字样（下次飞出重新从整段开始）。
+     *
+     * @return {@code true} 表示本次调用<b>真的取消了</b>一个进行中的倒计时（供调用方打低频日志）
+     */
+    public boolean cancelOutOfBounds(ServerPlayer player) {
         UUID id = player.getUUID();
-        if (OUT_OF_BOUNDS_TIMERS.remove(id) != null || OUT_OF_BOUNDS_SHOWN_SECONDS.remove(id) != null) {
+        boolean counting = OUT_OF_BOUNDS_TIMERS.remove(id) != null;
+        if (counting || OUT_OF_BOUNDS_SHOWN_SECONDS.remove(id) != null) {
             clearOutOfBoundsTitle(player);
         }
+        return counting;
     }
 
     /** 越界提示当前已显示的秒数（用于"只在秒数变化时发包"）。 */
@@ -366,7 +413,9 @@ public final class EvaluationObservationManager {
         }
         CompoundTag safe = player.getPersistentData().getCompound(LAST_SAFE_KEY);
         CompoundTag record = new CompoundTag();
-        record.putString("room_code", "");
+        // 被 tp 进来时记录里没有房间号 → 用 chunk→room 反查补齐，使这类观察者同样受越界监管
+        String roomCode = recordRoomCodeAt(player);
+        record.putString("room_code", roomCode);
         record.putString("observed_dim", player.level().dimension().location().toString());
         record.putString("return_gametype", player.gameMode.getGameModeForPlayer().getName());
         if (!safe.isEmpty()) {
@@ -393,18 +442,88 @@ public final class EvaluationObservationManager {
                 player.getName().getString(), player.level().dimension().location());
     }
 
-    /** 是否已飞出观察房间的外边界（含 Y 轴——评估维度高度仅 48）。 */
-    private static boolean isOutsideRoom(ServerPlayer player, CompoundTag record) {
+    /** 越界判定结果。 */
+    private enum Bounds {
+        /** 仍在 outerBounds 内。 */
+        INSIDE,
+        /** 已飞出外壁（含 Y 轴），应进入倒计时。 */
+        OUTSIDE,
+        /** 拿不到房间信息，无法判定（保持旧行为：不退出，但打一条低频 WARN）。 */
+        UNKNOWN
+    }
+
+    /**
+     * 玩家是否已飞出观察房间的外边界（含 Y 轴——评估维度高度仅 48）。
+     *
+     * <p>{@link Bounds#UNKNOWN} 出现在两种情况：观察记录里没有 {@code room_code}
+     * （只有"被 tp 进入者"才可能，见 {@link #recordRoomCodeAt}），或 CM 查不到该房间。
+     */
+    private static Bounds boundsOf(ServerPlayer player, CompoundTag record) {
         String roomCode = record.getString("room_code");
         if (roomCode == null || roomCode.isBlank()) {
-            return false; // 被 tp 进入且无房间信息：不做过界判定
+            return Bounds.UNKNOWN; // 无房间信息：不做过界判定
         }
         RoomInstance room = CompactMachines.room(player.server, roomCode).orElse(null);
         if (room == null) {
-            return false;
+            return Bounds.UNKNOWN;
         }
         AABB bounds = room.boundaries().outerBounds();
-        return !bounds.contains(player.getX(), player.getY(), player.getZ());
+        return bounds.contains(player.getX(), player.getY(), player.getZ()) ? Bounds.INSIDE : Bounds.OUTSIDE;
+    }
+
+    /**
+     * 玩家当前所在区块对应的房间号（空串 = 查不到）。
+     *
+     * <p>CM 的 chunk→room 映射与维度无关（{@code GraphChunkManager} 按 {@link ChunkPos} 索引），
+     * 而评估副本发布在<b>源房间的同一坐标</b>上，所以在评估维度里同样能查到源房间号——
+     * 用它给"被 tp 进入者"补上 room_code，这类玩家才能享受"飞出房间 → 倒计时 → 退出"。
+     */
+    private static String recordRoomCodeAt(ServerPlayer player) {
+        return CompactMachines.chunkManager()
+                .findRoomByChunk(new ChunkPos(player.blockPosition()))
+                .orElse("");
+    }
+
+    // ===================== 低频诊断日志（只在状态变化时打一条） =====================
+
+    /** 玩家 UUID → 上一次已记录的监管状态；仅状态变化时打日志，避免每 tick 刷屏。 */
+    private static final java.util.Map<UUID, String> REGULATION_STATE =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static final String STATE_OP_EXEMPT = "op-exempt";
+    private static final String STATE_REGULATED = "regulated";
+    private static final String STATE_BOUNDS_UNKNOWN = "bounds-unknown";
+
+    /** 记录状态；返回 {@code true} = 状态发生变化（需要打日志）。 */
+    private static boolean markState(ServerPlayer player, String state) {
+        return !state.equals(REGULATION_STATE.put(player.getUUID(), state));
+    }
+
+    /** 离开评估维度：忘掉状态，下次进来重新记录一条。 */
+    private static void clearRegulationState(ServerPlayer player) {
+        REGULATION_STATE.remove(player.getUUID());
+    }
+
+    /** 已纳入监管（观察中 / 即将被收纳）：仅记录状态，不产生日志。 */
+    private static void markRegulated(ServerPlayer player) {
+        markState(player, STATE_REGULATED);
+    }
+
+    /** OP 在评估维度内但没有观察记录 → 保持豁免；每次进入评估维度只说明一条。 */
+    private static void noteOpExempt(ServerPlayer player) {
+        if (markState(player, STATE_OP_EXEMPT)) {
+            CreateCMPOR.LOGGER.info("观察诊断：{} 是 OP（权限 ≥{}）且在评估维度内没有观察记录，"
+                            + "保持豁免（不转观察者、不做越界/会话监管）。要观察请手持缩小设备右键评估方块进入。",
+                    player.getName().getString(), OP_PERMISSION_LEVEL);
+        }
+    }
+
+    /** 观察者在评估维度内但拿不到房间信息 → 越界判定跳过；每次进入评估维度只警告一条。 */
+    private static void noteBoundsUnknown(ServerPlayer player, CompoundTag record) {
+        if (markState(player, STATE_BOUNDS_UNKNOWN)) {
+            CreateCMPOR.LOGGER.warn("观察诊断：{} 在评估维度内但拿不到房间信息（room_code=\"{}\"，查不到房间），"
+                            + "越界判定已跳过——飞出房间不会自动退出（其它退出路径不受影响）。",
+                    player.getName().getString(), record.getString("room_code"));
+        }
     }
 
     // ===================== 登录自愈 =====================
