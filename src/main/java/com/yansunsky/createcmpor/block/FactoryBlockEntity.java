@@ -1765,7 +1765,9 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         if (carryPreviewOnce) {
             return true;
         }
-        return Config.PREVIEW_SYNC_MODE.get() == Config.PreviewSyncMode.FULL
+        // 检测到旧客户端时，网络层会要求整体降级为 FULL（tag 是全渠道广播的，只能整体降）
+        return (Config.PREVIEW_SYNC_MODE.get() == Config.PreviewSyncMode.FULL
+                || com.yansunsky.createcmpor.network.ModNetwork.forcedFull())
                 && !skipPreviewInClientPayload;
     }
 

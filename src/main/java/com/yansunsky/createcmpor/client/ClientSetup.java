@@ -127,6 +127,27 @@ public class ClientSetup {
         event.registerReloadListener(listener);
     }
 
+    /**
+     * 客户端诊断命令（0.4.21）：{@code /ccmporc preview sync} 打印按需同步的缓存与通道状态。
+     *
+     * <p>客户端没有服务端那个 {@code /ccmpor} 命令树（注册在服务端 dispatcher 上），
+     * 所以单独注册一个 {@code /ccmporc}，避免与服务端命令冲突。
+     */
+    @SubscribeEvent
+    public static void registerClientCommands(net.neoforged.neoforge.client.event.RegisterClientCommandsEvent event) {
+        event.getDispatcher().register(
+                net.minecraft.commands.Commands.literal("ccmporc")
+                        .then(net.minecraft.commands.Commands.literal("preview")
+                                .then(net.minecraft.commands.Commands.literal("sync")
+                                        .executes(context -> {
+                                            context.getSource().sendSuccess(() -> net.minecraft.network.chat.Component
+                                                    .literal("[预览同步] "
+                                                            + com.yansunsky.createcmpor.client.preview.ClientPreviewSync
+                                                            .describe()), false);
+                                            return 1;
+                                        }))));
+    }
+
     private static void registerFlywheelVisuals() {
         SimpleBlockEntityVisualizer.<IOExtensionBlockEntity>builder(ModBlockEntities.IO_EXTENSION.get())
                 .factory(SingleAxisRotatingVisual::shaft)

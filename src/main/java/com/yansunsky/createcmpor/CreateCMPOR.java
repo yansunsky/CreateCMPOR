@@ -65,6 +65,18 @@ public class CreateCMPOR {
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(ModBlocks::registerCapabilities);
         modEventBus.addListener(CreateCMPOR::onAddPackFinders);
+        // 按需同步（0.4.21）：两个包的注册挂在 mod 总线（RegisterPayloadHandlersEvent implements IModBusEvent）
+        modEventBus.addListener(com.yansunsky.createcmpor.network.ModNetwork::register);
+        // 令牌桶随玩家生命周期清理；登录时检测旧客户端并按需整体降级为 FULL
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
+                (net.neoforged.neoforge.event.entity.player.PlayerEvent.PlayerLoggedOutEvent event) ->
+                        com.yansunsky.createcmpor.network.ModNetwork.forgetPlayer(event.getEntity().getUUID()));
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
+                (net.neoforged.neoforge.event.entity.player.PlayerEvent.PlayerLoggedInEvent event) -> {
+                    if (event.getEntity() instanceof net.minecraft.server.level.ServerPlayer serverPlayer) {
+                        com.yansunsky.createcmpor.network.ModNetwork.detectOutdatedClient(serverPlayer);
+                    }
+                });
         NeoForge.EVENT_BUS.addListener(EvalWorldCommands::onRegisterCommands);
         NeoForge.EVENT_BUS.addListener(EvaluationManager.INSTANCE::onServerTick);
         NeoForge.EVENT_BUS.addListener(EvaluationManager.INSTANCE::onServerStarted);
