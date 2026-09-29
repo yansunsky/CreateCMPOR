@@ -291,15 +291,12 @@ public final class EvaluationObservationManager {
                 continue;
             }
             if (!INSTANCE.isObserving(player)) {
-                // OP 豁免**只在"没有观察记录"时生效**：保留管理员自由进出评估维度的调试能力
-                // （含 /ccmpor room enter eval），不强制转观察者、不纳入越界/会话监管。
-                // 关键：玩家一旦通过缩小设备进入观察（PersistentData 里有记录），即使是 OP
-                // 也必须纳入监管——否则"飞出 outerBounds → 倒计时 → 自动退出"对 OP 整条失效
-                // （0.3.49 起一直如此；0.4.4 用户实机报告"飞出墙外不再回主世界"）。
-                if (player.hasPermissions(OP_PERMISSION_LEVEL)) {
-                    noteOpExempt(player);
-                    continue;
-                }
+                // 说明：0.3.49 起这里曾有一个"OP 豁免"（权限 >=2 时不纳入监管），导致 OP 账号
+                // "飞出 outerBounds 不退出、只有评估结束才回去"（0.4.4 实机发现）。0.4.5 先把豁免
+                // 收窄到"无观察记录"，0.4.6 按用户要求**彻底移除**——现在不再有豁免分支。
+                // 用户 2026-09-29 决定：**移除 OP 豁免**（该功能已收尾）——权限高低一律同待遇。
+                // 只要在评估维度里没有观察记录，就在下一 tick 转为观察者并纳入越界/会话监管，
+                // 即"飞出 outerBounds → 倒计时 → 自动退出"对所有人一致。
                 markRegulated(player);
                 // 被传送模组/指令送进来：下一 tick 转为观察者并纳入监管
                 adoptTeleportedPlayer(server, player);
