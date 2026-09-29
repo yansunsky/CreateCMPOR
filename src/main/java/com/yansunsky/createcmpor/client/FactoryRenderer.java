@@ -24,8 +24,14 @@ import com.mojang.blaze3d.vertex.PoseStack;
  */
 public class FactoryRenderer extends KineticBlockEntityRenderer<FactoryBlockEntity> {
 
-    /** 展示模式底座高度（像素）：短轴只在这个高度内渲染。与展示模型 factory_display 的底座一致。 */
-    private static final float BASE_PX = 3.0F;
+    /**
+     * 展示模式短轴长度（像素）。
+     *
+     * <p>用户 2026-09-29 反馈：底座 3px 时短轴也是 3px 会与底座外表面共面 → z-fighting 锯齿。
+     * 现改为 2px：底座底面内凹 1px（见 {@code factory_display.json} 的 2px 外圈 + 天花板），
+     * 短轴 2px 恰好从凹槽里探出一点，形似 Create 的 {@code create:encased_shaft}。
+     */
+    private static final float BASE_PX = 2.0F;
 
     public FactoryRenderer(BlockEntityRendererProvider.Context context) {
         super(context);
