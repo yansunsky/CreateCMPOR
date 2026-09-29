@@ -177,6 +177,8 @@ public final class ModNetwork {
 
     private static void reply(ServerPlayer player, RequestPreviewPayload request, int rev, int status,
                               CompoundTag preview) {
+        CreateCMPOR.LOGGER.info("[预览同步] 服务端响应 {}：rev={} status={} 数据={} KB",
+                request.pos(), rev, status, (preview == null ? 0 : preview.sizeInBytes()) / 1024);
         try {
             PacketDistributor.sendToPlayer(player, new PreviewResponsePayload(
                     request.pos(), rev, request.requestId(), status, Optional.ofNullable(preview)));

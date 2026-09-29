@@ -78,7 +78,9 @@ public final class EvalWorldCommands {
                         .then(Commands.literal("info")
                                 .executes(context -> showPreviewInfo(context.getSource())))
                         .then(Commands.literal("entities")
-                                .executes(context -> showEntitySizes(context.getSource())))));
+                                .executes(context -> showEntitySizes(context.getSource())))
+                        .then(Commands.literal("bumprev")
+                                .executes(context -> bumpPreviewRev(context.getSource())))));
     }
 
     /**
@@ -145,6 +147,42 @@ public final class EvalWorldCommands {
                         record.data().sizeInBytes())), false);
             }
         }
+        return 1;
+    }
+
+    /**
+     * 调试命令：把 16 格内最近的工厂的预览版本号顶一格（且不带数据地推一次包）。
+     *
+     * <p>作用见 {@code FactoryBlockEntity.debugBumpPreviewRev}：强制让客户端走一遍
+     * "按需请求 → 服务端响应 → 客户端装配"的完整链路，便于实机验收。
+     */
+    private static int bumpPreviewRev(CommandSourceStack source) throws CommandSyntaxException {
+        ServerPlayer player = source.getPlayerOrException();
+        ServerLevel level = player.serverLevel();
+        BlockPos origin = player.blockPosition();
+        FactoryBlockEntity nearest = null;
+        BlockPos nearestPos = null;
+        double best = Double.MAX_VALUE;
+        for (BlockPos pos : BlockPos.betweenClosed(origin.offset(-16, -16, -16), origin.offset(16, 16, 16))) {
+            if (level.isLoaded(pos) && level.getBlockEntity(pos) instanceof FactoryBlockEntity factory
+                    && factory.getPreviewSnapshot() != null) {
+                double d = pos.distSqr(origin);
+                if (d < best) {
+                    best = d;
+                    nearest = factory;
+                    nearestPos = pos.immutable();
+                }
+            }
+        }
+        if (nearest == null) {
+            source.sendFailure(Component.literal("16 格内没有携带预览快照的工厂方块。"));
+            return 0;
+        }
+        nearest.debugBumpPreviewRev();
+        final BlockPos foundPos = nearestPos;
+        final int rev = nearest.previewRev();
+        source.sendSuccess(() -> Component.literal("已把 " + foundPos + " 的预览版本号顶到 rev=" + rev
+                + "（并推了一次不带数据的客户端包，客户端下次渲染该工厂时会按需索取）"), false);
         return 1;
     }
 
