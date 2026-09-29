@@ -51,11 +51,36 @@ import net.minecraft.world.level.Level;
  * ——两者恰好差半格。判据不依赖推理：本类在同一层先画的机壳（{@link #drawShell}，同样是 0..1 空间、
  * 同样在入口姿态、同样零额外变换）位置正确，就证明入口姿态的坐标系正是预览需要的那个空间。
  *
+ * <h3>机壳用哪个模型（0.4.4 澄清，含一条被推翻的猜测）</h3>
+ * <b>物品机壳的模型由「物品模型 JSON」决定，与方块状态、与 {@code registerDefaultState} 无关。</b>
+ * 证据链：
+ * <ol>
+ *     <li>{@code assets/createcmpor/models/item/factory_block.json} 是<b>显式</b>的
+ *         {@code {"parent": "createcmpor:block/factory_block_closed"}}；
+ *         {@code ModelBakery.loadItemModelAndDependencies} 把它注册成
+ *         {@code createcmpor:factory_block#inventory}，全程<b>不读 blockstate、不解析任何 BlockState</b>；</li>
+ *     <li>{@code factory_block_closed.json} 是独立模型文件（30 个 element、只用 {@code #casing}、无玻璃），
+ *         不是 {@code blockstates/factory_block.json} 里 {@code encased=true} 那套 multipart
+ *         （{@code factory_casing} + panel/fill 14 条 selector）；</li>
+ *     <li>multipart 模型（{@code MultiPartBakedModel}）只由 <b>blockstate</b> 产生，物品路径拿不到它——所以
+ *         "物品用了 {@code ENCASED} 默认值 true 的外壳"这一猜测不成立（0.4.3 曾据此记录待查，0.4.4 实测否定）。</li>
+ * </ol>
+ * 期望外观 = <b>展示形态</b>（3px 底座 + 四角立柱 + 顶部横梁 + 四面玻璃），对应
+ * {@code createcmpor:block/factory_display}（{@code render_type: cutout}）——即方块世界里
+ * {@code ENCASED=false, GLASS_SHELL=false} 那套。0.4.4 把<b>物品模型 JSON 的 parent</b> 指向它，
+ * 于是机壳在<b>所有</b>物品路径（GUI / 手持 / 掉落物 / 展示框 / JEI / 配方预览）都是展示形态，
+ * 不需要也不应该去构造 BlockState。
+ *
+ * <h3>绘制顺序</h3>
+ * 先画预览、后画机壳——与世界里的顺序一致（不透明/实体 pass 先、半透明覆盖后），
+ * 保证"透过玻璃看里面的微缩"的合成关系与方块侧相同（{@code factory_display} 的玻璃是
+ * cutout：alpha=0 的像素被丢弃，所以微缩不会被玻璃挡黑）。
+ *
  * <h3>降级（必须，绝不冒泡）</h3>
  * <ul>
  *     <li>无 {@code BLOCK_ENTITY_DATA} / 无 {@code preview} 子标签 / {@code PreviewSnapshot.load} 返回 null
  *         / {@code Minecraft.getInstance().level == null}（主菜单、资源包界面、世界卸载瞬间）
- *         → <b>不烘焙</b>，只画原机壳模型（外观与今天逐位一致，绝不隐形）；</li>
+ *         → <b>不烘焙</b>，只画原机壳模型（机壳路径不依赖 level，绝不隐形）；</li>
  *     <li>{@code VirtualRenderWorld} 的构造器第一条指令就解引用 level → level 为 null 时连解析都不要做；</li>
  *     <li>整个方法体 {@code try/catch(Throwable)}：GUI 路径里异常会变成
  *         {@code CrashReport("Rendering item") → ReportedException}，<b>直接崩游戏</b>
@@ -77,6 +102,9 @@ import net.minecraft.world.level.Level;
  */
 public final class FactoryItemRenderer extends BlockEntityWithoutLevelRenderer {
 
+    /** 上一次打过日志的机壳模型（仅用于"换模型时打一条 debug"，不参与任何渲染逻辑）。 */
+    private static BakedModel lastLoggedShell;
+
     /**
      * 与 Create 的 {@code CustomRenderedItemModelRenderer} 同款：不走基类实现
      * （基类实现只认原版的床/旗帜/头颅/箱子等方块），所以两个参数给 null 即可。
@@ -92,18 +120,16 @@ public final class FactoryItemRenderer extends BlockEntityWithoutLevelRenderer {
             if (stack.isEmpty()) {
                 return;
             }
-            // ① 机壳：先画，与今天的物品外观逐位一致（GUI/掉落物/手持的 display 变换由 M_ctx 提供）。
-            drawShell(stack, ms, buffers, packedLight, packedOverlay);
-            // ② 微缩预览：**就在这一层**画，与机壳同一个坐标系（方块模型空间 0..1）。
-            //    千万不要再加 translate(±0.5)：入口姿态 T(-0.5) 只是把方块搬到了"以物品原点为中心"的位置，
-            //    坐标系仍是方块最小角为原点的模型空间；再加 +0.5 会让预览整体偏移半格跑出方块（0.4.2 的 bug）。
-            //    PreviewRender 自带 push/pop 与全部缩放/居中数学，这里不做任何变换。
+            // ① 微缩预览先画，② 机壳后画——与世界里的绘制顺序一致（不透明/实体 pass 先、半透明覆盖后），
+            //    这样"隔着一层玻璃看内容"的合成关系与方块侧相同。
             if (Config.ENABLE_FACTORY_ITEM_PREVIEW.get()) {
                 PreviewBaked baked = resolvePreview(stack);
                 if (baked != null) {
                     PreviewRender.render(ms, buffers, packedLight, baked);
                 }
             }
+            // 机壳：与 0.4.1 及以前的物品外观一致（模型来自物品模型 JSON，见类注释的 0.4.4 说明）。
+            drawShell(stack, ms, buffers, packedLight, packedOverlay);
         } catch (Throwable error) {
             // 绝不冒泡：GUI 路径会 ReportedException 崩游戏，手持/掉落物路径会崩客户端渲染线程。
             CreateCMPOR.LOGGER.debug("[预览] 物品微缩预览渲染失败，本帧跳过（不影响机壳绘制）", error);
@@ -164,7 +190,21 @@ public final class FactoryItemRenderer extends BlockEntityWithoutLevelRenderer {
             for (RenderType layer : pass.getRenderTypes(stack, true)) {
                 VertexConsumer consumer = ItemRenderer.getFoilBufferDirect(buffers, layer, true, stack.hasFoil());
                 itemRenderer.renderModelLists(pass, stack, packedLight, packedOverlay, ms, consumer);
+                logShellOnce(pass, layer);
             }
         }
+    }
+
+    /**
+     * 机壳模型只在"换过一次"时打一条 debug（不是每帧刷屏）：排查"手持外壳用错模型"时，
+     * 这一行直接回答"实际画的是哪个模型、落在哪个图层"。
+     */
+    private static void logShellOnce(BakedModel model, RenderType layer) {
+        if (model == lastLoggedShell) {
+            return;
+        }
+        lastLoggedShell = model;
+        CreateCMPOR.LOGGER.debug("[预览] 物品机壳：模型 = {}，图层 = {}（模型来自物品模型 JSON，与方块状态无关）",
+                model.getClass().getSimpleName(), layer);
     }
 }
