@@ -101,6 +101,27 @@ public class Config {
      */
     public static final ModConfigSpec.IntValue OBSERVATION_PERMISSION_LEVEL;
 
+    /**
+     * 是否在固化时采集「房间产线微缩预览」快照。
+     * Whether to capture the miniature factory preview snapshot when solidifying.
+     * <ul>
+     * <li>{@code true}（默认）：固化那一刻从评估副本采一份方块快照存进工厂方块，客户端据此渲染微缩产线。</li>
+     * <li>{@code false}：完全不采集（工厂方块外观与旧版一致）。</li>
+     * </ul>
+     * 采集只在固化瞬间发生一次；采集失败只影响预览，不影响固化与评估结果。
+     */
+    public static final ModConfigSpec.BooleanValue ENABLE_FACTORY_PREVIEW;
+
+    /**
+     * 微缩预览的网格体积上限（格）。
+     * Maximum preview grid volume, in cells.
+     * <ul>
+     * <li>超过该体积的房间会先按整数步长做盒式降采样，再进入快照；</li>
+     * <li>体积上限直接决定工厂 BE 的 NBT 增量与同步包大小（每格 1 字节 + 调色板文本）。</li>
+     * </ul>
+     */
+    public static final ModConfigSpec.IntValue PREVIEW_MAX_VOLUME;
+
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
 
@@ -271,6 +292,29 @@ public class Config {
                         "允许观察评估副本的权限等级（0=所有玩家，2=仅管理员）。",
                         "Permission level required to observe an evaluation replica (0 = everyone, 2 = operators only).")
                 .defineInRange("observationPermissionLevel", 0, 0, 4);
+        builder.pop();
+
+        builder.comment(
+                "工厂方块微缩预览（0.4.0）",
+                "Factory miniature preview (0.4.0)").push("preview");
+        ENABLE_FACTORY_PREVIEW = builder
+                .comment(
+                        "是否在固化时采集房间产线快照，供工厂方块渲染微缩预览。",
+                        "Whether to capture a room snapshot at solidify time for the factory's miniature preview.",
+                        "true（默认）：固化那一刻从评估副本采集；采集失败只影响预览，不影响固化。",
+                        "true (default): captured from the evaluation replica at solidify time; failures never affect solidification.",
+                        "false：不采集，工厂外观与旧版一致。",
+                        "false: no capture; factories look like previous versions.")
+                .define("enableFactoryPreview", true);
+        PREVIEW_MAX_VOLUME = builder
+                .comment(
+                        "微缩预览网格体积上限（格）。超过该体积的房间先按整数步长盒式降采样再进快照。",
+                        "Maximum preview grid volume in cells; larger rooms are box-filtered down before snapshotting.",
+                        "该值同时决定工厂方块实体的 NBT 增量与客户端同步包大小（约 1 字节/格 + 调色板文本）。",
+                        "This value bounds the block entity NBT growth and the client sync packet size.",
+                        "默认 8192（约等于 20×20×20）。",
+                        "Default 8192 (about 20x20x20).")
+                .defineInRange("previewMaxVolume", 8192, 64, 32768);
         builder.pop();
 
         SPEC = builder.build();

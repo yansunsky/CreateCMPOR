@@ -1,9 +1,12 @@
 package com.yansunsky.createcmpor.command;
 
 import com.yansunsky.createcmpor.CreateCMPOR;
+import com.yansunsky.createcmpor.block.FactoryBlockEntity;
 import com.yansunsky.createcmpor.compat.cm.CMAdapterV7;
 import com.yansunsky.createcmpor.compat.cm.ICompactMachinesAdapter;
 import com.yansunsky.createcmpor.compat.cm.RoomCloner;
+import com.yansunsky.createcmpor.preview.PreviewCapture;
+import com.yansunsky.createcmpor.preview.PreviewSnapshot;
 import com.yansunsky.createcmpor.evaluation.EvaluationCloneManager;
 import com.yansunsky.createcmpor.evaluation.EvaluationManager;
 import com.yansunsky.createcmpor.evaluation.EvaluationManifest;
@@ -69,7 +72,58 @@ public final class EvalWorldCommands {
                                 .executes(context -> showMaxEvaluations(context.getSource()))
                                 .then(Commands.argument("value", IntegerArgumentType.integer(1, 16))
                                         .executes(context -> setMaxEvaluations(context.getSource(),
-                                                IntegerArgumentType.getInteger(context, "value")))))));
+                                                IntegerArgumentType.getInteger(context, "value"))))))
+                .then(Commands.literal("preview")
+                        .then(Commands.literal("info")
+                                .executes(context -> showPreviewInfo(context.getSource())))));
+    }
+
+    /**
+     * 报告附近工厂方块的微缩预览统计（P1 数据层验收用）。
+     *
+     * <p>只看已加载区块，不做任何强制加载；半径 16 格内取最近的一个有预览数据的工厂。
+     */
+    private static int showPreviewInfo(CommandSourceStack source) throws CommandSyntaxException {
+        ServerPlayer player = source.getPlayerOrException();
+        ServerLevel level = player.serverLevel();
+        BlockPos origin = player.blockPosition();
+        FactoryBlockEntity nearest = null;
+        BlockPos nearestPos = null;
+        double bestDistance = Double.MAX_VALUE;
+        for (BlockPos pos : BlockPos.betweenClosed(origin.offset(-16, -16, -16), origin.offset(16, 16, 16))) {
+            if (!level.isLoaded(pos)) {
+                continue;
+            }
+            if (!(level.getBlockEntity(pos) instanceof FactoryBlockEntity factory)) {
+                continue;
+            }
+            if (factory.getPreviewSnapshot() == null) {
+                continue;
+            }
+            double distance = pos.distSqr(origin);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                nearest = factory;
+                nearestPos = pos.immutable();
+            }
+        }
+        if (nearest == null) {
+            source.sendFailure(Component.literal("16 格内没有携带微缩预览数据的工厂方块（旧存档/采集失败/配置关闭都会如此）。"));
+            return 0;
+        }
+        // lambda 捕获需要 final/等效 final：这里显式落成常量副本
+        final BlockPos foundPos = nearestPos;
+        final double foundDistance = bestDistance;
+        final PreviewSnapshot snapshot = nearest.getPreviewSnapshot();
+        final int encoded = snapshot.encodedSize();
+        source.sendSuccess(() -> Component.literal(String.format(
+                "预览 @%s 距离 %.1f：网格 %d×%d×%d，非空气 %d 格，调色板 %d 种，编码 %d 字节（%.1f KB）",
+                foundPos, Math.sqrt(foundDistance), snapshot.width(), snapshot.height(), snapshot.depth(),
+                snapshot.nonAirCount(), snapshot.paletteSize(), encoded, encoded / 1024.0)), false);
+        for (String line : PreviewCapture.describePalette(snapshot, 8)) {
+            source.sendSuccess(() -> Component.literal("  " + line), false);
+        }
+        return 1;
     }
 
     private static int showRoomCode(CommandSourceStack source) throws CommandSyntaxException {
