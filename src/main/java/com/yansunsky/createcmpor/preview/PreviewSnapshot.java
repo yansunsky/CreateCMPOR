@@ -93,8 +93,14 @@ public final class PreviewSnapshot {
      * @param data  <b>裁剪后的存档 NBT</b>（外观必需标签：展示框的 Item/Facing、羊的 Color、村民 VillagerData…）。
      *              刻意不含 {@code Motion}/{@code UUID}/{@code Attributes}/{@code Brain}/背包等渲染无关的大块数据；
      *              客户端用 {@code EntityType.byString(type) + create(world) + load(data)} 重建。
+     * @param animDegPerTick 角速度（度/tick，带符号；0 = 静止）。<b>只对"绕单一轴旋转"的装置有意义</b>
+     *              （目前只采机械轴承/风车轴承驱动的 {@code ControlledContraptionEntity}）：
+     *              值 = 控制器方块转速 × 0.3（Create {@code KineticBlockEntity.convertToAngular(speed)}
+     *              就是 {@code speed * 3 / 10} 度/tick）。客户端用它把装置从 NBT 里的基准角继续转下去。
+     *              <b>不是 NBT 里的字段，是本项目自己采的动画元数据</b>（服务端采集、客户端只读）。
      */
-    public record EntityRecord(String type, float x, float y, float z, float yaw, float pitch, CompoundTag data) {
+    public record EntityRecord(String type, float x, float y, float z, float yaw, float pitch, CompoundTag data,
+                               float animDegPerTick) {
         public EntityRecord {
             data = data == null ? new CompoundTag() : data.copy();
         }
@@ -350,6 +356,9 @@ public final class PreviewSnapshot {
         for (EntityRecord record : entities) {
             CompoundTag entry = new CompoundTag();
             entry.putString("id", record.type());
+            if (record.animDegPerTick() != 0.0F) {
+                entry.putFloat("anim", record.animDegPerTick());
+            }
             entry.putFloat("x", record.x());
             entry.putFloat("y", record.y());
             entry.putFloat("z", record.z());
@@ -382,7 +391,8 @@ public final class PreviewSnapshot {
                 }
                 records.add(new EntityRecord(id, entry.getFloat("x"), entry.getFloat("y"), entry.getFloat("z"),
                         entry.getFloat("yaw"), entry.getFloat("pitch"),
-                        entry.contains("data", Tag.TAG_COMPOUND) ? entry.getCompound("data") : new CompoundTag()));
+                        entry.contains("data", Tag.TAG_COMPOUND) ? entry.getCompound("data") : new CompoundTag(),
+                        entry.getFloat("anim")));
             } catch (RuntimeException error) {
                 // 单条损坏只丢单条
             }

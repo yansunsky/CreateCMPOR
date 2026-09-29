@@ -5,6 +5,7 @@ import com.simibubi.create.content.contraptions.ControlledContraptionEntity;
 import com.simibubi.create.content.contraptions.OrientedContraptionEntity;
 import com.yansunsky.createcmpor.CreateCMPOR;
 import com.yansunsky.createcmpor.preview.PreviewSnapshot;
+import net.createmod.catnip.animation.AnimationTickHolder;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
@@ -88,8 +89,14 @@ public final class PreviewEntityScene {
         this.placed = List.copyOf(placed);
     }
 
-    /** 一只已重建的实体及其在<b>快照局部格坐标系</b>里的位置。 */
-    private record Placed(Entity entity, float x, float y, float z, String type) {
+    /**
+     * 一只已重建的实体及其在<b>快照局部格坐标系</b>里的位置。
+     *
+     * @param baseAngle 快照里记录的基准转角（度）——只有可控装置用
+     * @param animDegPerTick <b>已按动画周期整表缩放</b>的角速度（度/tick，0 = 静止）
+     */
+    private record Placed(Entity entity, float x, float y, float z, String type,
+                          float baseAngle, float animDegPerTick) {
     }
 
     /**
@@ -98,7 +105,8 @@ public final class PreviewEntityScene {
      * <p>任何失败都<b>只影响该只实体</b>：造不出来就跳过（记一次 debug），绝不冒泡、绝不空指针。
      * 全部失败时返回 {@link #EMPTY}。
      */
-    public static PreviewEntityScene build(Level virtualWorld, List<PreviewSnapshot.EntityRecord> records) {
+    public static PreviewEntityScene build(Level virtualWorld, List<PreviewSnapshot.EntityRecord> records,
+                                           float speedScale) {
         if (records.isEmpty()) {
             return EMPTY;
         }
@@ -139,7 +147,15 @@ public final class PreviewEntityScene {
                 entity.setOldPosAndRot();
                 // 装置额外一步：把"上一帧姿态"对齐到"当前姿态"（影子实体永远不会 tick，见方法注释）
                 alignContraptionPrevFields(entity);
-                built.add(new Placed(entity, record.x(), record.y(), record.z(), record.type()));
+                // 角速度与转速表同一口径缩放（整表缩放系数由烘焙侧算好传进来），
+                // 于是"装置"与"驱动它的轴承"在微缩里转速一致；基准角取 NBT 里那个冻结的角度。
+                float anim = record.animDegPerTick() * speedScale;
+                if (Math.abs(anim) < PreviewSnapshot.SPEED_EPSILON) {
+                    anim = 0.0F;
+                }
+                float baseAngle = entity instanceof ControlledContraptionEntity controlled
+                        ? controlled.getAngle(1.0F) : 0.0F;
+                built.add(new Placed(entity, record.x(), record.y(), record.z(), record.type(), baseAngle, anim));
             } catch (Throwable error) {
                 FAILED_TYPES.add(record.type());
                 CreateCMPOR.LOGGER.warn("[预览] 实体重建失败，今后跳过该类型：{}", record.type(), error);
@@ -150,6 +166,44 @@ public final class PreviewEntityScene {
 
     public boolean isEmpty() {
         return placed.isEmpty();
+    }
+
+    /**
+     * 让"绕单轴旋转"的装置动起来：每帧把角度推给实体（{@code ControlledContraptionEntity}）。
+     *
+     * <h3>为什么这样驱动是对的（三步证据）</h3>
+     * <ol>
+     *     <li>真实世界里角度就是这么来的：{@code MechanicalBearingBlockEntity.tick()} 每 tick
+     *         {@code angle += convertToAngular(getSpeed())}（{@code :265-266}），
+     *         然后 {@code movedContraption.setAngle(angle)}（{@code :286}）；</li>
+     *     <li>渲染读的是 {@code getAngle(partialTicks)}，我们每帧同时写 {@code angle} 与 {@code prevAngle}
+     *         ⇒ 返回的正是我们写进去的那个角度（{@code prevAngle} 是 protected，靠反射，见
+     *         {@link #alignContraptionPrevFields}）；</li>
+     *     <li>角速度口径与转速表一致：{@code animDegPerTick} 在烘焙期已经乘过同一个整表缩放系数，
+     *         所以"装置转一圈"与"轴承转一圈"用的是同一个周期。</li>
+     * </ol>
+     *
+     * <p>相位用 {@code (renderTime % period) × speed} 求，而不是 {@code renderTime × speed % 360}：
+     * 后者在会话后期（{@code renderTime} 以 tick 计、可达千万级）会因 float 精度丢失而抖动。
+     *
+     * <p>失败只让<b>这一个装置</b>静止：属性写入包在自己的 try 里，绝不因此把它锁存成"渲染失败"。
+     */
+    private static void driveContraptionAngle(Placed placement, float renderTime) {
+        if (placement.animDegPerTick() == 0.0F
+                || !(placement.entity() instanceof ControlledContraptionEntity controlled)) {
+            return;
+        }
+        try {
+            float period = 360.0F / Math.abs(placement.animDegPerTick());
+            float degrees = placement.baseAngle() + (renderTime % period) * placement.animDegPerTick();
+            controlled.setAngle(degrees);
+            Field field = prevAngleField();
+            if (field != null) {
+                field.setFloat(controlled, degrees);
+            }
+        } catch (Throwable error) {
+            CreateCMPOR.LOGGER.debug("[预览] 装置角度驱动失败（该装置保持静止）：{}", placement.type(), error);
+        }
     }
 
     /**
@@ -247,12 +301,14 @@ public final class PreviewEntityScene {
         } catch (Throwable error) {
             CreateCMPOR.LOGGER.debug("[预览] 关闭实体阴影失败（继续绘制）", error);
         }
+        float renderTime = AnimationTickHolder.getRenderTime();
         try {
             for (Placed placement : placed) {
                 if (FAILED_TYPES.contains(placement.type())) {
                     continue;
                 }
                 try {
+                    driveContraptionAngle(placement, renderTime);
                     EntityRenderer<? super Entity> renderer = dispatcher.getRenderer(placement.entity());
                     if (renderer == null) {
                         FAILED_TYPES.add(placement.type());

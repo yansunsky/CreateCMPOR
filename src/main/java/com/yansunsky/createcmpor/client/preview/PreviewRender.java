@@ -182,10 +182,14 @@ public final class PreviewRender {
                 // 与 Create 各渲染器同源，避免两条路径相位差一个常量。
                 float degrees = (time * cell.speed() * 0.3F + cell.phaseAt(i)) % 360.0F;
                 float radians = degrees / 180.0F * (float) Math.PI;
-                part.buffer()
+                SuperByteBuffer buffer = part.buffer()
                         .light(packedLight)
-                        .rotateCentered(radians, Direction.get(AxisDirection.POSITIVE, part.axis()))
-                        .renderInto(ms, buffers.getBuffer(part.layer()));
+                        .rotateCentered(radians, Direction.get(AxisDirection.POSITIVE, part.axis()));
+                // Create 的 renderSafe 常在自旋之后追加朝向修正（如机械轴承顶板），顺序必须原样保留
+                for (PreviewDynamicParts.FixedRotation fixed : part.tail()) {
+                    buffer.rotateCentered(fixed.radians(), Direction.get(AxisDirection.POSITIVE, fixed.axis()));
+                }
+                buffer.renderInto(ms, buffers.getBuffer(part.layer()));
             }
             return true;
         } catch (Throwable error) {

@@ -104,6 +104,8 @@ public record PreviewBaked(PreviewSnapshot snapshot, long contentHash, Map<Rende
             hash = mix(hash, Float.floatToIntBits(entity.z()));
             hash = mix(hash, Float.floatToIntBits(entity.yaw()));
             hash = mix(hash, Float.floatToIntBits(entity.pitch()));
+            // 动画角速度是独立字段（不在 NBT 里），也必须进指纹
+            hash = mix(hash, Float.floatToIntBits(entity.animDegPerTick()));
             hash = mix(hash, entity.data().hashCode());
         }
         return hash;
