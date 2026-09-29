@@ -128,6 +128,9 @@ public final class PreviewCapture {
         List<BlockState> palette = new ArrayList<>();
         palette.add(net.minecraft.world.level.block.Blocks.AIR.defaultBlockState());
         byte[] cells = new byte[width * height * depth];
+        // 连通组表：只在全分辨率采集时有效（降采样后一格代表多方块，连通关系不再有意义）
+        byte[] groups = step == 1 ? new byte[cells.length] : null;
+        Map<BlockPos, Integer> groupIds = groups == null ? null : new HashMap<>();
         Map<BlockState, int[]> histogram = step > 1 ? new HashMap<>() : null;
         BlockPos.MutableBlockPos sample = new BlockPos.MutableBlockPos();
 
@@ -154,11 +157,14 @@ public final class PreviewCapture {
                         indexByState.put(state, index);
                     }
                     cells[x + width * (y + height * z)] = index.byteValue();
+                    if (groups != null) {
+                        recordGroup(level, sample, groups, groupIds, x + width * (y + height * z));
+                    }
                 }
             }
         }
 
-        PreviewSnapshot result = new PreviewSnapshot(width, height, depth, palette, cells);
+        PreviewSnapshot result = new PreviewSnapshot(width, height, depth, palette, cells, groups);
         if (result.nonAirCount() == 0) {
             CreateCMPOR.LOGGER.info("[预览] 房间内没有可用方块，跳过预览");
             return null;
@@ -169,6 +175,34 @@ public final class PreviewCapture {
                 result.width(), result.height(), result.depth(), result.nonAirCount(),
                 result.paletteSize(), result.encodedSize());
         return result;
+    }
+
+    /**
+     * 记录该格所属的"多方块连通组"——同一控制器（{@code IMultiBlockEntityContainer.getController()}）的方块同组。
+     *
+     * <p>客户端烘焙时会按组号给代理 BE 注入同一个伪控制器坐标，使 Create 的
+     * {@code ConnectivityHandler.isConnected}(实现是 `one.getController().equals(two.getController())`)
+     * 判定为连通，从而让连通纹理（CTM）正确显示。快照本身不存 BE NBT，所以这里从源世界读真实控制器。
+     */
+    private static void recordGroup(ServerLevel level, BlockPos pos, byte[] groups,
+                                    Map<BlockPos, Integer> groupIds, int cellIndex) {
+        if (!(level.getBlockEntity(pos)
+                instanceof com.simibubi.create.foundation.blockEntity.IMultiBlockEntityContainer container)) {
+            return;
+        }
+        BlockPos controller = container.getController();
+        if (controller == null) {
+            return;
+        }
+        Integer group = groupIds.get(controller);
+        if (group == null) {
+            if (groupIds.size() >= PreviewSnapshot.MAX_GROUPS) {
+                return;
+            }
+            group = groupIds.size() + 1;
+            groupIds.put(controller, group);
+        }
+        groups[cellIndex] = group.byteValue();
     }
 
     /** 盒式降采样：取 {@code step³} 组内出现次数最多的非空气方块（全空气则返回 null）。 */
