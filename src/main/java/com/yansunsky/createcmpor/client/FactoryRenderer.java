@@ -18,9 +18,8 @@ import net.minecraft.world.level.block.state.BlockState;
 import com.mojang.blaze3d.vertex.PoseStack;
 
 /**
- * 工厂的 vanilla BER 兜底：对每个开口面渲染一段半轴（SHAFT_HALF）。
- * Flywheel 可用时由 FactoryVisual 渲染（本 renderer 由基类自动跳过）；
- * 仅在无 Flywheel 时兜底，保证六面开口都有轴可见。
+ * 工厂的 vanilla BER 兜底：展示态画底面 2px 短轴；包壳态对每个开口面渲染一段半轴（SHAFT_HALF）。
+ * Flywheel 可用时由 FactoryVisual 渲染（本 renderer 由基类自动跳过）；本类负责无 Flywheel 时的兜底。
  */
 public class FactoryRenderer extends KineticBlockEntityRenderer<FactoryBlockEntity> {
 
@@ -85,13 +84,18 @@ public class FactoryRenderer extends KineticBlockEntityRenderer<FactoryBlockEnti
             return;
         }
 
-        Axis axis = getRotationAxisOf(be);
-        float angle = getAngleForBe(be, be.getBlockPos(), axis);
-
+        // 0.4.29：**逐面取该面自己的轴**。
+        // 旧实现六面共用 getRotationAxisOf(be)（= FactoryBlock.getRotationAxis）——多面开口时，
+        // 非该轴的半轴会"绕错轴翻滚"而不是自转。getAngleForBe 与 kineticRotationTransform 都接受
+        // Axis 参数，且相位偏移（KineticBlockEntityVisual.rotationOffset → shouldOffset）本身就是逐轴的，
+        // 故必须逐面重算。参照实现：createadditionallogistics:flexible_shaft 的
+        // LowEntityKineticBlockEntityRenderer（同一写法）。
         for (Direction d : Direction.values()) {
             if (!def.hasShaftTowards(be.getLevel(), be.getBlockPos(), blockState, d)) {
                 continue;
             }
+            Axis axis = d.getAxis();
+            float angle = getAngleForBe(be, be.getBlockPos(), axis);
             SuperByteBuffer shaft = CachedBuffers.partialFacing(AllPartialModels.SHAFT_HALF, be.getBlockState(), d);
             kineticRotationTransform(shaft, be, axis, angle, light);
             shaft.renderInto(ms, buffer.getBuffer(RenderType.solid()));

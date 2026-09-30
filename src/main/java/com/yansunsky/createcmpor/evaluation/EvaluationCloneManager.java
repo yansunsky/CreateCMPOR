@@ -149,13 +149,21 @@ public final class EvaluationCloneManager {
             requestCleanup(server, data, session, "message.createcmpor.evaluation.source_not_idle");
             return;
         }
-        if (!EvaluationStorageBridge.areChunksIdle(room.level(), chunks)) {
+        // 与 WAITING_UNLOAD 同一判据（0.4.28 统一）。旧实现这里用「严格 idle（要求 pendingUnloads 为空）」，
+        // 而上一状态刚按「卡死豁免」放行，于是 16~52ms 内必然自相矛盾地判未卸载并回滚 —— 实测 35/35 次失败
+        // 全是这个形状（"已冻结（卡死豁免）" 紧接 "阶段 FROZEN：源房间 ... 区块未保持卸载"）。
+        if (!EvaluationStorageBridge.areChunksUnloadedForFreeze(room.level(), chunks)) {
             logSourceNotIdle(server, session, room.level(), chunks, "FROZEN");
             if (!Config.CONTINUE_ON_SOURCE_RELOADED.get()) {
                 requestCleanup(server, data, session, "message.createcmpor.evaluation.source_not_idle");
                 return;
             }
             warnSourceReloadForced(server, session);
+        } else if (EvaluationStorageBridge.hasChunkUnloadBacklog(room.level(), chunks)) {
+            // 内容已卸载，只是 vanilla 卸载收尾滞后：放行。单行日志（理由见 EvaluationManager 同处注释）。
+            CreateCMPOR.LOGGER.info("评估会话 {} 源房间 {} 内容已卸载（仍有区块在 vanilla 卸载队列收尾，不阻塞克隆）：{}",
+                    session.id(), session.roomCode(),
+                    EvaluationStorageBridge.describeUnloadBlocker(room.level(), chunks));
         }
         EvaluationManifest manifest = EvaluationManifest.create(session.id(), session.roomCode(),
                 room.levelKey(), target.dimension(), room.level().getGameTime(), chunks);
@@ -203,7 +211,8 @@ public final class EvaluationCloneManager {
         }
         List<ChunkPos> stagingChunks = manifest.chunks().stream()
                 .map(EvaluationManifest.ChunkRecord::chunkPos).toList();
-        if (!EvaluationStorageBridge.areChunksIdle(room.level(), stagingChunks)) {
+        // 与 tickFrozen 同一判据（0.4.28 统一）；此处是"克隆期间源区块是否被复载"的最后一道复检。
+        if (!EvaluationStorageBridge.areChunksUnloadedForFreeze(room.level(), stagingChunks)) {
             logSourceNotIdle(server, session, room.level(), stagingChunks, "STAGING_SOURCE");
             if (!Config.CONTINUE_ON_SOURCE_RELOADED.get()) {
                 requestCleanup(server, data, session, "message.createcmpor.evaluation.source_not_idle");

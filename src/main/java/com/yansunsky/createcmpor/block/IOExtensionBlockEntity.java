@@ -67,9 +67,9 @@ public class IOExtensionBlockEntity extends KineticBlockEntity {
      * 本方块能触达的所有工厂方块坐标（IO 转发目标）。
      *
      * <p>BFS 沿<b>轴向两端</b>（应力接口面）扩展：经过轴向对齐的 IO 拓展方块
-     * （间接相邻），遇到贴在本方块或链上任意成员轴向端的工厂<b>开口面</b>
-     * （{@link FactoryBlock#SHAFT_BY_FACE}=true）即收集。整条链上的每个方块
-     * 都返回链触达的所有工厂——直接相邻与间接相邻统一覆盖。
+     * （间接相邻），遇到贴在本方块或链上任意成员轴向端的工厂<b>可用接口面</b>
+     * （{@link FactoryBlock#isShaftFaceOpen}：展示态=仅底面，包壳态=该面 {@code shaft_*}=true）即收集。
+     * 整条链上的每个方块都返回链触达的所有工厂——直接相邻与间接相邻统一覆盖。
      */
     public List<BlockPos> getReachableFactories() {
         List<BlockPos> result = new ArrayList<>();
@@ -99,8 +99,9 @@ public class IOExtensionBlockEntity extends KineticBlockEntity {
                     visited.add(np.asLong());
                     queue.add(np);
                 } else if (isFactoryState(ns)) {
-                    // 工厂面向本方块的那一面（d 的反方向）必须是开口面（应力接口）
-                    if (!ns.getValue(FactoryBlock.SHAFT_BY_FACE.get(d.getOpposite())))
+                    // 工厂面向本方块的那一面（d 的反方向）必须是可用接口面
+                    // （0.4.29 起统一走 FactoryBlock.isShaftFaceOpen：展示态=仅底面，包壳态=六面由属性决定）
+                    if (!FactoryBlock.isShaftFaceOpen(ns, d.getOpposite()))
                         continue;
                     visited.add(np.asLong());
                     result.add(np);
@@ -153,7 +154,7 @@ public class IOExtensionBlockEntity extends KineticBlockEntity {
         if (isIoExtensionState(fs) && fs.getValue(IOExtensionBlock.AXIS) == axis) {
             visited.add(first.asLong());
             queue.add(first);
-        } else if (isFactoryState(fs) && fs.getValue(FactoryBlock.SHAFT_BY_FACE.get(startDir.getOpposite()))) {
+        } else if (isFactoryState(fs) && FactoryBlock.isShaftFaceOpen(fs, startDir.getOpposite())) {
             factories.add(first);
         }
 
@@ -171,7 +172,7 @@ public class IOExtensionBlockEntity extends KineticBlockEntity {
                 if (isIoExtensionState(ns) && ns.getValue(IOExtensionBlock.AXIS) == curAxis) {
                     visited.add(np.asLong());
                     queue.add(np);
-                } else if (isFactoryState(ns) && ns.getValue(FactoryBlock.SHAFT_BY_FACE.get(d.getOpposite()))) {
+                } else if (isFactoryState(ns) && FactoryBlock.isShaftFaceOpen(ns, d.getOpposite())) {
                     factories.add(np);
                 }
             }

@@ -68,18 +68,6 @@ public class Config {
     public static final ModConfigSpec.BooleanValue CONTINUE_ON_SOURCE_RELOADED;
 
     /**
-     * 源房间区块卡在 vanilla 卸载队列（{@code ChunkMap.pendingUnloads}）时的容忍 tick 数。
-     * Ticks to tolerate a source chunk stuck in vanilla's pending-unload queue.
-     * <ul>
-     * <li>{@code 0}（默认）：严格——卡住即视为未卸载，200 tick 后冻结失败回滚（原行为）。</li>
-     * <li>{@code >0}：连续 N tick 观察到"仅 pendingUnloads 卡住、其余子条件全空"时，
-     * 视为已卸载并继续冻结。用于规避 vanilla {@code scheduleUnload} 无限重试导致的永久卡死
-     * （实测：区块内容早已卸载、无任何票据，却永远停在 pendingUnloads → 房间永久无法评估）。</li>
-     * </ul>
-     */
-    public static final ModConfigSpec.IntValue UNLOAD_STUCK_PENDING_TICKS;
-
-    /**
      * 是否允许玩家以观察者模式进入评估副本查看产线。
      * Whether players may enter a running evaluation replica as a spectator.
      * <ul>
@@ -444,15 +432,6 @@ public class Config {
                         "false（默认，严格）：卸载后源区块再次加载立即安全取消。",
                         "false (default, strict): cancel safely as soon as source chunks load again after unload.")
                 .define("continueOnSourceReloaded", false);
-        UNLOAD_STUCK_PENDING_TICKS = builder
-                .comment(
-                        "源房间区块卡在 vanilla 卸载队列（pendingUnloads）时的容忍 tick 数。",
-                        "Ticks to tolerate a source chunk stuck in vanilla's pending-unload queue.",
-                        "0（默认）：严格——卡住即视为未卸载，超时后冻结失败回滚。",
-                        "0 (default): strict — a stuck chunk counts as not unloaded; freezing fails and rolls back after the timeout.",
-                        ">0：连续该 tick 数观察到「仅 pendingUnloads 卡住、其余子条件全空」时视为已卸载并继续冻结。",
-                        ">0: after this many consecutive ticks of 'only pendingUnloads stuck, all other sub-conditions clear', treat it as unloaded and continue freezing.")
-                .defineInRange("unloadStuckPendingTicks", 0, 0, 100000);
         ENABLE_EVALUATION_OBSERVATION = builder
                 .comment(
                         "是否允许玩家以观察者模式进入评估副本查看产线。",

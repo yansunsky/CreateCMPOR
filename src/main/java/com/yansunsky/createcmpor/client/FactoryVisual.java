@@ -42,7 +42,11 @@ public class FactoryVisual extends KineticBlockEntityVisual<FactoryBlockEntity> 
             RotatingInstance instance = instancerProvider()
                     .instancer(AllInstanceTypes.ROTATING, Models.partial(AllPartialModels.SHAFT_HALF))
                     .createInstance();
-            instance.setup(blockEntity)
+            // 0.4.29：**逐面传该面自己的轴**（setup(be, axis) 重载）。
+            // 旧实现用单参 setup(be) → KineticBlockEntityVisual.rotationAxis(state) → 全局 getRotationAxis
+            // ⇒ 六个实例绕同一根轴自转，而几何朝向按面（rotateToFace）——多轴开口时非主轴的面会"翻滚"。
+            // 参照实现：createadditionallogistics:flexible_shaft 的 FlexibleShaftVisual。
+            instance.setup(blockEntity, d.getAxis())
                     .setPosition(getVisualPosition());
             // rotateToFace 是叠加式旋转：必须先重置单位四元数，防止实例池复用脏 rotation。
             instance.rotation.identity();
@@ -64,7 +68,7 @@ public class FactoryVisual extends KineticBlockEntityVisual<FactoryBlockEntity> 
         if (!state.getValue(FactoryBlock.ENCASED)) {
             return false;
         }
-        return state.getValue(FactoryBlock.SHAFT_BY_FACE.get(d));
+        return FactoryBlock.isShaftFaceOpen(state, d);
     }
 
     @Override

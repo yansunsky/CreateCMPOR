@@ -1,6 +1,5 @@
 package com.yansunsky.createcmpor.evaluation;
 
-import com.yansunsky.createcmpor.Config;
 import com.yansunsky.createcmpor.CreateCMPOR;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
@@ -10,6 +9,7 @@ import net.minecraft.nbt.Tag;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ChunkHolder;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ChunkPos;
@@ -54,7 +54,12 @@ final class EvaluationStorageBridge {
         return level.getPoiManager().simpleRegionStorage;
     }
 
-    /** 严格 idle：五个子条件必须全空（含 pendingUnloads 必须为空）。 */
+    /**
+     * 严格「已完全卸载」：五个子条件必须全空（含 {@code pendingUnloads} 必须为空）。
+     *
+     * <p>⚠️ 这是<b>最严格</b>的读法，只在<b>诊断</b>里用（判断房间是否已彻底离开卸载流程）。
+     * <b>不要</b>用它做冻结门控——见 {@link #areChunksUnloadedForFreeze} 的说明。</p>
+     */
     static boolean isChunkIdle(ServerLevel level, ChunkPos pos) {
         return isChunkContentUnloaded(level, pos)
                 && !level.getChunkSource().chunkMap.pendingUnloads.containsKey(pos.toLong());
@@ -82,40 +87,95 @@ final class EvaluationStorageBridge {
                 && !level.areEntitiesLoaded(key);
     }
 
-    /** 全部区块「内容已卸载」（忽略 pendingUnloads 卡死）。 */
-    static boolean areChunkContentsUnloaded(ServerLevel level, List<ChunkPos> chunks) {
-        return chunks.stream().allMatch(pos -> isChunkContentUnloaded(level, pos));
-    }
-
     /**
-     * 该区块是否处于「卡死的 pendingUnloads」：内容已卸载 + 仍在 pendingUnloads + 无票据。
-     * 无票据是关键判据——有票据时属于正常的加载/卸载竞争中，不应放行。
-     */
-    static boolean isUnloadStuckOnPending(ServerLevel level, ChunkPos pos) {
-        long key = pos.toLong();
-        if (!isChunkContentUnloaded(level, pos)) {
-            return false;
-        }
-        if (!level.getChunkSource().chunkMap.pendingUnloads.containsKey(key)) {
-            return false;
-        }
-        return chunkTicketNames(level, key).isEmpty();
-    }
-
-    /** 该房间是否存在卡死的 pendingUnloads 区块（诊断/计时用）。 */
-    static boolean hasUnloadStuckChunk(ServerLevel level, List<ChunkPos> chunks) {
-        return chunks.stream().anyMatch(pos -> isUnloadStuckOnPending(level, pos));
-    }
-
-    /**
-     * 卡死豁免的放行判定：<b>每个</b>区块都必须"严格 idle 或 卡死的 pendingUnloads"。
+     * <b>冻结判定（唯一权威）</b>：该区块是否允许被冻结/被冷拷贝。
      *
-     * <p>不能写成"全部内容已卸 + 任一卡死"——那会误放行「1 个卡死 + 1 个被外部强加载」的房间，
-     * 后者才是真正危险的场景（源房间正在被其它模组 tick）。
+     * <p><b>为什么 <u>不看</u> {@code pendingUnloads}</b>（0.4.28 修复·重大口径错误）：
+     * {@code ChunkMap.scheduleUnload}（{@code ChunkMap:532-563}）把 holder 从 {@code pendingUnloads}
+     * 移除的<b>唯一</b>路径是「{@code isReadyForSaving()} 为真」，而它的自我重试链挂在
+     * {@code holder.getSaveSyncFuture()} 上——{@code saveSync} 的<b>唯一</b>写入者是
+     * {@code ChunkHolder.addSaveDependency}（{@code ChunkHolder:125-131}），
+     * 只在 {@code ChunkHolder.updateFutures} 的 278/291/308 行被调用，喂的是
+     * {@code fullChunkFuture} / {@code tickingChunkFuture} / {@code entityTickingChunkFuture}。
+     * <b>它与磁盘 IO 无关</b>（{@code ChunkMap.save} 从不碰它），等的是"升级到
+     * FULL / BLOCK_TICKING / ENTITY_TICKING 的 future"。这些 future 的完成回调排在
+     * {@code mainThreadExecutor}（= 服务端主线程邮箱）上，加上 {@code processUnloads} 自身受
+     * tick 时间预算（{@code hasMoreTime}）限制，服务器一卡 holder 就会在 {@code pendingUnloads}
+     * 里滞留<b>数秒到数分钟</b>，队列排空后自己消失。该服常驻
+     * {@code Can't keep up! Running 2000~5800ms behind} ⇒ 属<b>正常滞后</b>，不是死锁。
+     * 把 {@code !pendingUnloads} 当门控 ⇒ 在繁忙服上房间几乎永远无法评估
+     * （实测 35/35 次失败全部因此）。
+     *
+     * <p><b>真正要求的不变式是「源房间内容不在 level 里」</b>：区块本体不在
+     * {@code visibleChunkMap} / {@code updatingChunkMap} / {@code getChunkNow}，且实体未加载
+     * ⇒ 源房间不可能再被方块 tick 或实体 tick 修改。此时冷拷贝走的是 {@code ChunkStorage.read}
+     * → {@code IOWorker.loadAsync}（{@code IOWorker:137-145} <b>优先返回 {@code pendingWrites}</b>，
+     * 即最后一份写入数据），不需要等 {@code pendingUnloads} 排空。
+     * 若扫描期间源区块真被复载，顶层 + {@code tickStagingSource} 两层复检与
+     * {@code staging 摘要不一致} 探针会照常兜底（{@code ChunkMap:414} 会把复用的 holder 从
+     * {@code pendingUnloads} 直接搬回 {@code updatingChunkMap}，所以复载一定看得见）。
+     *
+     * <p><b>诊断</b>：{@code readyForSaving=false} 时的 {@code generationRefCount} 与
+     * {@code saveSyncDone} 是区分「正常滞后」与「真卡死」的唯一实锤（见 {@link #describePendingHolder}）。
+     *
+     * @see #isChunkUnloadBacklogged 取证判据（只用于日志，不参与门控）
      */
-    static boolean areChunksIdleOrStuckPending(ServerLevel level, List<ChunkPos> chunks) {
-        return chunks.stream().allMatch(pos ->
-                isChunkIdle(level, pos) || isUnloadStuckOnPending(level, pos));
+    static boolean isChunkUnloadedForFreeze(ServerLevel level, ChunkPos pos) {
+        return isChunkContentUnloaded(level, pos);
+    }
+
+    /**
+     * <b>冻结判定（唯一权威）</b>——房间级：每个区块都满足 {@link #isChunkUnloadedForFreeze}。
+     *
+     * <p><b>逐区块</b>判定，绝不能写成「全部内容已卸 + 任一满足」：后者会误放行
+     * 「大部分区块已卸、个别区块被外部强加载」的房间，那才是真正危险的场景。</p>
+     *
+     * <p><b>三处门控必须共用本方法</b>（{@code EvaluationManager.tickWaitingForUnload}、
+     * {@code EvaluationCloneManager.tickFrozen}/{@code tickStagingSource}）。0.4.27 及以前的 bug 正是
+     * 「豁免放行冻结 → 下一步严格复检立刻判未卸载 → 回滚」，16~52ms 内必现、玩家侧只看到
+     * 「原房间区块未保持卸载，评估已安全取消」。</p>
+     */
+    static boolean areChunksUnloadedForFreeze(ServerLevel level, List<ChunkPos> chunks) {
+        return chunks.stream().allMatch(pos -> isChunkUnloadedForFreeze(level, pos));
+    }
+
+    /**
+     * 取证判据：该区块是否「滞后在 {@code pendingUnloads} 且 vanilla 尚未判定可保存」。
+     *
+     * <p>内容已卸载、无票据、实体已卸，却仍被 {@code scheduleUnload} 的重试链挂着——
+     * 用 {@link #describePendingHolder} 打印 {@code isReadyForSaving()}/{@code saveSync} 依据。
+     * 仅用于诊断，不参与门控。
+     */
+    static boolean isChunkUnloadBacklogged(ServerLevel level, ChunkPos pos) {
+        long key = pos.toLong();
+        return isChunkUnloadedForFreeze(level, pos)
+                && level.getChunkSource().chunkMap.pendingUnloads.containsKey(key);
+    }
+
+    /** 该房间是否有区块滞后在 {@code pendingUnloads}（诊断/降噪计时用）。 */
+    static boolean hasChunkUnloadBacklog(ServerLevel level, List<ChunkPos> chunks) {
+        return chunks.stream().anyMatch(pos -> isChunkUnloadBacklogged(level, pos));
+    }
+
+    /**
+     * 诊断：滞留在 {@code pendingUnloads} 的 holder 为什么还没通过 {@code isReadyForSaving()}。
+     * 这是「滞后」与「真卡死」唯一的证据来源（{@code generationRefCount} 与 {@code saveSync}）。
+     */
+    static String describePendingHolder(ServerLevel level, ChunkPos pos) {
+        ChunkHolder holder = level.getChunkSource().chunkMap.pendingUnloads.get(pos.toLong());
+        if (holder == null) {
+            return "holder=<已离开队列>";
+        }
+        boolean saveSyncDone;
+        try {
+            saveSyncDone = holder.getSaveSyncFuture().isDone();
+        } catch (RuntimeException exception) {
+            return "holder=<读取失败:" + exception.getClass().getSimpleName() + ">";
+        }
+        return "holder{readyForSaving=" + holder.isReadyForSaving()
+                + ", generationRefCount=" + holder.getGenerationRefCount()
+                + ", saveSyncDone=" + saveSyncDone
+                + ", ticketLevel=" + holder.getTicketLevel() + '}';
     }
 
     /**
@@ -124,7 +184,7 @@ final class EvaluationStorageBridge {
      * 这里按实际子条件归类。
      */
     static String describeUnloadBlocker(ServerLevel level, List<ChunkPos> chunks) {
-        int pendingOnly = 0;   // 仅 pendingUnloads 卡住（vanilla 卸载收尾卡死）
+        int backlogged = 0;    // 仍在 pendingUnloads（vanilla 收尾滞后/卡死）
         int ticketed = 0;      // 有票据持有
         int inMemory = 0;      // 仍在可见/更新表或内容在内存
         int entities = 0;      // 实体仍加载
@@ -142,8 +202,8 @@ final class EvaluationStorageBridge {
             if (level.areEntitiesLoaded(key)) {
                 entities++;
             }
-            if (contentUnloaded && pending && !hasTicket) {
-                pendingOnly++;
+            if (contentUnloaded && pending) {
+                backlogged++;
             }
         }
         StringBuilder sb = new StringBuilder();
@@ -156,13 +216,9 @@ final class EvaluationStorageBridge {
         if (entities > 0) {
             sb.append(sb.isEmpty() ? "" : "；").append(entities).append(" 个区块实体仍加载");
         }
-        if (pendingOnly > 0) {
-            sb.append(sb.isEmpty() ? "" : "；").append(pendingOnly)
-                    .append(" 个区块卡在 pendingUnloads（内容已卸载且无票据，vanilla 卸载收尾未完成");
-            if (Config.UNLOAD_STUCK_PENDING_TICKS.get() <= 0) {
-                sb.append("；可设 unloadStuckPendingTicks>0 放行");
-            }
-            sb.append("）");
+        if (backlogged > 0) {
+            sb.append(sb.isEmpty() ? "" : "；").append(backlogged)
+                    .append(" 个区块仍在 vanilla 卸载队列（内容已卸载，收尾未跑完；卡顿下属正常滞后）");
         }
         if (sb.isEmpty()) {
             sb.append("原因未归类（详见诊断行）");
@@ -189,8 +245,7 @@ final class EvaluationStorageBridge {
             boolean pendingUnload = map.pendingUnloads.containsKey(key);
             var loaded = level.getChunkSource().getChunkNow(pos.x, pos.z);
             boolean entitiesLoaded = level.areEntitiesLoaded(key);
-            boolean idle = visible == null && updating == null && !pendingUnload
-                    && loaded == null && !entitiesLoaded;
+            boolean idle = isChunkIdle(level, pos);
             sb.append("  ").append(pos).append(" idle=").append(idle)
                     .append(" {visible=").append(visible != null)
                     .append(", updating=").append(updating != null)
@@ -201,12 +256,29 @@ final class EvaluationStorageBridge {
                 sb.append(" holder{ticketLevel=").append(visible.getTicketLevel())
                         .append(", status=").append(visible.getFullStatus())
                         .append(", ticking=").append(visible.getTickingChunk() != null).append('}');
+            } else if (pendingUnload) {
+                // 明细统一放到诊断块末尾的 holder 表，避免逐区块重复长篇（大房间会刷爆日志）
+                sb.append(" holder=见末尾");
             }
             sb.append(" tickets=[").append(chunkTicketNames(level, key)).append(']').append('\n');
             if (++shown >= 24) {
                 sb.append("  ... 仅显示前 24 个 / 共 ").append(chunks.size()).append(" 个区块\n");
                 break;
             }
+        }
+        // holder 明细表：pendingUnloads 里的 holder 为何还没通过 isReadyForSaving()。
+        // 「正常滞后」（saveSyncDone=false，等升级 future）与「真卡死」（readyForSaving=false 且
+        // generationRefCount>0 ⇒ scheduleUnload 自我重试空转）在这里一眼可分。
+        boolean headerWritten = false;
+        for (ChunkPos pos : chunks) {
+            if (!level.getChunkSource().chunkMap.pendingUnloads.containsKey(pos.toLong())) {
+                continue;
+            }
+            if (!headerWritten) {
+                sb.append("  —— 仍在 vanilla 卸载队列的 holder（未通过 isReadyForSaving 的依据）：\n");
+                headerWritten = true;
+            }
+            sb.append("    ").append(pos).append(' ').append(describePendingHolder(level, pos)).append('\n');
         }
         return sb.toString();
     }
@@ -215,18 +287,16 @@ final class EvaluationStorageBridge {
     static String chatSourceIdleSummary(ServerLevel level, List<ChunkPos> chunks, String phase) {
         java.util.LinkedHashSet<String> ticketTypes = new java.util.LinkedHashSet<>();
         java.util.List<ChunkPos> nonIdle = new java.util.ArrayList<>();
+        int backlogged = 0;
         for (ChunkPos pos : chunks) {
             long key = pos.toLong();
-            var map = level.getChunkSource().chunkMap;
-            boolean idle = map.getVisibleChunkIfPresent(key) == null
-                    && map.getUpdatingChunkIfPresent(key) == null
-                    && !map.pendingUnloads.containsKey(key)
-                    && level.getChunkSource().getChunkNow(pos.x, pos.z) == null
-                    && !level.areEntitiesLoaded(key);
-            if (!idle) {
+            if (!isChunkIdle(level, pos)) {
                 nonIdle.add(pos);
                 for (var ticket : ticketsAt(level, key)) {
                     ticketTypes.add(ticket.getType().toString());
+                }
+                if (isChunkUnloadBacklogged(level, pos)) {
+                    backlogged++;
                 }
             }
         }
@@ -236,6 +306,9 @@ final class EvaluationStorageBridge {
             return sb.toString();
         }
         sb.append("源区块 ").append(nonIdle.size()).append('/').append(chunks.size()).append(" 未保持卸载");
+        if (backlogged > 0) {
+            sb.append("（其中 ").append(backlogged).append(" 个只是仍在 vanilla 卸载队列收尾，卡顿时属正常滞后）");
+        }
         for (int i = 0; i < Math.min(nonIdle.size(), 3); i++) {
             sb.append(i == 0 ? "，例如 " : ", ").append(nonIdle.get(i));
         }
