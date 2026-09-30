@@ -48,7 +48,9 @@ public class FactoryVisual extends KineticBlockEntityVisual<FactoryBlockEntity> 
             // 参照实现：createadditionallogistics:flexible_shaft 的 FlexibleShaftVisual。
             instance.setup(blockEntity, d.getAxis())
                     .setPosition(getVisualPosition());
-            // rotateToFace 是叠加式旋转：必须先重置单位四元数，防止实例池复用脏 rotation。
+            // rotateToFace 是**叠加式**（在 rotation 上原地相乘）⇒ 它只允许在"重建 visual"时的构造器里调用一次，
+            // **绝不能进 update()**（每帧累加会疯转）。这里的 identity() 是幂等的防御性写法；
+            // 真正要守的纪律是"朝向永不在 update 里刷新"。
             instance.rotation.identity();
             instance.rotateToFace(Direction.SOUTH, d);
             instance.setVisible(shouldShowShaft(state, d));

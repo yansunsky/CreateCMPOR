@@ -433,7 +433,8 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
      *       进而让 {@link FactoryBlockEntity#getGeneratedSpeed} 的方向翻转。恒为常量可彻底消除该抖动。</li>
      * </ul>
      *
-     * <p>本方法现在只影响：渲染（各渲染路径已改为**逐面取该面自己的轴**，不再使用本值）、
+     * <p>本方法现在只影响：无 Flywheel 时的 BER 绘制（{@code KineticBlockEntityRenderer.renderRotatingBuffer}
+     * 会读它——但 {@code FactoryRenderer} 自 0.4.30 起**已不调 {@code super.renderSafe}**，故实际不再被读）、
      * {@code areStatesKineticallyEquivalent} 与调试/粒子。三种形态统一返回 Y，配合
      * {@link #areStatesKineticallyEquivalent} 的显式覆写保证"任何开口面变化都重建网络"。</p>
      */

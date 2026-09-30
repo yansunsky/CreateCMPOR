@@ -2,6 +2,7 @@ package com.yansunsky.createcmpor.client;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.yansunsky.createcmpor.Config;
+import com.yansunsky.createcmpor.block.FactoryBlock;
 import com.yansunsky.createcmpor.block.FactoryBlockEntity;
 import com.yansunsky.createcmpor.client.preview.FactoryPreviewBaker;
 import com.yansunsky.createcmpor.client.preview.PreviewBakeCache;
@@ -61,6 +62,20 @@ public final class FactoryPreviewRenderer {
      */
     public static void render(FactoryBlockEntity be, PoseStack ms, MultiBufferSource buffers, int light) {
         if (!Config.ENABLE_FACTORY_PREVIEW.get()) {
+            return;
+        }
+        // 0.4.30：**包壳态不画内部微缩**（用户 2026-09-30 反馈）。
+        // 包壳（安山机壳）的语义之一是减少渲染压力：factory_casing（1px 不透明壳）+
+        // factory_panel/factory_fill（封住每面 8×8 中心孔）已经把内部完全挡死，
+        // 再每帧走 静态层 renderInto + 动态旋转 pass + 实体 dispatcher.render 纯属浪费。
+        //
+        // 判定必须用 ENCASED，**不能**用 GLASS_SHELL：边框玻璃壳（encased=false, glass=true）
+        // 的预览是**故意可见**的（那正是"拆掉自带罩子看内部"的形态）。
+        //
+        // 副作用：包壳期间不再触发下面的 maybeRequest —— 按需同步的快照不会下发（顺带省流量）；
+        // 脱壳后 ON_DEMAND 模式下需要一次 RTT 才会出现（FULL 模式无延迟）。
+        // 已烘产物仍留在缓存里（不释放、也不重烘）。
+        if (be.getBlockState().getValue(FactoryBlock.ENCASED)) {
             return;
         }
         PreviewSnapshot snapshot = be.getPreviewSnapshot();
