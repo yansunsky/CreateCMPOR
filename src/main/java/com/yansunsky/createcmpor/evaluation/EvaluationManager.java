@@ -1,6 +1,5 @@
 package com.yansunsky.createcmpor.evaluation;
 
-import com.yansunsky.createcmpor.Config;
 import com.yansunsky.createcmpor.CreateCMPOR;
 import com.yansunsky.createcmpor.block.EvaluatorBlockEntity;
 import com.yansunsky.createcmpor.init.ModBlocks;
@@ -377,42 +376,30 @@ public final class EvaluationManager {
             return;
         }
         List<ChunkPos> roomChunks = CompactMachines.roomChunks(session.roomCode()).stream().toList();
-        if (EvaluationStorageBridge.areChunksIdle(room.level(), roomChunks)) {
-            unloadStuckTicks = 0;
+
+        // 冻结门控（0.4.28 统一口径）：判据是「源房间内容不在 level 里」，
+        // 而不是「vanilla 卸载队列已排空」。
+        // 关键事实：ChunkMap.scheduleUnload 把 holder 从 pendingUnloads 拿掉的唯一路径是
+        // isReadyForSaving() 为真，而它挂在 saveSync 上；saveSync 的唯一写入者是
+        // ChunkHolder.addSaveDependency，喂的是「升级到 FULL/BLOCK_TICKING/ENTITY_TICKING 的 future」
+        // ——与磁盘 IO 无关。这些 future 的完成回调排在服务端主线程邮箱上，且 processUnloads 自身
+        // 受 tick 时间预算限制 ⇒ 卡顿服上 pendingUnloads 会长时间非空，队列排空后自己消失。
+        // 把 !pendingUnloads 当门控 ⇒ 房间几乎永远无法评估（实测 35/35 次失败全部因此）。
+        // 详见 EvaluationStorageBridge.areChunksUnloadedForFreeze 的长注释。
+        if (EvaluationStorageBridge.areChunksUnloadedForFreeze(room.level(), roomChunks)) {
+            if (EvaluationStorageBridge.hasChunkUnloadBacklog(room.level(), roomChunks)) {
+                // 内容已卸载、只是 vanilla 收尾没跑完：不再阻塞冻结。
+                // 这里刻意保持**单行**——卡顿服上每次评估都会走到，完整逐区块诊断会刷爆日志
+                // （MC 日志是同步 IO，会反过来加重卡顿）。需要详情时把本行改成
+                // EvaluationStorageBridge.sourceIdleDiagnostics(...) 即可（内含 holder 明细表）。
+                CreateCMPOR.LOGGER.info("房间 {} 内容已卸载（仍有区块在 vanilla 卸载队列收尾，不阻塞冻结）：{}",
+                        session.roomCode(),
+                        EvaluationStorageBridge.describeUnloadBlocker(room.level(), roomChunks));
+            }
             transition(data, session, EvaluationSession.State.FROZEN);
             notifyOwner(server, session, Component.translatable("message.createcmpor.evaluation.frozen"));
             CreateCMPOR.LOGGER.info("房间 {} 已冻结，会话 {}", session.roomCode(), session.id());
             return;
-        }
-
-        // 卡死豁免（配置 >0 时启用）：vanilla ChunkMap.scheduleUnload 是异步自我重试，
-        // 一旦 holder 的 saveSync / generation 引用永不归零，区块会永远留在 pendingUnloads，
-        // 但内容其实早已卸载且无任何票据（实测：pendingUnload=true, tickets=[], visible=false,
-        // chunkNow=false, entities=false）。此时读盘评估是安全的，连续观察 N tick 后放行。
-        //
-        // 判定语义：**每个**区块都必须"要么严格 idle、要么是卡死的 pendingUnloads"。
-        // 只要还有区块处于其它非 idle 状态（有票据、内容在内存、实体未卸），就不放行——
-        // 否则会误放行"1 个卡死 + 1 个被外部强加载"的房间（那才是真正危险的场景）。
-        int stuckThreshold = Config.UNLOAD_STUCK_PENDING_TICKS.get();
-        boolean stuckOnly = stuckThreshold > 0
-                && EvaluationStorageBridge.areChunksIdleOrStuckPending(room.level(), roomChunks)
-                && EvaluationStorageBridge.hasUnloadStuckChunk(room.level(), roomChunks);
-        if (stuckOnly) {
-            unloadStuckTicks++;
-            if (unloadStuckTicks >= stuckThreshold) {
-                CreateCMPOR.LOGGER.warn("评估会话 {} 源房间 {} 区块卡在 pendingUnloads 已 {} tick"
-                                + "（内容已卸载且无票据，按 unloadStuckPendingTicks={} 放行冻结）。诊断：\n{}",
-                        session.id(), session.roomCode(), unloadStuckTicks, stuckThreshold,
-                        EvaluationStorageBridge.sourceIdleDiagnostics(room.level(), roomChunks));
-                unloadStuckTicks = 0;
-                transition(data, session, EvaluationSession.State.FROZEN);
-                notifyOwner(server, session,
-                        Component.translatable("message.createcmpor.evaluation.frozen_after_stuck_unload"));
-                CreateCMPOR.LOGGER.info("房间 {} 已冻结（卡死豁免），会话 {}", session.roomCode(), session.id());
-                return;
-            }
-        } else {
-            unloadStuckTicks = 0;
         }
 
         session.tickState();
@@ -429,9 +416,6 @@ public final class EvaluationManager {
                     "message.createcmpor.evaluation.unload_timeout");
         }
     }
-
-    /** WAITING_UNLOAD 阶段"仅 pendingUnloads 卡住"的连续观察计数（非持久，回滚时归零）。 */
-    private int unloadStuckTicks = 0;
 
     private static void installEvaluator(ServerLevel level, EvaluationSession session) {
         BlockPos pos = session.machinePos().pos();

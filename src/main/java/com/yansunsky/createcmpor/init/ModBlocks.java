@@ -162,13 +162,17 @@ public class ModBlocks {
                 (be, side) -> isFactoryIoFace(be, side) && be.hasEnergyIo() ? be.getEnergyHandler() : null);
     }
 
-    /** 开口面（应力接口）不提供物品/流体/能量 IO；其余面正常。 */
+    /**
+     * 可用接口面（应力接口）不提供物品/流体/能量 IO；其余面正常。
+     *
+     * <p>0.4.29：改走 {@link FactoryBlock#isShaftFaceOpen} 统一判据（展示态=仅底面，包壳态=该面 {@code shaft_*}=true），
+     * 与 {@code hasShaftTowards}、渲染、io_extension 触达判定完全一致——避免四处各判一次导致语义漂移。
+     */
     private static boolean isFactoryIoFace(FactoryBlockEntity be, Direction side) {
         if (side == null) {
             return true;
         }
-        return !be.getBlockState()
-                .getValue(FactoryBlock.SHAFT_BY_FACE.get(side));
+        return !FactoryBlock.isShaftFaceOpen(be.getBlockState(), side);
     }
 
     public static void registerStressValues() {

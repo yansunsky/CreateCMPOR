@@ -10,6 +10,7 @@ import com.yansunsky.createcmpor.stress.FactoryStressAccess;
 import com.yansunsky.createcmpor.stress.StressProfile;
 import com.simibubi.create.api.equipment.goggles.IHaveGoggleInformation;
 import com.simibubi.create.content.kinetics.base.GeneratingKineticBlockEntity;
+import com.simibubi.create.content.kinetics.base.IRotate;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -1972,7 +1973,22 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         return getBlockState().getBlock();
     }
 
-    /** 输出型工厂（outputSU>0）作为应力源：生成转速 = 空间内应力输出方块的转速（评估时网络采样）。 */
+    /**
+     * 输出型工厂（outputSU>0）作为应力源：生成转速 = 空间内应力输出方块的转速（评估时网络采样）。
+     *
+     * <p><b>方向约定（0.4.29 用户拍板）</b>：符号取自"本方块名义轴的正向面"这一<b>固定约定</b>，
+     * 与"哪个面开着"<b>彻底解耦</b>。
+     *
+     * <p>旧实现用 {@code firstOpenFace()}（= {@code SHAFT_BY_FACE} 这个 {@code EnumMap} 里第一个为 true 的面，
+     * 枚举序 DOWN,UP,NORTH,SOUTH,WEST,EAST）配合 {@code convertToDirection}（UP/SOUTH/EAST 为正）——
+     * 后果是玩家<b>多开一个面就可能静默翻转整条下游网络的转向</b>；而 Create 对"符号冲突"的处理是
+     * {@code world.destroyBlock(pos, true)}（{@code RotationPropagator}），会把工厂连同产线配置打成掉落物。
+     * 多开口（六面各自独立）会把这种"开面即翻转"的概率放大，故必须在放开共轴约束前先把方向钉死。
+     *
+     * <p>兼容性：既有工厂凡开在 UP/SOUTH/EAST（正向面）者方向<b>完全不变</b>；只有恰好开在
+     * DOWN/NORTH/WEST 且此后未再改开口的旧工厂，方向会与 0.4.28 及以前相反——这是"消除抖动"的必要代价，
+     * 且这类工厂的下游机械只需反转一次接法。
+     */
     @Override
     public float getGeneratedSpeed() {
         StressProfile profile = FactoryStressAccess.get(this);
@@ -1982,18 +1998,21 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         }
         // 默认转速 = 评估时空间内应力输出方块的转速（outputRPM 来自 KineticNetwork 采样），
         // 不再使用固定 32 RPM 兜底：评估时空间无动力则 outputRPM=0 → 工厂不输出。
-        return convertToDirection(profile.outputRPM(), firstOpenFace());
+        return convertToDirection(profile.outputRPM(), canonicalPositiveFace());
     }
 
-    /** 返回任一开口面方向（无开口时默认 up，仅用于转速方向推导）。 */
-    private Direction firstOpenFace() {
-        BlockState state = getBlockState();
-        for (Map.Entry<Direction, BooleanProperty> entry : FactoryBlock.SHAFT_BY_FACE.entrySet()) {
-            if (state.getValue(entry.getValue())) {
-                return entry.getKey();
-            }
+    /**
+     * 本方块名义轴的正向面（**固定约定**，与开口面无关）。
+     *
+     * <p>因 {@link FactoryBlock#getRotationAxis} 自 0.4.29 起恒为 {@code Axis.Y}，本方法目前恒返回
+     * {@code Direction.UP}；写法上仍按轴推导，以便将来若改变名义轴时无需再动方向逻辑。
+     */
+    private Direction canonicalPositiveFace() {
+        Direction.Axis axis = Direction.Axis.Y;
+        if (getBlockState().getBlock() instanceof IRotate rotate) {
+            axis = rotate.getRotationAxis(getBlockState());
         }
-        return Direction.UP;
+        return Direction.get(Direction.AxisDirection.POSITIVE, axis);
     }
 
     /** 输出型工厂向网络提供应力容量（含损耗系数）。 */

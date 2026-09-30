@@ -3,6 +3,7 @@ package com.yansunsky.createcmpor.block;
 import com.yansunsky.createcmpor.Config;
 import com.yansunsky.createcmpor.CreateCMPOR;
 import com.yansunsky.createcmpor.compat.cm.CreateNbtSanitizer;
+import com.yansunsky.createcmpor.init.ModBlocks;
 import com.yansunsky.createcmpor.init.ModItems;
 import com.simibubi.create.content.equipment.wrench.IWrenchable;
 import com.simibubi.create.content.kinetics.base.KineticBlock;
@@ -31,21 +32,27 @@ import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.StateDefinition;
 import net.minecraft.world.level.block.state.properties.BooleanProperty;
+import net.minecraft.world.level.storage.loot.LootParams;
+import net.minecraft.world.level.storage.loot.parameters.LootContextParams;
 import net.minecraft.world.phys.BlockHitResult;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.EnumMap;
+import java.util.List;
 import java.util.Map;
 
 /**
  * CreateCMPOR 平行工厂方块：评估固化产物，kinetic 方块。
  *
- * <p>六面开口（兜底方案）：六个面各自有独立的接口轴布尔属性
- * （{@code shaft_north/shaft_south/shaft_east/shaft_west/shaft_up/shaft_down}）。
- * 扳手点击任意面 → toggle 该面接口轴；为保证单一旋转轴，开启新轴向上的面时
- * 自动关闭其他轴向上的开口面（允许同一轴向的对面同时开口，如 north+south）。
+ * <p>应力接口面（0.4.29 起，用户拍板）：
+ * <ul>
+ *   <li><b>展示态</b>（{@code encased=false}，含边框玻璃壳）：只有<b>底面</b>接应力，轴恒竖直；扳手不开面；</li>
+ *   <li><b>安山机壳态</b>（{@code encased=true}）：六个 {@code shaft_*} 属性生效，扳手可<b>任意逐面开关、互不联动</b>
+ *       （旧的"共轴约束"已废除——Create 的传播只看 {@code hasShaftTowards}，不看轴）。</li>
+ * </ul>
+ * 名义轴自 0.4.29 起恒为 {@code Axis.Y}（占位值，照搬 {@code createadditionallogistics:flexible_shaft}）。
  * 启动棒右键可还原为原 CompactMachines 机器。
  */
 public class FactoryBlock extends KineticBlock implements EntityBlock {
@@ -68,7 +75,7 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
      * 新放置的工厂由 {@link #getStateForPlacement} 显式返回 {@code false}（展示模式）。
      *
      * <p>{@code false} = 展示模式：方块内部渲染微缩产线、<b>只有底面</b>能接应力（轴恒竖直）。
-     * {@code true} = 传统模式：六个 {@code shaft_*} 属性生效，扳手可逐面开关。
+     * {@code true} = 安山机壳模式：六个 {@code shaft_*} 属性生效，扳手可逐面任意开关（互不联动）。
      */
     public static final BooleanProperty ENCASED = BooleanProperty.create("encased");
 
@@ -106,7 +113,9 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
                 .setValue(SHAFT_EAST, false)
                 .setValue(SHAFT_WEST, false)
                 .setValue(SHAFT_UP, false)
-                .setValue(SHAFT_DOWN, false));
+                // shaft_down 的默认值 = true：展示态的底面接口是常态，包壳后保留。
+                // （旧存档缺该属性时解析成 true＝底面开；旧版工厂的六面在包壳时由玩家扳手打开。）
+                .setValue(SHAFT_DOWN, true));
     }
 
     @Override
@@ -114,7 +123,17 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
         builder.add(ENCASED, GLASS_SHELL, SHAFT_NORTH, SHAFT_SOUTH, SHAFT_EAST, SHAFT_WEST, SHAFT_UP, SHAFT_DOWN);
     }
 
-    /** 扳手：点击任意面 → toggle 该面接口轴；开启非当前轴向的面时自动关闭其他轴向开口（共轴约束）。 */
+    /**
+     * 扳手：点击任意面 → toggle 该面接口轴。
+     *
+     * <p>0.4.29（用户拍板）：**废除此前的"共轴约束"**——不再在开启某面时自动关闭其他轴向的开口面。
+     * 依据（源码级，见 Create {@code RotationPropagator.getRotationSpeedModifier}）：Create 的连通判定
+     * **只看两侧 {@code hasShaftTowards}**，从不读 {@code getRotationAxis}，因此"一个方块只能有一个轴"
+     * **不是动力学硬约束**。参考实现 {@code createadditionallogistics:flexible_shaft} 就是六面任意开轴
+     * （其 {@code getRotationAxis} 恒返回常量 {@code Axis.Y}）。</p>
+     *
+     * <p>展示模式（{@code !ENCASED}）仍不开面：接口面固定为底面（轴恒竖直）。</p>
+     */
     @Override
     public InteractionResult onWrenched(BlockState state, UseOnContext context) {
         Level level = context.getLevel();
@@ -134,19 +153,30 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
         return InteractionResult.SUCCESS;
     }
 
-    /** toggle 指定面开口；若开启，先关闭所有非该面轴向的开口面。 */
+    /**
+     * toggle 指定面开口。0.4.29：**只动这一面**，不再联动关闭其他轴向的面（六面各自独立）。
+     *
+     * <p>原先的"共轴约束"是 0.1.29 引入的，动机是 Create 的"一个 BE 一个轴"印象；但该印象只影响
+     * 渲染与 {@code areStatesKineticallyEquivalent}，不影响传播（见 {@link #onWrenched} 的说明）。</p>
+     */
     private static BlockState toggleFace(BlockState state, Direction face, boolean open) {
-        if (!open) {
-            return state.setValue(SHAFT_BY_FACE.get(face), false);
-        }
-        BlockState result = state;
-        for (Map.Entry<Direction, BooleanProperty> entry : SHAFT_BY_FACE.entrySet()) {
-            Direction d = entry.getKey();
-            if (d.getAxis() != face.getAxis()) {
-                result = result.setValue(entry.getValue(), false);
-            }
-        }
-        return result.setValue(SHAFT_BY_FACE.get(face), true);
+        return state.setValue(SHAFT_BY_FACE.get(face), open);
+    }
+
+    /**
+     * 某面的传动轴接口是否可用（**唯一判据**，供 {@link #hasShaftTowards}、渲染与 io_extension 触达判定共用）。
+     *
+     * <p>三态语义（用户 2026-09-30 拍板）：
+     * <ul>
+     *   <li>{@code encased=false}（展示态，含边框玻璃壳）：**只有底面**是应力接口（轴恒竖直）；</li>
+     *   <li>{@code encased=true}（安山机壳态）：**六面任意**，完全由 {@code shaft_*} 属性决定。</li>
+     * </ul>
+     *
+     * <p>注意 {@link #getRotationAxis} 自 0.4.29 起恒为 {@code Axis.Y}（照搬 flexible_shaft 的占位语义），
+     * 因此**不要**用"轴"来判断某面是否可用——一律走本方法。</p>
+     */
+    public static boolean isShaftFaceOpen(BlockState state, Direction face) {
+        return state.getValue(SHAFT_BY_FACE.get(face));
     }
 
     /**
@@ -209,17 +239,69 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
         dropFactoryWithData(serverLevel, pos, blockEntity);
     }
 
+    /**
+     * 非玩家破坏路径的数据保全（0.4.29 新增）。
+     *
+     * <p><b>问题</b>：{@link #playerDestroy} 与 {@link #onSneakWrenched} 之外的一切破坏方式都走原版
+     * loot table，而本方块注册的 loot table 只掉裸物品（{@code loot_table/blocks/factory_block.json}）
+     * ⇒ 房间码 / 还原数据 / 产线 pattern / 微缩快照<b>全部丢失</b>。可达路径已逐一取证：
+     * <ul>
+     *   <li>Create 的动力学冲突自毁 {@code RotationPropagator}（tooFast / flicker / 反向 / 成环）与
+     *       {@code GeneratingKineticBlockEntity.applyNewSpeed} —— 均为 {@code world.destroyBlock(pos, true)}；</li>
+     *   <li>爆炸（TNT / 爬行者；工厂抗爆值只有 3.0）；</li>
+     *   <li>Create 钻头/锯等机械破坏、装置（contraption）落点覆盖。</li>
+     * </ul>
+     *
+     * <p><b>为什么覆写这里而不是挂 {@code BlockDropsEvent}</b>：{@code BlockBehaviour#getDrops} 是所有
+     * loot 路径的<b>唯一漏斗</b>——玩家破坏、{@code destroyBlock} 全系列、爆炸
+     * （{@code BlockBehaviour#onExplosionHit} 直接调 {@code state.getDrops(...)}）、Create 的
+     * {@code BlockHelper} 机械破坏、装置落点全部经它；而 {@code BlockDropsEvent} 只在
+     * {@code Block.dropResources} 里触发，<b>漏掉爆炸与机械破坏</b>。
+     *
+     * <p>注意不会与 {@link #playerDestroy} 重复掉落：后者刻意不调 {@code super}，掉落完全由它自己控制。
+     * 本方法只在"loot table 真的产出了工厂物品"时给它挂 NBT，因此 {@code survives_explosion} 等
+     * 原有语义（爆炸可能什么都不掉）<b>保持不变</b>。
+     */
+    @Override
+    protected List<ItemStack> getDrops(BlockState state, LootParams.Builder params) {
+        List<ItemStack> drops = super.getDrops(state, params);
+        if (drops.isEmpty()) {
+            return drops;
+        }
+        BlockEntity be = params.getOptionalParameter(LootContextParams.BLOCK_ENTITY);
+        if (be instanceof FactoryBlockEntity factory) {
+            ItemStack template = new ItemStack(ModBlocks.FACTORY.get());
+            BlockPos pos = be.getBlockPos();
+            for (ItemStack drop : drops) {
+                if (ItemStack.isSameItem(drop, template)) {
+                    attachFactoryData(factory, drop, pos);
+                    break;
+                }
+            }
+        }
+        return drops;
+    }
+
     /** 掉落携带完整 BE NBT 的工厂方块物品；BE 数据经 CreateNbtSanitizer 清理 Create 网络缓存字段。 */
     private static void dropFactoryWithData(ServerLevel level, BlockPos pos,
                                             @Nullable BlockEntity blockEntity) {
-        ItemStack drop = new ItemStack(com.yansunsky.createcmpor.init.ModBlocks.FACTORY.get());
+        ItemStack drop = new ItemStack(ModBlocks.FACTORY.get());
         if (blockEntity != null) {
-            CompoundTag tag = CreateNbtSanitizer.sanitizeBlockEntityTag(
-                    blockEntity.saveWithFullMetadata(level.registryAccess()));
-            guardItemPreviewSize(tag, pos);
-            BlockItem.setBlockEntityData(drop, blockEntity.getType(), tag);
+            attachFactoryData(blockEntity, drop, pos);
         }
         Block.popResource(level, pos, drop);
+    }
+
+    /**
+     * 把工厂 BE 的完整数据（已清理 + 体积兜底）写进掉落/产出的物品。
+     * 供 {@link #playerDestroy}、{@link #onSneakWrenched}（走 {@link #dropFactoryWithData}）与
+     * {@link #getDrops}（非玩家路径）共用，保证两条通道的数据格式完全一致。
+     */
+    private static void attachFactoryData(BlockEntity blockEntity, ItemStack drop, BlockPos pos) {
+        CompoundTag tag = CreateNbtSanitizer.sanitizeBlockEntityTag(
+                blockEntity.saveWithFullMetadata(blockEntity.getLevel().registryAccess()));
+        guardItemPreviewSize(tag, pos);
+        BlockItem.setBlockEntityData(drop, blockEntity.getType(), tag);
     }
 
     /**
@@ -296,7 +378,11 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
     public BlockState getStateForPlacement(BlockPlaceContext context) {
         // 新放置 = 展示模式（encased=false）：方块内渲染微缩产线、只有底面接应力。
         // 老存档缺 encased 属性时取"属性默认值 true"，落回传统模式——见 ENCASED 注释。
-        return defaultBlockState().setValue(ENCASED, false);
+        // shaft_down=true：展示态的底面接口是常态，包壳（ENCASED 置 true）后应**保留**该接口，
+        // 玩家再用扳手自由增开其余五面（0.4.29 起六面各自独立）。
+        return defaultBlockState()
+                .setValue(ENCASED, false)
+                .setValue(SHAFT_DOWN, true);
     }
 
     @Nullable
@@ -319,26 +405,40 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
         };
     }
 
-    /** 开口面可接传动轴（应力接口）；展示模式下固定只有底面。 */
+    /**
+     * 开口面可接传动轴（应力接口）。
+     *
+     * <p>0.4.29 起语义统一：展示态（含边框玻璃壳）**只有底面**；安山机壳态**六面任意**
+     * （六面全由 {@code shaft_*} 决定，与轴无关——轴已退化为占位值，见 {@link #getRotationAxis}）。</p>
+     */
     @Override
     public boolean hasShaftTowards(LevelReader world, BlockPos pos, BlockState state, Direction face) {
         if (!state.getValue(ENCASED)) {
             // 展示模式：只有底面接应力（轴恒竖直）——底座在方块底部，传动杆只在底座里渲染
             return face == Direction.DOWN;
         }
-        return state.getValue(SHAFT_BY_FACE.get(face));
+        return isShaftFaceOpen(state, face);
     }
 
+    /**
+     * 名义旋转轴：**恒为 {@code Axis.Y}**（0.4.29，照搬 {@code createadditionallogistics:flexible_shaft}）。
+     *
+     * <p>为什么可以/需要恒为常量：
+     * <ul>
+     *   <li>Create 的连通判定（{@code RotationPropagator.getRotationSpeedModifier}）**只查两侧
+     *       {@code hasShaftTowards}**，从不读本方法；齿轮分支要求 {@code block instanceof ICogWheel}，
+     *       工厂不是，故本方法在动力学里**不可达**；</li>
+     *   <li>旧实现返回"第一个为 true 的开口面的轴"，而 {@code SHAFT_BY_FACE} 是 {@code EnumMap}
+     *       （枚举序 DOWN,UP,NORTH,SOUTH,WEST,EAST）⇒ 玩家**多开一个面就可能悄悄改变全厂轴向**，
+     *       进而让 {@link FactoryBlockEntity#getGeneratedSpeed} 的方向翻转。恒为常量可彻底消除该抖动。</li>
+     * </ul>
+     *
+     * <p>本方法现在只影响：渲染（各渲染路径已改为**逐面取该面自己的轴**，不再使用本值）、
+     * {@code areStatesKineticallyEquivalent} 与调试/粒子。三种形态统一返回 Y，配合
+     * {@link #areStatesKineticallyEquivalent} 的显式覆写保证"任何开口面变化都重建网络"。</p>
+     */
     @Override
     public Direction.Axis getRotationAxis(BlockState state) {
-        if (!state.getValue(ENCASED)) {
-            return Direction.Axis.Y;
-        }
-        for (Map.Entry<Direction, BooleanProperty> entry : SHAFT_BY_FACE.entrySet()) {
-            if (state.getValue(entry.getValue())) {
-                return entry.getKey().getAxis();
-            }
-        }
         return Direction.Axis.Y;
     }
 
