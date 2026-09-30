@@ -79,7 +79,12 @@ public class FactoryVisual extends KineticBlockEntityVisual<FactoryBlockEntity> 
             RotatingInstance instance = entry.getValue();
             boolean show = shouldShowShaft(state, entry.getKey());
             if (show) {
-                instance.setup(blockEntity);
+                // ⚠️ 0.4.30 修：这里**必须传该面自己的轴**。
+                // 单参 setup(be) 会把旋转轴重置为全局 getRotationAxis（= Axis.Y）——
+                // 本项目 getRotationAxis 自 0.4.29 起恒为 Y（占位值），于是**每帧都把构造器里
+                // 逐面设好的轴覆盖回 Y** ⇒ 侧面的半轴绕 Y 扫，表现为"像电风扇一样翻转"
+                // （用户 2026-09-30 实机反馈）。BER 兜底路径本来就是逐面取轴，不受此影响。
+                instance.setup(blockEntity, entry.getKey().getAxis());
             }
             instance.setVisible(show);
             instance.setChanged();
