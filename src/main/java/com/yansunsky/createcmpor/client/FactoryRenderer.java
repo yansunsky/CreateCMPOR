@@ -78,19 +78,16 @@ public class FactoryRenderer extends KineticBlockEntityRenderer<FactoryBlockEnti
             return;
         }
 
-        // 0.4.30：**不调 super.renderSafe**。
-        // 基类那条路径会经 renderRotatingBuffer → standardKineticRotationTransform 施加一次旋转，
-        // 而它读的是 getRotationAxis(state)（自 0.4.29 起恒为 Y 的**占位值**）
-        // ⇒ 会把**整个机壳/玻璃模型绕 Y 转**。机壳是静止几何，不该转；真正要转的只有开口面的半轴。
-        // 因此这里自己画"不旋转的静态模型 + 逐面半轴"。
-        // （被跳过的那次绘制只在**无 Flywheel** 时才有意义；有 Flywheel 时基类本来就会 early-return。）
-        SuperByteBuffer staticModel = CachedBuffers.block(blockState);
-        if (staticModel != null) {
-            staticModel.renderInto(ms, buffer.getBuffer(RenderType.cutoutMipped()));
-        }
+        // ⚠️ 0.4.30 教训：这里**绝对不能再画一次方块模型**。
+        // 曾试过 `CachedBuffers.block(blockState).renderInto(ms, buffer.getBuffer(RenderType.cutoutMipped()))`
+        // 取代 `super.renderSafe`，结果把外壳**重画了一遍**（用户实测：正常灰色机壳上又叠了一层发黑带网格的壳）。
+        // 原因：模型的多层绘制本应**按模型声明的渲染类型分层**（玻璃 translucent、面板 solid），
+        // 手写一个 `cutoutMipped` 会把玻璃/面板当不透明糊上去。
+        // 而且方块自己的模型**本来就由 chunk 的 MODEL 渲染路径画了**（`getRenderShape` 返回 MODEL），
+        // BER 只应负责模型表达不了的东西 —— 也就是下面这些**开口面的半轴**。
 
         if (VisualizationManager.supportsVisualization(be.getLevel())) {
-            // Flywheel 开启：半轴由 FactoryVisual 画（那里逐面传轴），此处只保留静态模型。
+            // Flywheel 开启：半轴由 FactoryVisual 画（那里逐面传轴，见该类的 update 注释）。
             return;
         }
 
