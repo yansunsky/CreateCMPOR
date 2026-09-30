@@ -3,7 +3,6 @@ package com.yansunsky.createcmpor.client;
 import com.yansunsky.createcmpor.block.FactoryBlock;
 import com.yansunsky.createcmpor.block.FactoryBlockEntity;
 import com.simibubi.create.AllPartialModels;
-import com.simibubi.create.content.kinetics.base.IRotate;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntityRenderer;
 import dev.engine_room.flywheel.api.visualization.VisualizationManager;
 import net.createmod.catnip.render.CachedBuffers;
@@ -69,42 +68,64 @@ public class FactoryRenderer extends KineticBlockEntityRenderer<FactoryBlockEnti
 
         BlockState blockState = be.getBlockState();
         Block block = blockState.getBlock();
-        if (block instanceof FactoryBlock && !blockState.getValue(FactoryBlock.ENCASED)) {
+        if (!(block instanceof FactoryBlock factoryBlock)) {
+            return;
+        }
+        if (!blockState.getValue(FactoryBlock.ENCASED)) {
             // 展示模式：底面短轴同样必须在 Flywheel 早退之前画——展示模式下 Flywheel 视觉不画任何轴，
             // 若把这段放到早退之后，开 Flywheel 的玩家会一根轴都看不到。
             renderDisplayStub(be, blockState, ms, buffer, light);
             return;
         }
 
-        super.renderSafe(be, partialTicks, ms, buffer, light, overlay);
-        if (VisualizationManager.supportsVisualization(be.getLevel())) {
-            return;
+        // 0.4.30：**不调 super.renderSafe**。
+        // 基类那条路径会经 renderRotatingBuffer → standardKineticRotationTransform 施加一次旋转，
+        // 而它读的是 getRotationAxis(state)（自 0.4.29 起恒为 Y 的**占位值**）
+        // ⇒ 会把**整个机壳/玻璃模型绕 Y 转**。机壳是静止几何，不该转；真正要转的只有开口面的半轴。
+        // 因此这里自己画"不旋转的静态模型 + 逐面半轴"。
+        // （被跳过的那次绘制只在**无 Flywheel** 时才有意义；有 Flywheel 时基类本来就会 early-return。）
+        SuperByteBuffer staticModel = CachedBuffers.block(blockState);
+        if (staticModel != null) {
+            staticModel.renderInto(ms, buffer.getBuffer(RenderType.cutoutMipped()));
         }
-        if (!(block instanceof IRotate def)) {
+
+        if (VisualizationManager.supportsVisualization(be.getLevel())) {
+            // Flywheel 开启：半轴由 FactoryVisual 画（那里逐面传轴），此处只保留静态模型。
             return;
         }
 
-        // 0.4.29：**逐面取该面自己的轴**。
+        // 无 Flywheel 的兜底：**逐面取该面自己的轴**。
         // 旧实现六面共用 getRotationAxisOf(be)（= FactoryBlock.getRotationAxis）——多面开口时，
         // 非该轴的半轴会"绕错轴翻滚"而不是自转。getAngleForBe 与 kineticRotationTransform 都接受
         // Axis 参数，且相位偏移（KineticBlockEntityVisual.rotationOffset → shouldOffset）本身就是逐轴的，
         // 故必须逐面重算。参照实现：createadditionallogistics:flexible_shaft 的
         // LowEntityKineticBlockEntityRenderer（同一写法）。
         for (Direction d : Direction.values()) {
-            if (!def.hasShaftTowards(be.getLevel(), be.getBlockPos(), blockState, d)) {
+            if (!factoryBlock.hasShaftTowards(be.getLevel(), be.getBlockPos(), blockState, d)) {
                 continue;
             }
             Axis axis = d.getAxis();
             float angle = getAngleForBe(be, be.getBlockPos(), axis);
-            SuperByteBuffer shaft = CachedBuffers.partialFacing(AllPartialModels.SHAFT_HALF, be.getBlockState(), d);
+            SuperByteBuffer shaft = CachedBuffers.partialFacing(AllPartialModels.SHAFT_HALF, blockState, d);
             kineticRotationTransform(shaft, be, axis, angle, light);
             shaft.renderInto(ms, buffer.getBuffer(RenderType.solid()));
         }
     }
 
-    /** 主体渲染：方块自身的 blockstate 模型（multipart 开孔由模型层负责）。 */
+    /**
+     * 0.4.30：**刻意返回 {@code null}**——本渲染器不再走"旋转整个方块模型"这条路。
+     *
+     * <p>基类的 {@code renderSafe} 会把本方法的返回值交给
+     * {@code renderRotatingBuffer → standardKineticRotationTransform}，而那个变换读的是
+     * {@link FactoryBlock#getRotationAxis}（自 0.4.29 起**恒为 Y 的占位值**）⇒ 会把**整个机壳/玻璃模型绕 Y 转**。
+     * 机壳是静止几何，不该转；真正要转的只有开口面的半轴。
+     *
+     * <p>{@link #renderSafe} 已经**不调 {@code super.renderSafe}**（自己画静态模型 + 逐面半轴），
+     * 所以这里返回 null 主要是**防御性**的：若将来有人改回 {@code super.renderSafe}，
+     * 也不会悄悄把机壳转起来。
+     */
     @Override
     protected SuperByteBuffer getRotatedModel(FactoryBlockEntity be, BlockState state) {
-        return CachedBuffers.block(state);
+        return null;
     }
 }
