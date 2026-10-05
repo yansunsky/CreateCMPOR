@@ -3,6 +3,7 @@ package com.yansunsky.createcmpor.block;
 import com.yansunsky.createcmpor.CreateCMPOR;
 import com.yansunsky.createcmpor.Config;
 import com.yansunsky.createcmpor.evaluation.EvaluationTrace;
+import com.yansunsky.createcmpor.evaluation.EvaluationVerdict;
 import com.yansunsky.createcmpor.evaluation.ItemIdentity;
 import com.yansunsky.createcmpor.init.ModBlockEntities;
 import com.yansunsky.createcmpor.preview.PreviewSnapshot;
@@ -17,6 +18,7 @@ import net.minecraft.core.Direction;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtUtils;
 import net.minecraft.nbt.Tag;
 import net.minecraft.network.chat.Component;
@@ -37,6 +39,7 @@ import net.neoforged.neoforge.items.IItemHandler;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -101,6 +104,87 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             }
         }
     }
+
+    /** 模式判定：稳定速率（RATE 连续流）。 */
+    private static final String MODE_RATE = "RATE";
+    /** 模式判定：录制回放（REPLAY 秒槽）。 */
+    private static final String MODE_REPLAY = "REPLAY";
+    /** 触发物品签名分隔符；身份签名（{@code id[#摘要]}）永不包含换行，拼接安全。 */
+    private static final String TRIGGER_SEPARATOR = "\n";
+
+    /**
+     * 一个<b>互斥模式</b>（0.5.0 单一固化工厂）：自带完整的一套表，容器跨模式共享。
+     *
+     * <p>运行时由 {@link #setActiveMode(int)} 把本 BE 的"当前表"字段<b>引用赋值</b>到某个 Mode 的字段上，
+     * 于是 {@code inputsSatisfied()} / {@code tickRateContinuous()} / {@code tickReplay()} /
+     * {@code replayIsReady()} / {@code replayApply()} 一行都不用改（设计见 docs/48 §2.2）。
+     *
+     * <p>同时承载"安装期"的容器需求（{@code *Containers}）：安装时取各模式的<b>并集</b> +
+     * 容量<b>最大值</b>（否则模式 2 的触发物品没有槽位，玩家根本喂不进去）。
+     */
+    static final class Mode {
+        /**
+         * 触发物品身份签名（ItemIdentity）；空 = 默认模式（无候选时可激活）。
+         * 多个 = <b>任一</b>在输入缓存中即为候选（多并行方块的分支触发集是各方块第 i 项的并集，
+         * 取 AND 会让"某条支路没消耗其中一项"的正常配置永远无法激活）。
+         */
+        List<String> triggers = new ArrayList<>();
+        /** {@link #MODE_RATE} 或 {@link #MODE_REPLAY}。 */
+        String verdict = MODE_RATE;
+        /**
+         * REPLAY 秒槽指针：<b>只在激活期间推进，切走/空闲只保存不归零</b>（切换 = 暂停/继续）。
+         *
+         * <p>为什么不归零（对抗性复核 P0）：归零 = 每次切回都重新兑现 <b>slot 0</b>；
+         * 玩家以 1 Hz 交替喂两个触发物品（或喂料脉冲把触发物每秒打空一次）就能反复兑现同一个
+         * 高产出秒槽 ⇒ 最高放大 {@code patternLength}（60）倍。0.4.31 没有归零这条路径。
+         */
+        int progress;
+
+        // RATE 连续流速率（每 tick）；物品键 = 身份签名，流体键 = 流体 id
+        Map<String, Double> inputItemTickRates = new LinkedHashMap<>();
+        Map<String, Double> outputItemTickRates = new LinkedHashMap<>();
+        Map<ResourceLocation, Double> inputFluidTickRates = new LinkedHashMap<>();
+        Map<ResourceLocation, Double> outputFluidTickRates = new LinkedHashMap<>();
+
+        // REPLAY 回放 pattern（每秒应兑现量）
+        Map<String, int[]> inputItemPatterns = new LinkedHashMap<>();
+        Map<String, int[]> outputItemPatterns = new LinkedHashMap<>();
+        Map<ResourceLocation, int[]> inputFluidPatterns = new LinkedHashMap<>();
+        Map<ResourceLocation, int[]> outputFluidPatterns = new LinkedHashMap<>();
+        int[] inputEnergyPattern = new int[0];
+        int[] outputEnergyPattern = new int[0];
+        int patternLength = 1;
+
+        double inputEnergyTickRate;
+        double outputEnergyTickRate;
+        double normalBurnDemandPerSecond;
+        double superBurnDemandPerSecond;
+
+        // ===== 安装期容器需求（安装后不再使用）=====
+        /** 本模式需要的输入/输出容器（签名 → 容器）：安装时与其他模式取并集。 */
+        Map<String, Container> inputItemContainers = new LinkedHashMap<>();
+        Map<String, Container> outputItemContainers = new LinkedHashMap<>();
+        Map<ResourceLocation, Container> inputFluidContainers = new LinkedHashMap<>();
+        Map<ResourceLocation, Container> outputFluidContainers = new LinkedHashMap<>();
+        /** 本模式所需的能量容量（安装时取各模式最大值；能量容量跨模式共享）。 */
+        long inputEnergyCapacity;
+        long outputEnergyCapacity;
+
+        boolean replay() {
+            return MODE_REPLAY.equals(verdict);
+        }
+
+        /** 默认模式：没有触发物品 ⇒ 无候选模式时兜底激活。 */
+        boolean isDefault() {
+            return triggers.isEmpty();
+        }
+    }
+
+    /**
+     * "空闲"伪模式（铁律 I3）：所有表为空、需求为 0 ⇒ 不消耗、不产出、不推进任何进度。
+     * 无候选模式且无默认模式时由 {@link #setActiveMode(int)} 装入。
+     */
+    private static final Mode EMPTY_MODE = new Mode();
 
     /**
      * 物品容器 → 物品堆（模板优先，无模板回退纯 id）；数量 ≤0 或 id 无效返回空。
@@ -180,19 +264,71 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
     /** 独立燃料仓（与输入/输出缓存解耦；burn 模式时 handler 末位追加 1 个燃料槽）。键 = 身份签名。 */
     private final Map<String, Container> burnerFuelItems = new LinkedHashMap<>();
 
-    // RATE 连续流速率（每 tick），持久化；物品速率键 = 身份签名
-    private final Map<String, Double> inputItemTickRates = new LinkedHashMap<>();
-    private final Map<String, Double> outputItemTickRates = new LinkedHashMap<>();
-    private final Map<ResourceLocation, Double> inputFluidTickRates = new LinkedHashMap<>();
-    private final Map<ResourceLocation, Double> outputFluidTickRates = new LinkedHashMap<>();
+    // ===== 互斥模式表（0.5.0 单一固化工厂）=====
+    /**
+     * 本工厂的全部模式（索引 = 评估时的 branchIndex）。安装后不再变化。
+     *
+     * <p>共享容器（{@code input_items} 等）跨模式只有一份；下面的"当前表"字段由
+     * {@link #setActiveMode(int)} 引用赋值到"当前模式"的表上。
+     */
+    private final List<Mode> modes = new ArrayList<>();
+    /** 当前激活模式在 {@link #modes} 中的索引；<b>-1 = 空闲</b>（无候选且无默认模式，I3）。 */
+    private int activeMode = -1;
+
+    /**
+     * 激活模式变过、待推一次客户端包（护目镜读的是<b>客户端</b>的 BE 数据）。
+     *
+     * <p>为什么需要：{@code active_mode} + 各模式的表虽然每次 {@code sendData()} 都会带全，
+     * 但输入型工厂平时根本不发包（只有 {@code lastSuccess} 翻转才发，而那条只对输出型生效），
+     * 于是"玩家换了一种触发物品"后客户端的当前模式会一直停在旧值 ⇒ tooltip 显示错的输入/输出。
+     *
+     * <p>限流：只在 {@code tickCount == 0}（每 20 tick = 1 秒）兑现一次，最多 1 包/秒/工厂——
+     * 模式抖动（机器交替投料）也不会刷包；与既有"运转状态翻转"那条高频包同量级。
+     * 不落盘（纯瞬时状态）。
+     */
+    private boolean modeSyncPending;
+
+    // ===== 槽位并集缓存（性能 + 稳定契约）=====
+    /**
+     * 槽位并集缓存：签名列表与分片总数只在<b>容器表变化时</b>重建（{@link #applyModes} / {@code read}）。
+     *
+     * <p>为什么必须缓存：并集后签名数 = Σ(各模式物品键)，而 {@code containerForShard} / {@code getSlots} /
+     * {@code isOutputShard} 每次槽位访问都要线性遍历签名表；不缓存则外部设备（打包机/漏斗）
+     * 一次交互退化成 O(槽数²) + 每槽一次 {@code ArrayList} 分配。
+     *
+     * <p>同时它是<b>稳定契约</b>：槽位索引不随激活模式变化——Create 拆包对空槽分支忽略
+     * {@code insertItem} 返回值、按 {@code getSlotLimit} 认领，索引要是会飘，跨 tick 缓存索引的
+     * 外部设备会在切换瞬间"以为放得下"而实插失败 ⇒ 物品被凭空销毁。
+     */
+    private List<String> cachedInputIds = List.of();
+    private List<String> cachedOutputIds = List.of();
+    private int cachedInputSlotTotal;
+    private int cachedOutputSlotTotal;
+    /** 任一模式需要燃料 ⇒ 末位燃料槽存在（并集语义，不随激活模式变化）。 */
+    private boolean fuelSlotPresent;
+    /** 任一模式需要普通/超热燃料（燃料接受判据用；共享燃料仓先存着，等对应模式激活再烧）。 */
+    private boolean anyModeNormalBurn;
+    private boolean anyModeSuperBurn;
+
+    /**
+     * 当前模式的 8 张表（<b>引用赋值，非拷贝</b>；见 docs/48 §2.2）。
+     *
+     * <p>之所以去掉 {@code final}：切换模式只换引用，不重建表 ——
+     * 于是 {@code inputsSatisfied()} / {@code tickRateContinuous()} / {@code tickReplay()} 等
+     * 一律"遍历容器 → 查表 → 查不到跳过"，读表逻辑一行都不用改。
+     */
+    private Map<String, Double> inputItemTickRates = new LinkedHashMap<>();
+    private Map<String, Double> outputItemTickRates = new LinkedHashMap<>();
+    private Map<ResourceLocation, Double> inputFluidTickRates = new LinkedHashMap<>();
+    private Map<ResourceLocation, Double> outputFluidTickRates = new LinkedHashMap<>();
     private double inputEnergyTickRate;
     private double outputEnergyTickRate;
 
-    /** 回放 pattern（每秒应兑现量）；物品 pattern 键 = 身份签名。 */
-    private final Map<String, int[]> inputItemPatterns = new LinkedHashMap<>();
-    private final Map<String, int[]> outputItemPatterns = new LinkedHashMap<>();
-    private final Map<ResourceLocation, int[]> inputFluidPatterns = new LinkedHashMap<>();
-    private final Map<ResourceLocation, int[]> outputFluidPatterns = new LinkedHashMap<>();
+    /** 当前模式的回放 pattern（每秒应兑现量）；物品 pattern 键 = 身份签名。 */
+    private Map<String, int[]> inputItemPatterns = new LinkedHashMap<>();
+    private Map<String, int[]> outputItemPatterns = new LinkedHashMap<>();
+    private Map<ResourceLocation, int[]> inputFluidPatterns = new LinkedHashMap<>();
+    private Map<ResourceLocation, int[]> outputFluidPatterns = new LinkedHashMap<>();
     private int[] inputEnergyPattern = new int[0];
     private int[] outputEnergyPattern = new int[0];
     private int patternLength;
@@ -254,162 +390,484 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
 
     // ===== 评估结果安装（固化时调用一次） =====
 
-    /** RATE 模式：输入容量 = 每秒速率 × 20 秒缓冲；输出 = 大容量暂存仓（连续产出积累）。 */
+    /**
+     * 安装 N 个<b>互斥模式</b>（0.5.0 单一固化工厂的唯一写路径）。
+     *
+     * <p>共享容器取所有模式的<b>并集</b>、容量取各模式所需<b>最大值</b>——这是硬要求：
+     * 模式 2 的触发物品必须在本工厂里有槽位，玩家才喂得进去。
+     *
+     * <p>应力档案<b>不在此处理</b>：由固化侧按铁律 I5 保守合并后经 {@link #installRestoreData} 传入
+     * （唯一写点仍是那里，档案不随模式切换）。
+     *
+     * @param results 每个分支的评估结果（索引 = 模式索引 = 评估时的 branchIndex）；
+     *                REJECTED 等非 RATE/REPLAY 结果会被忽略（不进模式表）
+     */
+    public void installModes(List<EvaluationVerdict.Result> results) {
+        List<Mode> built = new ArrayList<>();
+        if (results != null) {
+            for (EvaluationVerdict.Result result : results) {
+                if (result == null) {
+                    continue;
+                }
+                if (!MODE_RATE.equals(result.verdict()) && !MODE_REPLAY.equals(result.verdict())) {
+                    continue;
+                }
+                built.add(modeOf(result));
+            }
+        }
+        applyModes(built);
+    }
+
+    /**
+     * 便捷入口（旧调用点兼容）：等价于 {@code installModes(单个 RATE 模式、trigger 为空)}。
+     * 内部委派 {@link #applyModes}，与 {@link #installModes} 共用同一条写路径。
+     */
     public void installRates(Map<EvaluationTrace.FlowKey, Double> inputRates,
                              Map<EvaluationTrace.FlowKey, Double> outputRates,
                              Map<EvaluationTrace.FlowKey, ItemStack> inputItemTemplates,
                              Map<EvaluationTrace.FlowKey, ItemStack> outputItemTemplates,
                              double inputEnergyRate, double outputEnergyRate,
                              double normalBurnDemandPerSecond, double superBurnDemandPerSecond) {
-        replayMode = false;
-        this.normalBurnDemandPerSecond = normalBurnDemandPerSecond;
-        this.superBurnDemandPerSecond = superBurnDemandPerSecond;
-        this.normalBurnFraction = 0;
-        this.superBurnFraction = 0;
-        burnerFuelItems.clear();
-        inputItems.clear();
-        outputItems.clear();
-        inputFluids.clear();
-        outputFluids.clear();
-        for (Map.Entry<EvaluationTrace.FlowKey, Double> entry : inputRates.entrySet()) {
-            long capacity = capacityFromTickRate(entry.getValue());
-            if (capacity <= 0) {
-                continue;
-            }
-            if ("item".equals(entry.getKey().kind())) {
-                Container container = new Container(entry.getKey().signature(), entry.getKey().id(), capacity);
-                container.applyTemplate(templateOf(inputItemTemplates, entry.getKey()));
-                inputItems.put(entry.getKey().signature(), container);
-            } else {
-                inputFluids.put(entry.getKey().id(),
-                        new Container(ItemIdentity.of(entry.getKey().id()), entry.getKey().id(), capacity));
-            }
-        }
-        for (Map.Entry<EvaluationTrace.FlowKey, Double> entry : outputRates.entrySet()) {
-            if (entry.getValue() <= 0) {
-                continue;
-            }
-            boolean item = "item".equals(entry.getKey().kind());
-            // 输出容量 = max(保底, 速率 × 20 秒)，与输入侧 capacityFromTickRate 同口径。
-            // 旧实现写死 256：高速产线缓冲不足会溢出丢产物，且分片只有 4 → 打包机一包只能取 4 组。
-            long scaled = capacityFromTickRate(entry.getValue());
-            long buffer = item ? Math.max(ITEM_OUTPUT_BUFFER, scaled)
-                    : Math.max(FLUID_OUTPUT_BUFFER, scaled);
-            if (item) {
-                Container container = new Container(entry.getKey().signature(), entry.getKey().id(), buffer);
-                container.applyTemplate(templateOf(outputItemTemplates, entry.getKey()));
-                outputItems.put(entry.getKey().signature(), container);
-            } else {
-                outputFluids.put(entry.getKey().id(),
-                        new Container(ItemIdentity.of(entry.getKey().id()), entry.getKey().id(), buffer));
-            }
-        }
-        inputEnergyCapacity = capacityFromTickRate(inputEnergyRate);
-        outputEnergyCapacity = outputEnergyRate > 0
-                ? Math.max(4000, capacityFromTickRate(outputEnergyRate)) : 0;
-        inputEnergyAmount = 0;
-        outputEnergyAmount = 0;
-        inputItemTickRates.clear();
-        outputItemTickRates.clear();
-        inputFluidTickRates.clear();
-        outputFluidTickRates.clear();
-        inputRates.forEach((key, rate) -> {
-            if ("item".equals(key.kind())) {
-                inputItemTickRates.put(key.signature(), rate);
-            } else {
-                inputFluidTickRates.put(key.id(), rate);
-            }
-        });
-        outputRates.forEach((key, rate) -> {
-            if ("item".equals(key.kind())) {
-                outputItemTickRates.put(key.signature(), rate);
-            } else {
-                outputFluidTickRates.put(key.id(), rate);
-            }
-        });
-        inputEnergyTickRate = inputEnergyRate;
-        outputEnergyTickRate = outputEnergyRate;
-        installed = true;
-        setChanged();
+        applyModes(List.of(modeOfRates(inputRates, outputRates, inputItemTemplates, outputItemTemplates,
+                inputEnergyRate, outputEnergyRate, normalBurnDemandPerSecond, superBurnDemandPerSecond)));
     }
 
-    /** REPLAY 模式：每秒 pattern → 容器容量（峰值秒 × 20 缓冲）。 */
+    /**
+     * 便捷入口（旧调用点兼容）：等价于 {@code installModes(单个 REPLAY 模式、trigger 为空)}。
+     * 内部委派 {@link #applyModes}，与 {@link #installModes} 共用同一条写路径。
+     */
     public void installPatterns(Map<EvaluationTrace.FlowKey, int[]> replayIn,
                                 Map<EvaluationTrace.FlowKey, int[]> replayOut,
                                 Map<EvaluationTrace.FlowKey, ItemStack> inputItemTemplates,
                                 Map<EvaluationTrace.FlowKey, ItemStack> outputItemTemplates,
                                 int[] energyIn, int[] energyOut,
                                 double normalBurnDemandPerSecond, double superBurnDemandPerSecond) {
-        replayMode = true;
-        this.normalBurnDemandPerSecond = normalBurnDemandPerSecond;
-        this.superBurnDemandPerSecond = superBurnDemandPerSecond;
-        this.normalBurnFraction = 0;
-        this.superBurnFraction = 0;
-        burnerFuelItems.clear();
-        inputItemPatterns.clear();
-        outputItemPatterns.clear();
-        inputFluidPatterns.clear();
-        outputFluidPatterns.clear();
-        for (Map.Entry<EvaluationTrace.FlowKey, int[]> entry : replayIn.entrySet()) {
-            if ("item".equals(entry.getKey().kind())) {
-                inputItemPatterns.put(entry.getKey().signature(), entry.getValue());
-            } else {
-                inputFluidPatterns.put(entry.getKey().id(), entry.getValue());
-            }
-        }
-        for (Map.Entry<EvaluationTrace.FlowKey, int[]> entry : replayOut.entrySet()) {
-            if ("item".equals(entry.getKey().kind())) {
-                outputItemPatterns.put(entry.getKey().signature(), entry.getValue());
-            } else {
-                outputFluidPatterns.put(entry.getKey().id(), entry.getValue());
-            }
-        }
-        inputEnergyPattern = energyIn == null ? new int[0] : energyIn;
-        outputEnergyPattern = energyOut == null ? new int[0] : energyOut;
+        applyModes(List.of(modeOfPatterns(replayIn, replayOut, inputItemTemplates, outputItemTemplates,
+                energyIn, energyOut, normalBurnDemandPerSecond, superBurnDemandPerSecond)));
+    }
 
-        patternLength = Math.max(inputItemPatterns.values().stream().mapToInt(v -> v.length).max().orElse(0),
-                Math.max(outputItemPatterns.values().stream().mapToInt(v -> v.length).max().orElse(0),
-                        Math.max(inputEnergyPattern.length, outputEnergyPattern.length)));
-        if (patternLength <= 0) {
-            patternLength = 1;
+    /** 一个分支结果 → 一个模式（含容器需求）；触发物品来自评估侧采集的 {@code triggerItems}。 */
+    private static Mode modeOf(EvaluationVerdict.Result result) {
+        Mode mode = MODE_REPLAY.equals(result.verdict())
+                ? modeOfPatterns(result.replayIn(), result.replayOut(),
+                result.inputItemTemplates(), result.outputItemTemplates(),
+                result.energyReplayIn(), result.energyReplayOut(),
+                result.normalBurnDemandPerSecond(), result.superBurnDemandPerSecond())
+                : modeOfRates(result.inputRates(), result.outputRates(),
+                result.inputItemTemplates(), result.outputItemTemplates(),
+                result.inputEnergyRate(), result.outputEnergyRate(),
+                result.normalBurnDemandPerSecond(), result.superBurnDemandPerSecond());
+        mode.triggers = triggerList(result.triggerItems());
+        return mode;
+    }
+
+    /**
+     * 触发物品集合规范化：去空、去重、保序。
+     *
+     * <p>一个分支可能同时被多个并行方块指定（各暴露一个物品）⇒ 触发物品是<b>集合</b>；
+     * 激活语义取<b>全部满足</b>（AND）——比"任一满足"更严，只会让模式更难激活，不会造成超产。
+     */
+    private static List<String> triggerList(List<String> raw) {
+        if (raw == null || raw.isEmpty()) {
+            return new ArrayList<>();
         }
+        LinkedHashSet<String> unique = new LinkedHashSet<>();
+        for (String signature : raw) {
+            if (signature != null && !signature.isBlank()) {
+                unique.add(signature);
+            }
+        }
+        return new ArrayList<>(unique);
+    }
+
+    /**
+     * RATE 模式：输入容量 = 每秒速率 × 20 秒缓冲；输出 = 大容量暂存仓（连续产出积累）。
+     *
+     * <p>容量口径与 0.4.31 的 {@code installRates} <b>逐位一致</b>（含"速率表收全部条目、容器只建
+     * 容量 &gt; 0 的条目"这一非对称细节），旧档读出来的单模式工厂行为因此不变。
+     */
+    private static Mode modeOfRates(Map<EvaluationTrace.FlowKey, Double> inputRates,
+                                    Map<EvaluationTrace.FlowKey, Double> outputRates,
+                                    Map<EvaluationTrace.FlowKey, ItemStack> inputItemTemplates,
+                                    Map<EvaluationTrace.FlowKey, ItemStack> outputItemTemplates,
+                                    double inputEnergyRate, double outputEnergyRate,
+                                    double normalBurnDemandPerSecond, double superBurnDemandPerSecond) {
+        Mode mode = new Mode();
+        mode.verdict = MODE_RATE;
+        mode.normalBurnDemandPerSecond = normalBurnDemandPerSecond;
+        mode.superBurnDemandPerSecond = superBurnDemandPerSecond;
+        mode.inputEnergyTickRate = inputEnergyRate;
+        mode.outputEnergyTickRate = outputEnergyRate;
+        mode.inputEnergyCapacity = capacityFromTickRate(inputEnergyRate);
+        mode.outputEnergyCapacity = outputEnergyRate > 0
+                ? Math.max(4000, capacityFromTickRate(outputEnergyRate)) : 0;
+        if (inputRates != null) {
+            for (Map.Entry<EvaluationTrace.FlowKey, Double> entry : inputRates.entrySet()) {
+                EvaluationTrace.FlowKey key = entry.getKey();
+                double rate = entry.getValue();
+                // 容量保底 1（方案 a）：**凡是进了模式输入表的签名，必须有容器**——否则
+                // modeTriggered 永远找不到它 ⇒ 固化成功却"永远点不亮的静默死模式"，
+                // 而固化前的可触发性校验只看签名、抓不到。
+                // 实测口径：EvaluationAudit.auditRates 只收 inputTotal/outputTotal/net > 0 的条目
+                // （rate 恒 > 0 ⇒ capacityFromTickRate ≥ 1），故本保底对真实评估结果是无副作用的兜底。
+                long capacity = Math.max(1, capacityFromTickRate(rate));
+                if ("item".equals(key.kind())) {
+                    mode.inputItemTickRates.put(key.signature(), rate);
+                    Container container = new Container(key.signature(), key.id(), capacity);
+                    container.applyTemplate(templateOf(inputItemTemplates, key));
+                    mode.inputItemContainers.put(key.signature(), container);
+                } else {
+                    mode.inputFluidTickRates.put(key.id(), rate);
+                    mode.inputFluidContainers.put(key.id(),
+                            new Container(ItemIdentity.of(key.id()), key.id(), capacity));
+                }
+            }
+        }
+        if (outputRates != null) {
+            for (Map.Entry<EvaluationTrace.FlowKey, Double> entry : outputRates.entrySet()) {
+                EvaluationTrace.FlowKey key = entry.getKey();
+                double rate = entry.getValue();
+                boolean item = "item".equals(key.kind());
+                if (item) {
+                    mode.outputItemTickRates.put(key.signature(), rate);
+                } else {
+                    mode.outputFluidTickRates.put(key.id(), rate);
+                }
+                // 输出容量 = max(保底, 速率 × 20 秒)，与输入侧 capacityFromTickRate 同口径。
+                // 旧实现写死 256：高速产线缓冲不足会溢出丢产物，且分片只有 4 → 打包机一包只能取 4 组。
+                // 产物侧同样"表里有签名必有容器"（保底 ≥ 256 / ≥ 4000，恒 > 0）。
+                long scaled = capacityFromTickRate(rate);
+                long buffer = item ? Math.max(ITEM_OUTPUT_BUFFER, scaled)
+                        : Math.max(FLUID_OUTPUT_BUFFER, scaled);
+                if (item) {
+                    Container container = new Container(key.signature(), key.id(), buffer);
+                    container.applyTemplate(templateOf(outputItemTemplates, key));
+                    mode.outputItemContainers.put(key.signature(), container);
+                } else {
+                    mode.outputFluidContainers.put(key.id(),
+                            new Container(ItemIdentity.of(key.id()), key.id(), buffer));
+                }
+            }
+        }
+        return mode;
+    }
+
+    /**
+     * REPLAY 模式：每秒 pattern → 容器容量（峰值秒 × 20 缓冲）。
+     *
+     * <p>与 0.4.31 的 {@code installPatterns} <b>逐位一致</b>（含"pattern 全零也照样建 0 容量容器"）。
+     */
+    private static Mode modeOfPatterns(Map<EvaluationTrace.FlowKey, int[]> replayIn,
+                                       Map<EvaluationTrace.FlowKey, int[]> replayOut,
+                                       Map<EvaluationTrace.FlowKey, ItemStack> inputItemTemplates,
+                                       Map<EvaluationTrace.FlowKey, ItemStack> outputItemTemplates,
+                                       int[] energyIn, int[] energyOut,
+                                       double normalBurnDemandPerSecond, double superBurnDemandPerSecond) {
+        Mode mode = new Mode();
+        mode.verdict = MODE_REPLAY;
+        mode.normalBurnDemandPerSecond = normalBurnDemandPerSecond;
+        mode.superBurnDemandPerSecond = superBurnDemandPerSecond;
+        if (replayIn != null) {
+            for (Map.Entry<EvaluationTrace.FlowKey, int[]> entry : replayIn.entrySet()) {
+                if ("item".equals(entry.getKey().kind())) {
+                    mode.inputItemPatterns.put(entry.getKey().signature(), entry.getValue());
+                } else {
+                    mode.inputFluidPatterns.put(entry.getKey().id(), entry.getValue());
+                }
+            }
+        }
+        if (replayOut != null) {
+            for (Map.Entry<EvaluationTrace.FlowKey, int[]> entry : replayOut.entrySet()) {
+                if ("item".equals(entry.getKey().kind())) {
+                    mode.outputItemPatterns.put(entry.getKey().signature(), entry.getValue());
+                } else {
+                    mode.outputFluidPatterns.put(entry.getKey().id(), entry.getValue());
+                }
+            }
+        }
+        mode.inputEnergyPattern = energyIn == null ? new int[0] : energyIn;
+        mode.outputEnergyPattern = energyOut == null ? new int[0] : energyOut;
+
+        mode.patternLength = Math.max(
+                mode.inputItemPatterns.values().stream().mapToInt(v -> v.length).max().orElse(0),
+                Math.max(mode.outputItemPatterns.values().stream().mapToInt(v -> v.length).max().orElse(0),
+                        Math.max(mode.inputEnergyPattern.length, mode.outputEnergyPattern.length)));
+        if (mode.patternLength <= 0) {
+            mode.patternLength = 1;
+        }
+        if (replayIn != null) {
+            for (Map.Entry<EvaluationTrace.FlowKey, int[]> entry : replayIn.entrySet()) {
+                boolean item = "item".equals(entry.getKey().kind());
+                // 容量保底 1（方案 a）：pattern 可能全零（峰值 0 ⇒ 容量 0）——那样玩家永远喂不进
+                // 1 个单位，触发物品被判"不可达"⇒ 静默死模式。保底后只影响这种退化情形。
+                long capacity = Math.max(1, maxInt(entry.getValue()) * BUFFER_SECONDS);
+                if (item) {
+                    Container container = new Container(entry.getKey().signature(), entry.getKey().id(), capacity);
+                    container.applyTemplate(templateOf(inputItemTemplates, entry.getKey()));
+                    mode.inputItemContainers.put(entry.getKey().signature(), container);
+                } else {
+                    mode.inputFluidContainers.put(entry.getKey().id(),
+                            new Container(ItemIdentity.of(entry.getKey().id()), entry.getKey().id(), capacity));
+                }
+            }
+        }
+        if (replayOut != null) {
+            for (Map.Entry<EvaluationTrace.FlowKey, int[]> entry : replayOut.entrySet()) {
+                boolean item = "item".equals(entry.getKey().kind());
+                long capacity = item
+                        ? Math.max(ITEM_OUTPUT_BUFFER, maxInt(entry.getValue()) * BUFFER_SECONDS)
+                        : Math.max(FLUID_OUTPUT_BUFFER, maxInt(entry.getValue()) * BUFFER_SECONDS);
+                if (item) {
+                    Container container = new Container(entry.getKey().signature(), entry.getKey().id(), capacity);
+                    container.applyTemplate(templateOf(outputItemTemplates, entry.getKey()));
+                    mode.outputItemContainers.put(entry.getKey().signature(), container);
+                } else {
+                    mode.outputFluidContainers.put(entry.getKey().id(),
+                            new Container(ItemIdentity.of(entry.getKey().id()), entry.getKey().id(), capacity));
+                }
+            }
+        }
+        mode.inputEnergyCapacity = maxInt(mode.inputEnergyPattern) * BUFFER_SECONDS;
+        mode.outputEnergyCapacity = maxInt(mode.outputEnergyPattern) * BUFFER_SECONDS;
+        return mode;
+    }
+
+    /**
+     * <b>唯一写路径</b>：装模式表 → 建共享容器并集 → 立刻建立激活模式。
+     *
+     * @param newModes 全部模式（顺序 = 模式索引）；空列表 = 清空（工厂不工作）
+     */
+    private void applyModes(List<Mode> newModes) {
+        modes.clear();
+        modes.addAll(newModes);
+        activeMode = -1;
+        normalBurnFraction = 0;
+        superBurnFraction = 0;
+        burnerFuelItems.clear();
+        // 共享容器 = 全部模式的并集，容量取各模式所需的最大值（docs/47 §4.1 硬要求）
         inputItems.clear();
         outputItems.clear();
         inputFluids.clear();
         outputFluids.clear();
-        for (Map.Entry<EvaluationTrace.FlowKey, int[]> entry : replayIn.entrySet()) {
-            boolean item = "item".equals(entry.getKey().kind());
-            long capacity = maxInt(entry.getValue()) * BUFFER_SECONDS;
-            if (item) {
-                Container container = new Container(entry.getKey().signature(), entry.getKey().id(), capacity);
-                container.applyTemplate(templateOf(inputItemTemplates, entry.getKey()));
-                inputItems.put(entry.getKey().signature(), container);
-            } else {
-                inputFluids.put(entry.getKey().id(),
-                        new Container(ItemIdentity.of(entry.getKey().id()), entry.getKey().id(), capacity));
-            }
+        for (Mode mode : modes) {
+            mergeItemContainers(inputItems, mode.inputItemContainers);
+            mergeItemContainers(outputItems, mode.outputItemContainers);
+            mergeFluidContainers(inputFluids, mode.inputFluidContainers);
+            mergeFluidContainers(outputFluids, mode.outputFluidContainers);
         }
-        for (Map.Entry<EvaluationTrace.FlowKey, int[]> entry : replayOut.entrySet()) {
-            boolean item = "item".equals(entry.getKey().kind());
-            long capacity = item
-                    ? Math.max(ITEM_OUTPUT_BUFFER, maxInt(entry.getValue()) * BUFFER_SECONDS)
-                    : Math.max(FLUID_OUTPUT_BUFFER, maxInt(entry.getValue()) * BUFFER_SECONDS);
-            if (item) {
-                Container container = new Container(entry.getKey().signature(), entry.getKey().id(), capacity);
-                container.applyTemplate(templateOf(outputItemTemplates, entry.getKey()));
-                outputItems.put(entry.getKey().signature(), container);
-            } else {
-                outputFluids.put(entry.getKey().id(),
-                        new Container(ItemIdentity.of(entry.getKey().id()), entry.getKey().id(), capacity));
-            }
+        // 能量容量跨模式共享（取最大值）：能力注册与护目镜读数不随模式切换抖动
+        long inputEnergy = 0;
+        long outputEnergy = 0;
+        for (Mode mode : modes) {
+            inputEnergy = Math.max(inputEnergy, mode.inputEnergyCapacity);
+            outputEnergy = Math.max(outputEnergy, mode.outputEnergyCapacity);
         }
-        inputEnergyCapacity = maxInt(inputEnergyPattern) * BUFFER_SECONDS;
-        outputEnergyCapacity = maxInt(outputEnergyPattern) * BUFFER_SECONDS;
+        inputEnergyCapacity = inputEnergy;
+        outputEnergyCapacity = outputEnergy;
         inputEnergyAmount = 0;
         outputEnergyAmount = 0;
-        replayCurrentSecond = 0;
+        inputEnergyFraction = 0;
+        outputEnergyFraction = 0;
         installed = true;
+        // 槽位并集/燃料槽契约：容器表与模式表都定下来了，重建缓存（此后不再变）
+        refreshSlotIndex();
+        refreshModeAggregates();
+        // 必须立刻建立激活模式：否则 8 张表还指向旧值（刚固化时容器全空 ⇒ 默认模式或空闲）
+        refreshActiveMode();
         setChanged();
+    }
+
+    /**
+     * 重建槽位并集缓存（签名列表 + 分片总数）。
+     *
+     * <p>调用点只有"容器表刚被重建/载入"的两处：{@link #applyModes} 与 {@code read}。
+     * 注册表存在性判据（模组被移除时隐藏空槽）与 0.4.31 一致，只是挪到重建时算一次。
+     */
+    private void refreshSlotIndex() {
+        cachedInputIds = List.copyOf(validSignatures(inputItems));
+        cachedOutputIds = List.copyOf(validSignatures(outputItems));
+        cachedInputSlotTotal = shardTotal(cachedInputIds, inputItems);
+        cachedOutputSlotTotal = shardTotal(cachedOutputIds, outputItems);
+    }
+
+    /** 物品容器里 id 仍在注册表中的签名（顺序 = 容器表顺序，槽位索引依赖它）。 */
+    private static List<String> validSignatures(Map<String, Container> containers) {
+        List<String> keys = new ArrayList<>();
+        containers.forEach((signature, container) -> {
+            if (container.id != null && BuiltInRegistries.ITEM.containsKey(container.id)) {
+                keys.add(signature);
+            }
+        });
+        return keys;
+    }
+
+    /** 各签名的分片数之和。 */
+    private int shardTotal(List<String> signatures, Map<String, Container> containers) {
+        int total = 0;
+        for (String signature : signatures) {
+            total += shardCount(containers.get(signature));
+        }
+        return total;
+    }
+
+    /** 任一模式需要燃料 ⇒ 燃料槽存在（并集语义：槽位索引不随激活模式变化）。 */
+    private void refreshModeAggregates() {
+        anyModeNormalBurn = false;
+        anyModeSuperBurn = false;
+        for (Mode mode : modes) {
+            anyModeNormalBurn |= mode.normalBurnDemandPerSecond > 0;
+            anyModeSuperBurn |= mode.superBurnDemandPerSecond > 0;
+        }
+        fuelSlotPresent = anyModeNormalBurn || anyModeSuperBurn;
+    }
+
+    /**
+     * 物品容器并集：同签名取<b>较大容量</b>（并补全模板），不同签名各自成槽。
+     *
+     * <p>槽位并集是必要的——模式 2 的触发物品必须在工厂里有槽位，玩家才喂得进去。
+     */
+    private static void mergeItemContainers(Map<String, Container> target, Map<String, Container> source) {
+        for (Map.Entry<String, Container> entry : source.entrySet()) {
+            Container incoming = entry.getValue();
+            Container existing = target.get(entry.getKey());
+            if (existing == null) {
+                target.put(entry.getKey(), incoming);
+                continue;
+            }
+            existing.capacity = Math.max(existing.capacity, incoming.capacity);
+            if (existing.template.isEmpty()) {
+                existing.template = incoming.template;
+            }
+        }
+    }
+
+    /** 流体容器并集：同 id 取较大容量。 */
+    private static void mergeFluidContainers(Map<ResourceLocation, Container> target,
+                                             Map<ResourceLocation, Container> source) {
+        for (Map.Entry<ResourceLocation, Container> entry : source.entrySet()) {
+            Container incoming = entry.getValue();
+            Container existing = target.get(entry.getKey());
+            if (existing == null) {
+                target.put(entry.getKey(), incoming);
+            } else {
+                existing.capacity = Math.max(existing.capacity, incoming.capacity);
+            }
+        }
+    }
+
+    /**
+     * <b>每 tick 的模式选择</b>（铁律 I2/I3/I4）。
+     *
+     * <pre>
+     * 命中数 = |{ 触发物品 t ∈ modes[i].triggers | 输入缓存中 t 的 amount ≥ 1 }|
+     * 候选   = { i | 命中数 ≥ 1 }
+     * 激活   = 候选非空 ?（命中数最多者；并列取索引最小）:（存在默认模式 ? 该默认模式 : 空闲）
+     * </pre>
+     *
+     * <p><b>为什么是"最具体优先"而不是纯 min(index)</b>：模式 0 触发集 {沙}、模式 1 触发集 {沙,木棍}，
+     * 若取 min(index)，玩家喂"沙+木棍"时模式 0 也命中 ⇒ 模式 1 <b>永远无法激活</b>（静默死模式，
+     * 而且固化前的可触发性校验抓不到这种"不可达"）。改按命中数排序后：喂沙 → 两模式各 1 ⇒ 模式 0；
+     * 喂沙+木棍 → 1 vs 2 ⇒ 模式 1。确定性（I4）不变：同输入必得同一模式。
+     *
+     * @return 是否有模式激活；{@code false} = 空闲（不消耗、不产出、不推进任何进度）
+     */
+    private boolean refreshActiveMode() {
+        int candidate = -1;
+        int bestHits = 0;
+        for (int i = 0; i < modes.size(); i++) {
+            Mode mode = modes.get(i);
+            if (mode.isDefault()) {
+                continue;   // 默认模式只在无候选时兜底
+            }
+            int hits = triggerHits(mode);
+            if (hits > bestHits) {   // 严格大于 ⇒ 并列时保留索引最小者（确定性）
+                bestHits = hits;
+                candidate = i;
+            }
+        }
+        if (candidate < 0) {
+            candidate = defaultModeIndex();
+        }
+        setActiveMode(candidate);
+        return candidate >= 0;
+    }
+
+    /**
+     * 该模式命中的触发物品数量（任一触发物品在输入缓存中且 amount ≥ 1 即计 1）。
+     *
+     * <p>只看触发物品，<b>不看</b>其它输入是否齐备（齐备性由模式自身的 {@code inputsSatisfied} 判定）；
+     * 也<b>不</b>因"当前模式输入不足"而自动改选别的模式——切换必须有显式的触发物品增删，避免抖动。
+     *
+     * <p>安全性不靠"全部满足"：互斥（I2）已保证不超产，且真正兑换还要过 {@code inputsSatisfied()}
+     * （触发物品本就必须在该模式的输入表中，见固化前的可触发性校验）。
+     */
+    private int triggerHits(Mode mode) {
+        int hits = 0;
+        for (String signature : mode.triggers) {
+            Container container = inputItems.get(signature);
+            if (container != null && container.amount >= 1) {
+                hits++;
+            }
+        }
+        return hits;
+    }
+
+    /** 默认模式索引（无触发物品者，取索引最小）；无默认模式返回 -1 = 空闲。 */
+    private int defaultModeIndex() {
+        for (int i = 0; i < modes.size(); i++) {
+            if (modes.get(i).isDefault()) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * 装入模式 {@code index}：把 8 张表字段（及其余随模式走的字段）<b>引用赋值</b>到该模式的表上。
+     *
+     * <p>{@code index < 0} = 空闲（装入 {@link #EMPTY_MODE}）：所有表为空、需求为 0 ⇒
+     * 即使有别处无意读表也不会消耗/产出/烧燃料（铁律 I3 的双保险）。
+     *
+     * <p><b>REPLAY 秒槽指针绝不回卷</b>：切走时<b>只保存</b>、切回时从保存值<b>恢复</b>
+     * ⇒ 模式切换 = 暂停/继续，而不是"从头重放"。若切走归零，玩家交替投料就能反复兑现同一个
+     * 高产出秒槽（最高放大 patternLength 倍）——这是本重构新引入的超产面，必须堵死。
+     */
+    private void setActiveMode(int index) {
+        if (index < 0 || index >= modes.size()) {
+            index = -1;
+        }
+        boolean changed = index != activeMode;
+        if (changed) {
+            if (activeMode >= 0 && activeMode < modes.size()) {
+                // 保存：指针留在原地（绝不置 0）
+                modes.get(activeMode).progress = replayCurrentSecond;
+            }
+            activeMode = index;
+            if (index >= 0) {
+                // 恢复：从保存值继续（空闲期间也不推进，等价于暂停）
+                replayCurrentSecond = modes.get(index).progress;
+            }
+            modeSyncPending = true;   // 客户端 tooltip 的"当前模式"要跟着走（限流见 tick）
+        }
+        Mode mode = index < 0 ? EMPTY_MODE : modes.get(index);
+        // 引用赋值（无拷贝）：下游 inputsSatisfied / tickRateContinuous / tickReplay /
+        // replayIsReady / replayApply / tickBurner 读表逻辑一行都不用改
+        this.inputItemTickRates = mode.inputItemTickRates;
+        this.outputItemTickRates = mode.outputItemTickRates;
+        this.inputFluidTickRates = mode.inputFluidTickRates;
+        this.outputFluidTickRates = mode.outputFluidTickRates;
+        this.inputItemPatterns = mode.inputItemPatterns;
+        this.outputItemPatterns = mode.outputItemPatterns;
+        this.inputFluidPatterns = mode.inputFluidPatterns;
+        this.outputFluidPatterns = mode.outputFluidPatterns;
+        this.inputEnergyTickRate = mode.inputEnergyTickRate;
+        this.outputEnergyTickRate = mode.outputEnergyTickRate;
+        this.inputEnergyPattern = mode.inputEnergyPattern;
+        this.outputEnergyPattern = mode.outputEnergyPattern;
+        this.patternLength = Math.max(1, mode.patternLength);
+        this.normalBurnDemandPerSecond = mode.normalBurnDemandPerSecond;
+        this.superBurnDemandPerSecond = mode.superBurnDemandPerSecond;
+        this.replayMode = mode.replay();
     }
 
     private static long capacityFromTickRate(double ratePerTick) {
@@ -612,9 +1070,16 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         if (tickCount >= 20) {
             tickCount = 0;
         }
+        // 每 tick 先选互斥模式（I2/I4）：任一 tick 至多一个模式兑换；无候选且无默认模式 → 空闲（I3）。
+        // 注意：空闲**不能**在这里 return —— 下面"运转状态翻转上报"必须在空闲时也能跑，
+        // 否则输出型工厂切到空闲时不会撤销生成转速（还会继续向外供能）。
+        boolean modeActive = refreshActiveMode();
         // 燃烧热值：每 tick 按需求从输入缓存动态消耗燃料（熔岩桶返还空桶到输出）
         tickBurner();
-        if (replayMode) {
+        if (!modeActive) {
+            // 空闲：不消耗、不产出、不推进任何进度（EMPTY_MODE 已把需求全部归零，这是双保险）
+            lastSuccess = false;
+        } else if (replayMode) {
             if (tickCount == 0) {
                 tickReplay();
             }
@@ -636,7 +1101,16 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
                 // 客户端保留已有快照（见 read 里对应的处理）。区块加载/固化/放置那几条路径照常携带。
                 skipPreviewInClientPayload = true;
                 sendData();
+                modeSyncPending = false;   // 这一包已经带上了最新的 active_mode
             }
+        }
+        // 激活模式变过：推一次（限流 1 包/秒），否则客户端护目镜的"当前模式"会一直停在旧值。
+        // 【发包量审计】这是为 D1 观感补的同步路径：上限 1 包/秒/工厂（tickCount==0 门控），
+        // 与上面"运转状态翻转"那条既有高频包同量级；模式抖动（机器交替投料）也不会刷包。
+        if (modeSyncPending && tickCount == 0 && level != null && !level.isClientSide) {
+            modeSyncPending = false;
+            skipPreviewInClientPayload = true;
+            sendData();
         }
     }
 
@@ -767,19 +1241,46 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         return inputEnergyCapacity <= 0 || inputEnergyTickRate <= 0 || inputEnergyAmount >= 1;
     }
 
-    /** 连续流输出空间检查：任一输出暂存仓满 → 暂停兑换（背压，不丢弃产物）。 */
+    /**
+     * 连续流输出空间检查：<b>当前模式</b>的产物暂存仓满 → 暂停兑换（背压，不丢弃产物）。
+     *
+     * <p>为什么必须"只看本模式的产物"（0.5.0 多模式重构的关键点）：容器现在是<b>所有模式的并集</b>，
+     * 若还遍历 {@code outputItems.values()} 全表，模式 2 的产物没人取走就会把<b>模式 1 也卡死</b>——
+     * 玩家会看到"我没喂错东西，工厂却停了"。
+     *
+     * <p>逐位兼容：单模式下"本模式的产物键集合"与"全部输出容器"完全等价
+     * （容器只在本模式的表里建、表里的键必有对应容器或为无容器的非正速率条目），
+     * 故旧档行为不变。
+     */
     private boolean outputsHaveSpace() {
-        for (Container container : outputItems.values()) {
-            if (container.amount >= container.capacity) {
+        for (String signature : outputItemKeys()) {
+            Container container = outputItems.get(signature);
+            if (container != null && container.amount >= container.capacity) {
                 return false;
             }
         }
-        for (Container container : outputFluids.values()) {
-            if (container.amount >= container.capacity) {
+        for (ResourceLocation id : outputFluidKeys()) {
+            Container container = outputFluids.get(id);
+            if (container != null && container.amount >= container.capacity) {
                 return false;
             }
         }
-        return outputEnergyCapacity <= 0 || outputEnergyAmount < outputEnergyCapacity;
+        // 能量容器跨模式共享（容量取各模式最大值）：只有"本模式确实产出能量"时才受其背压约束。
+        // 单模式下 {@code outputEnergyCapacity > 0 ⇔ 本模式有能量产出}，与原实现等价。
+        boolean modeOutputsEnergy = replayMode
+                ? maxInt(outputEnergyPattern) > 0
+                : outputEnergyCapacity > 0 && outputEnergyTickRate > 0;
+        return !modeOutputsEnergy || outputEnergyAmount < outputEnergyCapacity;
+    }
+
+    /** 当前模式产出的物品键（REPLAY 用 pattern 表，RATE 用速率表）。 */
+    private Iterable<String> outputItemKeys() {
+        return replayMode ? outputItemPatterns.keySet() : outputItemTickRates.keySet();
+    }
+
+    /** 当前模式产出的流体键。 */
+    private Iterable<ResourceLocation> outputFluidKeys() {
+        return replayMode ? outputFluidPatterns.keySet() : outputFluidTickRates.keySet();
     }
 
     /**
@@ -872,7 +1373,14 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
 
     // ===== 燃烧热值（评估预存折算）=====
 
-    /** 燃烧模式：普通或超热需求 > 0。 */
+    /**
+     * <b>当前激活模式</b>是否为"燃烧模式"：普通或超热需求 &gt; 0。
+     *
+     * <p>只用于"要不要烧、烧得够不够"（{@link #tickBurner()} / {@link #burnerSatisfied()}）——
+     * 这些必须按当前模式判定，否则空闲/非燃烧模式也会烧燃料。
+     * 而"燃料槽存不存在、收不收这种燃料"走并集语义（{@link #fuelSlotPresent} /
+     * {@link #acceptFuelAnyMode}），不随激活模式变化。
+     */
     private boolean burnModeActive() {
         return normalBurnDemandPerSecond > 0 || superBurnDemandPerSecond > 0;
     }
@@ -988,16 +1496,26 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         return burn > 0 ? burn : 0;
     }
 
-    /** 燃烧模式是否接受该物品为燃料（普通需求收普通可燃物；超热需求收烈焰蛋糕）。 */
-    private boolean acceptBurnFuel(ItemStack stack) {
-        if (!burnModeActive() || stack.isEmpty()) {
+    /**
+     * 燃料槽**是否接受**该物品（并集语义：<b>任一</b>模式用得到就收）。
+     *
+     * <p>为什么不按当前激活模式判定（0.5.0 修正）：槽位存在性与接受判据都必须只由"模式表"决定，
+     * 不能随激活模式变化——否则槽位索引会飘，而 Create 拆包对空槽分支是按 {@code getSlotLimit}
+     * 认领、忽略 {@code insertItem} 返回值，跨 tick 缓存索引的外部设备会在切换瞬间"以为放得下"
+     * 而实插失败 ⇒ 物品凭空销毁。
+     *
+     * <p>收下也不会白烧：燃料进的是共享燃料仓，只有需要它的模式激活时 {@code tickBurner} 才会消耗
+     * （{@link #burnModeActive()} / {@link #burnerSatisfied()} 仍按当前模式判定）。
+     */
+    private boolean acceptFuelAnyMode(ItemStack stack) {
+        if (stack.isEmpty() || !fuelSlotPresent) {
             return false;
         }
         ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
         if (BURN_BLAZE_CAKE.equals(id)) {
-            return superBurnDemandPerSecond > 0;
+            return anyModeSuperBurn;
         }
-        return normalBurnDemandPerSecond > 0 && burnTimeOf(id) > 0;
+        return anyModeNormalBurn && burnTimeOf(id) > 0;
     }
 
     private static final ResourceLocation BURN_BLAZE_CAKE =
@@ -1019,82 +1537,55 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         return energyHandler;
     }
 
+    /** 每片固定 64（等价于"一个普通格子"）。 */
+    private static final int SHARD_SIZE = 64;
+    /**
+     * 每个签名最多暴露的分片数（上限，防高速产线容量过大导致槽位爆炸）。
+     *
+     * <p>9 是打包机一包的上限（{@code PackageItem.SLOTS=9}），足够一次吸收整包；
+     * 容量超过 9×64=576 时，超出部分由最后一片"兜底覆盖"（见 {@code shardCapacity}），
+     * 保证<b>存量全覆盖</b>——不会出现"看不见/取不出"的卡死。
+     */
+    private static final int MAX_SHARDS_PER_SIGNATURE = 9;
+
+    /** 该容器应暴露的分片数：按容量推导（≤64 一片；超 576 仍为 9 片，末片兜底）。 */
+    private static int shardCount(Container container) {
+        if (container == null) {
+            return 0;
+        }
+        long byCapacity = (Math.max(0L, container.capacity) + SHARD_SIZE - 1) / SHARD_SIZE;
+        return (int) Math.max(1L, Math.min(MAX_SHARDS_PER_SIGNATURE, byCapacity));
+    }
+
     private final class ItemHandler implements IItemHandler {
         /**
          * 输入槽位列表：返回<b>身份签名</b>（id + 组件摘要）。
          * 同一 id 的不同组件变体因此各占一个槽（如水瓶与治疗药水互不覆盖）。
          * 签名对应的 id 已不在注册表（模组被移除）时跳过，避免暴露空槽。
+         *
+         * <p>0.5.0：改为<b>读取缓存</b>（{@link #refreshSlotIndex}）——容器是全部模式的并集，
+         * 每次槽位访问重算会让外部设备一次交互退化成 O(槽数²)。
          */
         private List<String> inputIds() {
-            List<String> keys = new ArrayList<>();
-            inputItems.forEach((signature, container) -> {
-                if (container.id != null && BuiltInRegistries.ITEM.containsKey(container.id)) {
-                    keys.add(signature);
-                }
-            });
-            return keys;
+            return cachedInputIds;
         }
 
         private List<String> outputIds() {
-            List<String> keys = new ArrayList<>();
-            outputItems.forEach((signature, container) -> {
-                if (container.id != null && BuiltInRegistries.ITEM.containsKey(container.id)) {
-                    keys.add(signature);
-                }
-            });
-            return keys;
+            return cachedOutputIds;
         }
 
         /**
-         * 每个签名暴露的分片槽数：把"单槽大容量"拆成"多槽 × 每槽 64"。
+         * 输入区槽位总数（各签名分片数之和；缓存值，见 {@link #refreshSlotIndex}）。
          *
-         * <p>为什么必须分片（Create 6.0.10 源码确证）：打包机拆包
-         * （{@code DefaultUnpackingHandler.unpack}）在 simulate 阶段遍历目标槽，
-         * <b>空槽</b>按 {@code getSlotLimit} 认领、<b>非空槽</b>受
-         * {@code min(itemInSlot.getMaxStackSize(), getSlotLimit)} 限制（恒 ≤ 64）。
-         * 一包最多 9 组（{@code PackageItem.SLOTS=9} × 64 = 576 个），若每个签名只有 1 个槽，
-         * 一次只能吃下 64 → 整包拆包判定失败。分片后 9 个槽可一次吸收 576 个。
-         *
-         * <p>分片语义：分片 i 负责该容器 [i×64, (i+1)×64) 段。对外等价于"多个 64 容量的格子"，
-         * 与 Create ItemVault（20 槽 × 64）思路一致；内部仍是单一 {@code Container.amount}（long），
-         * 存档格式不变。
+         * <p>分片槽数的推导（"单槽大容量"拆成"多槽 × 每槽 64"）见 {@link FactoryBlockEntity#shardCount}。
          */
-        /** 每片固定 64（等价于"一个普通格子"）。 */
-        private static final int SHARD_SIZE = 64;
-        /**
-         * 每个签名最多暴露的分片数（上限，防高速产线容量过大导致槽位爆炸）。
-         *
-         * <p>9 是打包机一包的上限（{@code PackageItem.SLOTS=9}），足够一次吸收整包；
-         * 容量超过 9×64=576 时，超出部分由最后一片"兜底覆盖"（见 {@link #shardCapacity}），
-         * 保证**存量全覆盖**——不会出现"看不见/取不出"的卡死。
-         */
-        private static final int MAX_SHARDS_PER_SIGNATURE = 9;
-
-        /** 该容器应暴露的分片数：按容量推导（≤64 一片；超 576 仍为 9 片，末片兜底）。 */
-        private int shardCount(Container container) {
-            if (container == null) {
-                return 0;
-            }
-            long byCapacity = (Math.max(0L, container.capacity) + SHARD_SIZE - 1) / SHARD_SIZE;
-            return (int) Math.max(1L, Math.min(MAX_SHARDS_PER_SIGNATURE, byCapacity));
-        }
-
-        /** 输入区槽位总数（各签名分片数之和）。 */
         private int inputSlotTotal() {
-            int total = 0;
-            for (String signature : inputIds()) {
-                total += shardCount(inputItems.get(signature));
-            }
-            return total;
+            return cachedInputSlotTotal;
         }
 
-        /** 输出区槽位总数。 */
+        /** 输出区槽位总数（缓存值）。 */
         private int outputSlotTotal() {
-            int total = 0;
-            for (String signature : outputIds()) {
-                total += shardCount(outputItems.get(signature));
-            }
-            return total;
+            return cachedOutputSlotTotal;
         }
 
         /** 输出区分片起始索引。 */
@@ -1102,14 +1593,14 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             return inputSlotTotal();
         }
 
-        /** 燃料槽索引（burn 模式追加在输入+输出分片之后；未激活返回 -1）。 */
+        /** 燃料槽索引（任一模式需要燃料时追加在输入+输出分片之后，不随激活模式变化）；无则 -1。 */
         private int fuelSlotIndex() {
-            return burnModeActive() ? inputSlotTotal() + outputSlotTotal() : -1;
+            return fuelSlotPresent ? inputSlotTotal() + outputSlotTotal() : -1;
         }
 
         @Override
         public int getSlots() {
-            return inputSlotTotal() + outputSlotTotal() + (burnModeActive() ? 1 : 0);
+            return inputSlotTotal() + outputSlotTotal() + (fuelSlotPresent ? 1 : 0);
         }
 
         /**
@@ -1165,9 +1656,9 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
 
         @Override
         public ItemStack getStackInSlot(int slot) {
-            // 燃料槽（burn 模式追加的末位槽）：返回燃料仓首个非空堆（空则 EMPTY）
+            // 燃料槽（任一模式需要燃料时的末位槽）：返回燃料仓首个非空堆（空则 EMPTY）
             int fuelSlot = fuelSlotIndex();
-            if (burnModeActive() && slot == fuelSlot) {
+            if (fuelSlot >= 0 && slot == fuelSlot) {
                 for (Map.Entry<String, Container> entry : burnerFuelItems.entrySet()) {
                     if (entry.getValue().amount > 0) {
                         return itemStackOf(entry.getValue(),
@@ -1190,8 +1681,11 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
 
         @Override
         public ItemStack insertItem(int slot, ItemStack stack, boolean simulate) {
-            // 燃料槽：接受任意合格燃料进独立燃料仓（容量 1024/类；按热值由 tickBurner 消耗；与其他缓存解耦）
-            if (acceptBurnFuel(stack) && slot == fuelSlotIndex()) {
+            // 燃料槽：接受**任一模式**用得到的燃料进独立燃料仓（容量 1024/类；按热值由 tickBurner 消耗）。
+            // 并集语义：槽位存在性与接受判据都不随激活模式变化——否则槽位索引会飘，
+            // 跨 tick 缓存索引的外部设备（打包机/漏斗）会在切换瞬间"以为放得下"而实插失败并销毁物品。
+            int fuelSlot = fuelSlotIndex();
+            if (fuelSlot >= 0 && slot == fuelSlot && acceptFuelAnyMode(stack)) {
                 String signature = ItemIdentity.of(stack, registries());
                 Container container = burnerFuelItems.computeIfAbsent(signature,
                         k -> new Container(signature, BuiltInRegistries.ITEM.getKey(stack.getItem()), 1024));
@@ -1229,7 +1723,7 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         @Override
         public ItemStack extractItem(int slot, int amount, boolean simulate) {
             // 燃料槽只进不出（燃料在工厂内部燃烧；熔岩桶同 Create 燃烧室语义——直接消耗不返还）
-            if (burnModeActive() && slot == fuelSlotIndex()) {
+            if (slot == fuelSlotIndex()) {
                 return ItemStack.EMPTY;
             }
             // 输出分片槽：只能从"输出区"取；总量取自该分片段（扣减写回容器总量）。
@@ -1251,7 +1745,7 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
 
         /** 该槽是否属于输出区（输入区与燃料槽不可抽取）。 */
         private boolean isOutputShard(int slot) {
-            if (burnModeActive() && slot == fuelSlotIndex()) {
+            if (slot == fuelSlotIndex()) {
                 return false;
             }
             int start = outputShardStart();
@@ -1283,7 +1777,7 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
          */
         @Override
         public int getSlotLimit(int slot) {
-            if (burnModeActive() && slot == fuelSlotIndex()) {
+            if (slot == fuelSlotIndex()) {
                 return 1024;
             }
             int[] shard = new int[1];
@@ -1297,8 +1791,8 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
 
         @Override
         public boolean isItemValid(int slot, ItemStack stack) {
-            // 燃料槽：接受任意合格燃料
-            if (burnModeActive() && slot == fuelSlotIndex() && acceptBurnFuel(stack)) {
+            // 燃料槽：接受任一模式用得到的燃料（并集语义，不随激活模式变化）
+            if (slot == fuelSlotIndex() && acceptFuelAnyMode(stack)) {
                 return true;
             }
             // 仅输入区可插入；且必须是该分片所属容器的物品
@@ -1493,8 +1987,9 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         }
         net.createmod.catnip.lang.Lang.builder("createcmpor")
                 .translate("tooltip.factory.title").forGoggles(tooltip, 1);
+        appendModeLines(tooltip);
         net.createmod.catnip.lang.Lang.builder("createcmpor")
-                .translate(replayMode ? "tooltip.factory.mode_replay" : "tooltip.factory.mode_rate")
+                .translate(activeModeLine())
                 .forGoggles(tooltip, 1);
         if (burnModeActive()) {
             // 燃烧：普通 X/s（橙红） · 超热 Y/s（蓝白）——对应 KINDLED 橙红火 / SEETHING 蓝白魂火
@@ -1509,6 +2004,126 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         }
         appendIoLines(tooltip);
         return true;
+    }
+
+    /**
+     * 模式列表（0.5.0 单一固化工厂）：{@code 模式 i/N：触发「沙」→ 出「铁块」}。
+     *
+     * <p>列出判据见 {@link #shouldListModes()}（是"有没有触发物品"，不是"模式数"）。
+     * 触发物品/产物一律用<b>本地化显示名</b>（容器模板优先 → 带组件物品显示真实名称）。
+     *
+     * <p>本方法在<b>客户端</b>跑（护目镜 tooltip 用的是 BE 同步数据），
+     * 所以 {@code modes} 必须随 {@code write(...)} 一起同步——见 {@code write} 里的 modes 列表。
+     */
+    private void appendModeLines(List<Component> tooltip) {
+        if (!shouldListModes()) {
+            return;
+        }
+        // 表头与物品 tooltip 用同一套 key（T4 已定义）：互斥模式：N 个。
+        // 单模式不给表头（"互斥模式：1 个"是噪音）。
+        if (modes.size() > 1) {
+            net.createmod.catnip.lang.Lang.builder("createcmpor")
+                    .translate("tooltip.factory.mode_count", modes.size())
+                    .style(ChatFormatting.GRAY)
+                    .forGoggles(tooltip, 1);
+        }
+        for (int i = 0; i < modes.size(); i++) {
+            Mode mode = modes.get(i);
+            net.createmod.catnip.lang.Lang.builder("createcmpor")
+                    .translate("tooltip.factory.mode_line_io", i + 1, modes.size(),
+                            triggerComponent(mode), outputComponent(mode))
+                    .style(ChatFormatting.GRAY)
+                    .forGoggles(tooltip, 1);
+        }
+    }
+
+    /**
+     * 要不要列模式表：判据是"<b>有没有触发物品</b>"，不是"模式数"。
+     *
+     * <ul>
+     *     <li>单模式 + 触发集为空（旧档；或产线没用并行方块）⇒ <b>不列</b>，
+     *         tooltip 与 0.4.31 逐字一致；</li>
+     *     <li>单模式 + 触发集非空（玩家用 1 个并行方块配了 1 个物品）⇒ <b>必须列</b>——
+     *         否则玩家看不到"要喂什么它才动"，会误报"工厂坏了"；</li>
+     *     <li>多模式 ⇒ 列。</li>
+     * </ul>
+     */
+    private boolean shouldListModes() {
+        for (Mode mode : modes) {
+            if (!mode.isDefault()) {
+                return true;
+            }
+        }
+        return modes.size() > 1;
+    }
+
+    /**
+     * 当前激活模式那行；<b>空闲时给"空闲"提示</b>。
+     *
+     * <p>为什么空闲要有专行：玩家最常见的困惑就是"工厂为什么不动"——若空闲时两行都不显示，
+     * tooltip 只剩模式列表，分不清"没喂触发物品"还是"坏了"。
+     */
+    private String activeModeLine() {
+        if (activeMode < 0) {
+            return "tooltip.factory.idle";
+        }
+        return replayMode ? "tooltip.factory.mode_replay" : "tooltip.factory.mode_rate";
+    }
+
+    /** 触发物品显示名（多个 = 多并行方块各自指定的物品，用本地化分隔符连接）；空 = 「（无输入）」占位。 */
+    private Component triggerComponent(Mode mode) {
+        if (mode.triggers.isEmpty()) {
+            return Component.translatable("message.createcmpor.evaluation.no_input");
+        }
+        List<Component> names = new ArrayList<>();
+        for (String signature : mode.triggers) {
+            names.add(displayNameComponent(signatureDisplayName(signature)));
+        }
+        return joinNames(names);
+    }
+
+    /** 产物显示名（当前模式的产物键，物品 + 流体）；无产物给「（无输出）」占位。 */
+    private Component outputComponent(Mode mode) {
+        List<Component> names = new ArrayList<>();
+        for (String signature : mode.replay() ? mode.outputItemPatterns.keySet() : mode.outputItemTickRates.keySet()) {
+            names.add(displayNameComponent(signatureDisplayName(signature)));
+        }
+        for (ResourceLocation id : mode.replay() ? mode.outputFluidPatterns.keySet() : mode.outputFluidTickRates.keySet()) {
+            names.add(displayNameComponent(fluidDisplayName(id)));
+        }
+        return names.isEmpty()
+                ? Component.translatable("createcmpor.tooltip.factory.no_output")
+                : joinNames(names);
+    }
+
+    /** 多个名字用本地化分隔符连接（与评估侧的失败提示共用同一个 key，中英各自成句）。 */
+    private static Component joinNames(List<Component> names) {
+        MutableComponent joined = Component.empty();
+        for (int i = 0; i < names.size(); i++) {
+            if (i > 0) {
+                joined.append(Component.translatable("message.createcmpor.evaluation.trigger_separator"));
+            }
+            joined.append(names.get(i));
+        }
+        return joined;
+    }
+
+    /** 身份签名 → 本地化显示名（容器模板优先；容器缺失时回退 item id，再回退签名本身）。 */
+    private Object signatureDisplayName(String signature) {
+        Container container = inputItems.get(signature);
+        if (container == null) {
+            container = outputItems.get(signature);
+        }
+        if (container != null) {
+            return itemDisplayName(container.id, container);
+        }
+        ResourceLocation id = ItemIdentity.idOf(signature);
+        return id == null ? signature : itemDisplayName(id);
+    }
+
+    /** 显示名统一成 Component（本地化名称是 Component，回退值是 String）。 */
+    private static MutableComponent displayNameComponent(Object name) {
+        return name instanceof Component component ? component.copy() : Component.literal(String.valueOf(name));
     }
 
     private void appendIoLines(List<Component> tooltip) {
@@ -1641,7 +2256,6 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         roomCode = tag.getString("room_code");
         branchIndex = tag.getInt("branch_index");
         factoryCount = Math.max(1, tag.getInt("factory_count"));
-        replayMode = tag.getBoolean("replay_mode");
         installed = tag.getBoolean("installed");
         lastSuccess = tag.getBoolean("last_success");
         loadItemContainerMap(tag, "input_items", inputItems, registries);
@@ -1653,22 +2267,107 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         inputEnergyAmount = tag.getLong("input_energy_amount");
         outputEnergyCapacity = tag.getLong("output_energy_capacity");
         outputEnergyAmount = tag.getLong("output_energy_amount");
-        loadSignaturePatternMap(tag, "input_item_patterns", inputItemPatterns);
-        loadSignaturePatternMap(tag, "output_item_patterns", outputItemPatterns);
-        loadPatternMap(tag, "input_fluid_patterns", inputFluidPatterns);
-        loadPatternMap(tag, "output_fluid_patterns", outputFluidPatterns);
-        inputEnergyPattern = tag.getIntArray("input_energy_pattern");
-        outputEnergyPattern = tag.getIntArray("output_energy_pattern");
-        patternLength = tag.getInt("pattern_length");
-        replayCurrentSecond = tag.getInt("replay_current_second");
         restoreMachineState = tag.contains("restore_state", Tag.TAG_COMPOUND)
                 ? tag.getCompound("restore_state") : null;
         restoreMachineNbt = tag.contains("restore_machine", Tag.TAG_COMPOUND)
                 ? tag.getCompound("restore_machine") : null;
-        // 微缩预览（0.4.0）：解析失败一律降级为"无预览"，绝不影响工厂本体加载。
-        //
-        // 0.4.20：这里改成**按版本号**判断（此前是"客户端包没有 preview 键就保留旧快照"，
-        // 那个写法在"重新固化后恰好收到一个不带数据的包"时会**保留过期微缩**）。
+        readPreview(tag, clientPacket);
+        // 模式表：有 mode_count ⇒ 新档（modes 列表）；否则 ⇒ 旧档（顶层平铺键 = 单个默认模式）。
+        // 注意"当前表"（8 张表字段 + 燃烧需求 + replayMode + 秒槽指针）**只**由 setActiveMode 写入，
+        // 这里绝不能再直接往那些字段里 load —— 否则切模式时表就不是"单份真相"了。
+        modes.clear();
+        if (tag.contains("mode_count", Tag.TAG_INT) || tag.contains("modes", Tag.TAG_LIST)) {
+            ListTag list = tag.getList("modes", Tag.TAG_COMPOUND);
+            for (int i = 0; i < list.size(); i++) {
+                modes.add(readMode(list.getCompound(i)));
+            }
+        } else {
+            modes.add(readLegacyMode(tag));
+        }
+        int stored = tag.contains("active_mode", Tag.TAG_INT) ? tag.getInt("active_mode") : 0;
+        if (stored >= modes.size()) {
+            stored = modes.isEmpty() ? -1 : 0;   // 越界/异常 → 兜底（-1 = 空闲）
+        }
+        activeMode = -1;   // 强制重整：让 8 张表字段按存档里的激活模式重新引用赋值
+        // 容器表刚被载入 ⇒ 重建槽位并集缓存与燃料槽契约（槽位索引必须只由模式表决定）
+        refreshSlotIndex();
+        refreshModeAggregates();
+        setActiveMode(stored);
+        // 本次载入本身就带全了 NBT（区块包 / 固化 / 物品），不必再补一包模式同步
+        modeSyncPending = false;
+    }
+
+    /**
+     * 旧档回退（{@code mode_count} 缺失）：顶层平铺键 ⇒ <b>单个默认模式</b>（无触发物品）。
+     * 表内容与原实现完全同源 ⇒ 行为与 0.4.31 <b>逐位一致</b>。
+     */
+    private static Mode readLegacyMode(CompoundTag tag) {
+        Mode mode = new Mode();
+        mode.verdict = tag.getBoolean("replay_mode") ? MODE_REPLAY : MODE_RATE;
+        mode.progress = tag.getInt("replay_current_second");
+        mode.patternLength = tag.getInt("pattern_length");
+        mode.inputEnergyTickRate = tag.getDouble("input_energy_rate");
+        mode.outputEnergyTickRate = tag.getDouble("output_energy_rate");
+        mode.normalBurnDemandPerSecond = tag.getDouble("normal_burn_demand");
+        mode.superBurnDemandPerSecond = tag.getDouble("super_burn_demand");
+        mode.inputEnergyPattern = tag.getIntArray("input_energy_pattern");
+        mode.outputEnergyPattern = tag.getIntArray("output_energy_pattern");
+        loadSignatureRateMap(tag, "input_item_rates", mode.inputItemTickRates);
+        loadSignatureRateMap(tag, "output_item_rates", mode.outputItemTickRates);
+        loadRateMap(tag, "input_fluid_rates", mode.inputFluidTickRates);
+        loadRateMap(tag, "output_fluid_rates", mode.outputFluidTickRates);
+        loadSignaturePatternMap(tag, "input_item_patterns", mode.inputItemPatterns);
+        loadSignaturePatternMap(tag, "output_item_patterns", mode.outputItemPatterns);
+        loadPatternMap(tag, "input_fluid_patterns", mode.inputFluidPatterns);
+        loadPatternMap(tag, "output_fluid_patterns", mode.outputFluidPatterns);
+        return mode;
+    }
+
+    /** 新档的单模式：每模式只读"自己那张表"（容器是共享层，不在这里）。 */
+    private static Mode readMode(CompoundTag modeTag) {
+        Mode mode = new Mode();
+        mode.verdict = MODE_REPLAY.equals(modeTag.getString("verdict")) ? MODE_REPLAY : MODE_RATE;
+        mode.triggers = readTriggers(modeTag.getString("trigger"));
+        mode.progress = modeTag.getInt("progress");
+        mode.patternLength = modeTag.getInt("pattern_length");
+        mode.inputEnergyTickRate = modeTag.getDouble("input_energy_rate");
+        mode.outputEnergyTickRate = modeTag.getDouble("output_energy_rate");
+        mode.normalBurnDemandPerSecond = modeTag.getDouble("normal_burn_demand");
+        mode.superBurnDemandPerSecond = modeTag.getDouble("super_burn_demand");
+        mode.inputEnergyPattern = modeTag.getIntArray("input_energy_pattern");
+        mode.outputEnergyPattern = modeTag.getIntArray("output_energy_pattern");
+        loadSignatureRateMap(modeTag, "input_item_rates", mode.inputItemTickRates);
+        loadSignatureRateMap(modeTag, "output_item_rates", mode.outputItemTickRates);
+        loadRateMap(modeTag, "input_fluid_rates", mode.inputFluidTickRates);
+        loadRateMap(modeTag, "output_fluid_rates", mode.outputFluidTickRates);
+        loadSignaturePatternMap(modeTag, "input_item_patterns", mode.inputItemPatterns);
+        loadSignaturePatternMap(modeTag, "output_item_patterns", mode.outputItemPatterns);
+        loadPatternMap(modeTag, "input_fluid_patterns", mode.inputFluidPatterns);
+        loadPatternMap(modeTag, "output_fluid_patterns", mode.outputFluidPatterns);
+        return mode;
+    }
+
+    /** 触发物品串 → 列表（{@link #TRIGGER_SEPARATOR} 拼接；空串 = 默认模式）。 */
+    private static List<String> readTriggers(String raw) {
+        if (raw == null || raw.isEmpty()) {
+            return new ArrayList<>();
+        }
+        List<String> triggers = new ArrayList<>();
+        for (String part : raw.split(TRIGGER_SEPARATOR)) {
+            if (!part.isBlank() && !triggers.contains(part)) {
+                triggers.add(part);
+            }
+        }
+        return triggers;
+    }
+
+    /**
+     * 微缩预览（0.4.0）：解析失败一律降级为"无预览"，绝不影响工厂本体加载。
+     *
+     * <p>0.4.20：这里改成<b>按版本号</b>判断（此前是"客户端包没有 preview 键就保留旧快照"，
+     * 那个写法在"重新固化后恰好收到一个不带数据的包"时会<b>保留过期微缩</b>）。
+     */
+    private void readPreview(CompoundTag tag, boolean clientPacket) {
         if (!clientPacket) {
             // 落盘 / 物品 NBT：永远是完整语义
             previewSnapshot = tag.contains("preview", Tag.TAG_COMPOUND)
@@ -1700,14 +2399,6 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
                 previewPayloadCache = null;
             }
         }
-        loadSignatureRateMap(tag, "input_item_rates", inputItemTickRates);
-        loadSignatureRateMap(tag, "output_item_rates", outputItemTickRates);
-        loadRateMap(tag, "input_fluid_rates", inputFluidTickRates);
-        loadRateMap(tag, "output_fluid_rates", outputFluidTickRates);
-        inputEnergyTickRate = tag.getDouble("input_energy_rate");
-        outputEnergyTickRate = tag.getDouble("output_energy_rate");
-        normalBurnDemandPerSecond = tag.getDouble("normal_burn_demand");
-        superBurnDemandPerSecond = tag.getDouble("super_burn_demand");
     }
 
     @Override
@@ -1719,6 +2410,7 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         tag.putBoolean("replay_mode", replayMode);
         tag.putBoolean("installed", installed);
         tag.putBoolean("last_success", lastSuccess);
+        // ===== 共享层：容器是全部模式的并集，能量容量是各模式最大值 =====
         saveItemContainerMap(tag, "input_items", inputItems, registries);
         saveItemContainerMap(tag, "output_items", outputItems, registries);
         saveItemContainerMap(tag, "burner_fuel_items", burnerFuelItems, registries);
@@ -1728,14 +2420,20 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
         tag.putLong("input_energy_amount", inputEnergyAmount);
         tag.putLong("output_energy_capacity", outputEnergyCapacity);
         tag.putLong("output_energy_amount", outputEnergyAmount);
-        saveSignaturePatternMap(tag, "input_item_patterns", inputItemPatterns);
-        saveSignaturePatternMap(tag, "output_item_patterns", outputItemPatterns);
-        savePatternMap(tag, "input_fluid_patterns", inputFluidPatterns);
-        savePatternMap(tag, "output_fluid_patterns", outputFluidPatterns);
-        tag.putIntArray("input_energy_pattern", inputEnergyPattern);
-        tag.putIntArray("output_energy_pattern", outputEnergyPattern);
-        tag.putInt("pattern_length", patternLength);
-        tag.putInt("replay_current_second", replayCurrentSecond);
+        // ===== 模式层：每模式只写"自己那张表" =====
+        // 顶层**不再**写 input_item_rates / pattern_length 之类的平铺表：表已经全在 modes 里，
+        // 顶层再留一份会出现"顶层一份 + modes 里一份"的双写不一致（read 只认 modes）。
+        if (activeMode >= 0 && activeMode < modes.size()) {
+            // 运行中的 REPLAY 秒槽指针回写它所属的模式（它是唯一会逐秒推进的模式内状态）
+            modes.get(activeMode).progress = replayCurrentSecond;
+        }
+        tag.putInt("mode_count", modes.size());
+        tag.putInt("active_mode", activeMode);
+        ListTag modesTag = new ListTag();
+        for (Mode mode : modes) {
+            modesTag.add(writeMode(mode));
+        }
+        tag.put("modes", modesTag);
         if (restoreMachineState != null) {
             tag.put("restore_state", restoreMachineState.copy());
         }
@@ -1753,14 +2451,30 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
             carryPreviewOnce = false;
             skipPreviewInClientPayload = false;
         }
-        saveSignatureRateMap(tag, "input_item_rates", inputItemTickRates);
-        saveSignatureRateMap(tag, "output_item_rates", outputItemTickRates);
-        saveRateMap(tag, "input_fluid_rates", inputFluidTickRates);
-        saveRateMap(tag, "output_fluid_rates", outputFluidTickRates);
-        tag.putDouble("input_energy_rate", inputEnergyTickRate);
-        tag.putDouble("output_energy_rate", outputEnergyTickRate);
-        tag.putDouble("normal_burn_demand", normalBurnDemandPerSecond);
-        tag.putDouble("super_burn_demand", superBurnDemandPerSecond);
+    }
+
+    /** 单个模式 → NBT（键名与共享层刻意不同名同义：容器不在这里，表在这里）。 */
+    private static CompoundTag writeMode(Mode mode) {
+        CompoundTag modeTag = new CompoundTag();
+        modeTag.putString("trigger", String.join(TRIGGER_SEPARATOR, mode.triggers));
+        modeTag.putString("verdict", mode.verdict);
+        modeTag.putInt("progress", mode.progress);
+        modeTag.putInt("pattern_length", Math.max(1, mode.patternLength));
+        modeTag.putDouble("input_energy_rate", mode.inputEnergyTickRate);
+        modeTag.putDouble("output_energy_rate", mode.outputEnergyTickRate);
+        modeTag.putDouble("normal_burn_demand", mode.normalBurnDemandPerSecond);
+        modeTag.putDouble("super_burn_demand", mode.superBurnDemandPerSecond);
+        modeTag.putIntArray("input_energy_pattern", mode.inputEnergyPattern);
+        modeTag.putIntArray("output_energy_pattern", mode.outputEnergyPattern);
+        saveSignatureRateMap(modeTag, "input_item_rates", mode.inputItemTickRates);
+        saveSignatureRateMap(modeTag, "output_item_rates", mode.outputItemTickRates);
+        saveRateMap(modeTag, "input_fluid_rates", mode.inputFluidTickRates);
+        saveRateMap(modeTag, "output_fluid_rates", mode.outputFluidTickRates);
+        saveSignaturePatternMap(modeTag, "input_item_patterns", mode.inputItemPatterns);
+        saveSignaturePatternMap(modeTag, "output_item_patterns", mode.outputItemPatterns);
+        savePatternMap(modeTag, "input_fluid_patterns", mode.inputFluidPatterns);
+        savePatternMap(modeTag, "output_fluid_patterns", mode.outputFluidPatterns);
+        return modeTag;
     }
 
     /**

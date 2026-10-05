@@ -493,7 +493,9 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
         if (!(level instanceof ServerLevel serverLevel)) {
             return ItemInteractionResult.SUCCESS;
         }
-        // 多工厂组还原：同 roomCode 组内所有工厂一起还原（数量校验）
+        // 遗留兼容：旧存档的多工厂组（factory_count > 1），计划 0.6.x 彻底移除。
+        // 0.5.0 起一次评估只固化一个工厂，新档不会再产生组（见 48 文档 §6.3）；
+        // 此处分流保证旧档仍能整组还原——功能保持不变。
         if (factory.getFactoryCount() > 1 && !factory.getRoomCode().isBlank()) {
             return revertGroup(serverLevel, pos, factory, stack, player);
         }
@@ -547,7 +549,13 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
      *   <li>数量校验：索引中同 roomCode 的工厂数 == factoryCount 才还原；否则提示"请重新排列子工厂"。</li>
      *   <li>被右键的还原为原 CM 机器，其余工厂直接消失（不掉落）。</li>
      * </ul>
+     *
+     * @deprecated 遗留兼容：旧存档的多工厂组（factory_count &gt; 1），计划 0.6.x 彻底移除。
+     *     功能保持不变（旧档必须仍能整组还原）；0.5.0 起的单工厂走
+     *     {@link FactoryBlockEntity#revertToMachine(net.minecraft.server.level.ServerLevel)} 路径。
      */
+    @Deprecated
+    @SuppressWarnings("deprecation") // 遗留路径：本方法有意使用 FactoryIndexSavedData 的多位置查询 API
     private static ItemInteractionResult revertGroup(ServerLevel level, BlockPos pos,
                                                      FactoryBlockEntity factory, ItemStack stack, Player player) {
         String roomCode = factory.getRoomCode();

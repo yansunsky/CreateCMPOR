@@ -12,15 +12,15 @@ import net.minecraft.core.Direction;
  * 并行空间输入方块（createcmpor:parallel_input_block）的 Ponder 场景动画。
  *
  * <p>使用 4 个结构（parallel_input_block1~4.nbt，均为 7x7x7 空间）按顺序演示
- * 「配置多种物品 → 同一套产线逐物品分支评估 → 评估过程 → 生成同等数量工厂」：
+ * 「配置多种物品 → 同一套产线逐物品分支评估 → 评估过程 → 固化为<b>一个</b>工厂（内含多个互斥模式）」：
  * <ol>
  *   <li><b>parallel_input_block1</b>：认识方块 + 配置白名单（raw_iron/raw_copper/raw_gold 三种物品，
  *       方块在 (3,5,3)，黄铜漏斗在 (3,4,3) 向下）。</li>
  *   <li><b>parallel_input_block2</b>：完整粉碎轮产线——原料经顶部输入方块 → 溜槽 → 粉碎轮 → 产物收集，
  *       同一套产线按白名单物品逐一评估（每次只暴露一种物品）。</li>
  *   <li><b>parallel_input_block3</b>：评估过程——启动棒右键 Compact Machines 机器，房间冻结评估。</li>
- *   <li><b>parallel_input_block4</b>：评估完成——垂直堆叠生成 N 个工厂（场景中 3 个），
- *       每个工厂对应一种白名单物品。</li>
+ *   <li><b>parallel_input_block4</b>：评估完成——机器位置只固化出 <b>1 个</b>工厂，内含多个互斥模式
+ *       （互斥 = 同时喂多种原料不会叠加产出）。该结构 nbt 已重映射为单工厂布局（见 docs/48 的 T4c）。</li>
  * </ol>
  *
  * <p>文本经 {@code .text()} 传英文默认，实际翻译读 lang key（createcmpor.ponder.parallel_input.text_N）。</p>
@@ -162,42 +162,35 @@ public final class ParallelInputScenes {
         scene.markAsFinished();
     }
 
-    /** 情境 4：评估完成——垂直堆叠生成同等数量工厂。 */
+    /** 情境 4：评估完成——只生成<b>一个</b>工厂，内含多个互斥模式。 */
     public static void solidified(SceneBuilder builder, SceneBuildingUtil util) {
         CreateSceneBuilder scene = new CreateSceneBuilder(builder);
-        scene.title("parallel_input_solidified", "生成多个工厂");
+        scene.title("parallel_input_solidified", "固化为一个工厂（内含多个互斥模式）");
         scene.scaleSceneView(0.7f);
         scene.showBasePlate();
         scene.idle(5);
         scene.world().showSection(util.select().everywhere(), Direction.UP);
         scene.idle(20);
 
-        // 3 个工厂垂直堆叠 (3,1,3)(3,2,3)(3,3,3)
-        BlockPos factoryBottom = util.grid().at(3, 1, 3);
-        BlockPos factoryMid = util.grid().at(3, 2, 3);
-        BlockPos factoryTop = util.grid().at(3, 3, 3);
+        // 机器位置：新版固化只在此生成 1 个工厂（不再向上堆叠）。
+        // 结构 nbt（parallel_input_block4.nbt）已重映射为单工厂布局：原先堆叠的 2 个方块已改为空气，
+        // 故此处不再需要 destroyBlock 补丁（见 docs/48 追踪日志的 T4c）。
+        BlockPos factoryPos = util.grid().at(3, 1, 3);
+        scene.idle(10);
 
+        scene.overlay().showOutline(PonderPalette.GREEN, factoryPos,
+                util.select().position(factoryPos), 60);
         scene.overlay().showText(80)
                 .attachKeyFrame()
-                .text("Once all branches finish, one Factory block is solidified per whitelisted item.")
-                .pointAt(util.vector().centerOf(factoryMid))
+                .text("Once all branches finish, exactly ONE Factory block is solidified at the machine position - not one per item.")
+                .pointAt(util.vector().centerOf(factoryPos))
                 .placeNearTarget();
         scene.idle(80);
 
-        // 逐个高亮三个工厂
-        scene.overlay().showOutline(PonderPalette.GREEN, factoryBottom,
-                util.select().position(factoryBottom), 30);
-        scene.idle(15);
-        scene.overlay().showOutline(PonderPalette.GREEN, factoryMid,
-                util.select().position(factoryMid), 30);
-        scene.idle(15);
-        scene.overlay().showOutline(PonderPalette.GREEN, factoryTop,
-                util.select().position(factoryTop), 30);
-        scene.idle(15);
         scene.overlay().showText(90)
                 .attachKeyFrame()
-                .text("The factories are stacked vertically above the machine — N items, N factories.")
-                .pointAt(util.vector().topOf(factoryTop))
+                .text("Inside it, each whitelisted item becomes a mutually exclusive mode: feeding several at once never stacks their output.")
+                .pointAt(util.vector().topOf(factoryPos))
                 .placeNearTarget();
         scene.idle(90);
         scene.markAsFinished();

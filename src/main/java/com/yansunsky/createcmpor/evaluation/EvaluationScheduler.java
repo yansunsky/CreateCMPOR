@@ -19,17 +19,24 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -57,6 +64,11 @@ final class EvaluationScheduler {
         EvaluationVerdict.Result result;
         boolean entityTickingApplied;
         Map<EvaluationTrace.FlowKey, Long> floorItems = Map.of();
+        /**
+         * T3：本分支（串行） / 本 lane（并行）激活 IO 方块时采集到的触发物品身份签名。
+         * <p>去重、保持方块扫描顺序；由 {@code activateIoBlocks} 写入，随 {@link EvaluationVerdict.Result} 一并保存。</p>
+         */
+        final List<String> triggerItems = new ArrayList<>();
     }
 
     private static final Map<UUID, State> STATES = new ConcurrentHashMap<>();
@@ -142,10 +154,12 @@ final class EvaluationScheduler {
 
         boolean allDone = true;
         boolean rejected = false;
+        EvaluationVerdict.Result rejectedResult = null;
         for (EvaluationBranch branch : session.parallelBranches()) {
             if (branch.result() != null) {
                 if (branch.result().rejected()) {
                     rejected = true;
+                    rejectedResult = rejectedResult == null ? branch.result() : rejectedResult;
                 }
                 continue;
             }
@@ -153,12 +167,17 @@ final class EvaluationScheduler {
             tickParallelBranch(server, data, session, branch);
             if (branch.result() != null && branch.result().rejected()) {
                 rejected = true;
+                rejectedResult = rejectedResult == null ? branch.result() : rejectedResult;
             }
         }
         if (rejected) {
             // 并行评估失败（同样"评估结束"）：不等清理完成就先送出观察者
             EvaluationObservationManager.exitObserversOf(server, session.id(),
                     "message.createcmpor.observation.finished");
+            // T3：失败提示必须说明是哪条分支，物品用本地化显示名（47 文档 §5.4；整场放弃语义不变）
+            notifyOwner(server, session, branchFailedMessage(rejectedResult));
+            CreateCMPOR.LOGGER.info("评估会话 {} 并行评估中止：{}",
+                    session.id(), rejectedResult == null ? "未知原因" : rejectedResult.rejectReason());
             EvaluationCloneManager.INSTANCE.requestCleanup(
                     server, data, session, "message.createcmpor.evaluation.runtime_failed");
             return;
@@ -223,9 +242,11 @@ final class EvaluationScheduler {
         state.s0 = EvaluationAudit.scan(target, bounds);
         EvaluationAudit.logInventory("S0", state.s0);
         String key = parallelTraceKey(branch);
-        int ioCount = activateIoBlocks(target, bounds, key, session, branch.index(), session.branchCount());
-        CreateCMPOR.LOGGER.info("评估会话 {} 分支 {}/{} 已激活 {} 个 IO 方块",
-                session.id(), branch.index() + 1, session.branchCount(), ioCount);
+        int ioCount = activateIoBlocks(target, bounds, key, session, branch.index(), session.branchCount(),
+                state.triggerItems);
+        CreateCMPOR.LOGGER.info("评估会话 {} 分支 {}/{} 已激活 {} 个 IO 方块（触发物品：{}）",
+                session.id(), branch.index() + 1, session.branchCount(), ioCount,
+                state.triggerItems.isEmpty() ? "无（默认模式）" : state.triggerItems);
 
         Map<EvaluationTrace.FlowKey, Long> floor = new HashMap<>();
         for (ItemEntity itemEntity : target.getEntitiesOfClass(ItemEntity.class, bounds)) {
@@ -326,10 +347,10 @@ final class EvaluationScheduler {
         EvaluationTrace trace = EvaluationTrace.Hub.INSTANCE.get(parallelTraceKey(branch));
         EvaluationVerdict.Result result;
         if (trace == null) {
-            result = EvaluationVerdict.reject("采样数据缺失", "trace_missing");
+            result = EvaluationVerdict.reject("采样数据缺失", "trace_missing", state.triggerItems);
         } else {
             result = EvaluationVerdict.decide(
-                    trace, state.s0, state.s1, state.warmup, state.stressProfile);
+                    trace, state.s0, state.s1, state.warmup, state.stressProfile, state.triggerItems);
         }
         EvaluationTicketManager.switchToBlockTicking(target, manifest);
         branch.setResult(result);
@@ -358,8 +379,10 @@ final class EvaluationScheduler {
         // S0 初次扫描必须在 IO 激活前：代表房间"未开工"的初始态（防刷兜底基准，过滤中间产物用）
         state.s0 = EvaluationAudit.scan(target, bounds);
         EvaluationAudit.logInventory("S0", state.s0);
-        int ioCount = activateIoBlocks(target, bounds, session.roomCode(), session);
-        CreateCMPOR.LOGGER.info("评估会话 {} 已激活 {} 个 IO 方块", session.id(), ioCount);
+        int ioCount = activateIoBlocks(target, bounds, session.roomCode(), session, state.triggerItems);
+        CreateCMPOR.LOGGER.info("评估会话 {} 已激活 {} 个 IO 方块（分支 {}/{} 触发物品：{}）",
+                session.id(), ioCount, session.branchIndex() + 1, session.branchCount(),
+                state.triggerItems.isEmpty() ? "无（默认模式）" : state.triggerItems);
 
         Map<EvaluationTrace.FlowKey, Long> floor = new HashMap<>();
         for (ItemEntity itemEntity : target.getEntitiesOfClass(ItemEntity.class, bounds)) {
@@ -458,10 +481,10 @@ final class EvaluationScheduler {
         EvaluationManifest manifest = session.manifest();
         EvaluationTrace trace = EvaluationTrace.Hub.INSTANCE.get(session.roomCode());
         if (trace == null) {
-            state.result = EvaluationVerdict.reject("采样数据缺失", "trace_missing");
+            state.result = EvaluationVerdict.reject("采样数据缺失", "trace_missing", state.triggerItems);
         } else {
             state.result = EvaluationVerdict.decide(
-                    trace, state.s0, state.s1, state.warmup, state.stressProfile);
+                    trace, state.s0, state.s1, state.warmup, state.stressProfile, state.triggerItems);
         }
         EvaluationTicketManager.switchToBlockTicking(target, manifest);
         session.setEvaluationResult(state.result);
@@ -473,10 +496,11 @@ final class EvaluationScheduler {
             // 评估已被拒绝（同样"评估结束"）：不等回滚完成就先送出观察者
             EvaluationObservationManager.exitObserversOf(server, session.id(),
                     "message.createcmpor.observation.finished");
-            notifyOwner(server, session, Component.literal("评估结论：" + state.result.verdict()
-                    + "（" + state.result.rejectReason() + "）"));
-            CreateCMPOR.LOGGER.info("评估会话 {} 结论 {}：{}",
-                    session.id(), state.result.verdict(), state.result.detail());
+            // T3：失败提示必须说清是哪条分支（物品用本地化显示名，47 文档 §5.4；整场放弃语义不变）
+            notifyOwner(server, session, branchFailedMessage(state.result));
+            CreateCMPOR.LOGGER.info("评估会话 {} 分支 {}/{} 结论 {}：{}",
+                    session.id(), session.branchIndex() + 1, session.branchCount(),
+                    state.result.verdict(), state.result.detail());
             cleanup(session.id(), session.roomCode());
             return;
         }
@@ -510,14 +534,24 @@ final class EvaluationScheduler {
         cleanup(session.id(), session.roomCode());
     }
 
-    private static int activateIoBlocks(ServerLevel target, AABB bounds, String roomCode, EvaluationSession session) {
+    private static int activateIoBlocks(ServerLevel target, AABB bounds, String roomCode,
+                                        EvaluationSession session, List<String> triggerItemsOut) {
         return activateIoBlocks(target, bounds, roomCode, session,
-                session.branchIndex(), session.branchCount());
+                session.branchIndex(), session.branchCount(), triggerItemsOut);
     }
 
+    /**
+     * 激活副本内的全部 IO 方块，并采集本分支的触发物品。
+     *
+     * @param triggerItemsOut T3：输出参数——本分支（并行时本 lane）内所有 {@code PARALLEL_INPUT}
+     *                        方块在该 {@code branchIndex} 处暴露的物品身份签名（去重、越界忽略、
+     *                        保持方块扫描顺序）。空 = 无并行方块（默认模式）。
+     */
     private static int activateIoBlocks(ServerLevel target, AABB bounds, String roomCode,
-                                        EvaluationSession session, int branchIndex, int branchCount) {
+                                        EvaluationSession session, int branchIndex, int branchCount,
+                                        List<String> triggerItemsOut) {
         int[] count = new int[1];
+        Set<String> triggerItems = new LinkedHashSet<>();
         forEachBlock(target, bounds, (pos, state) -> {
             Block block = state.getBlock();
             if (block == ModBlocks.INPUT.get() || block == ModBlocks.OUTPUT.get()) {
@@ -537,6 +571,15 @@ final class EvaluationScheduler {
                 if (target.getBlockEntity(pos) instanceof ParallelInputBlockEntity entity) {
                     entity.setRoomCode(roomCode);
                     entity.setBranchIndex(branchIndex);
+                    // T3 触发物品采集：分支索引设置完成后，取该分支实际暴露的物品身份签名。
+                    // 走公开的 item handler（与真实抽取同一来源，含白名单登记形态模板）：
+                    // 越界条目（branchIndex ≥ 配置数）→ getStackInSlot(0) 返回空 → 忽略。
+                    // 注意：并行模式下 roomCode 被替换成 "branch:<uuid>" 合成键，与本采集无关。
+                    ItemStack exposed = entity.getItemHandler().getStackInSlot(0);
+                    String signature = ItemIdentity.of(exposed, target.registryAccess());
+                    if (!signature.isEmpty()) {
+                        triggerItems.add(signature);
+                    }
                     // 首个分支时读取配置物品数作为总分支数（兼容旧会话启动路径）
                     if (branchIndex == 0 && branchCount <= 1 && entity.getBranchIndex() == 0) {
                         int itemCount = entity.configuredItemCount();
@@ -560,6 +603,8 @@ final class EvaluationScheduler {
                 }
             }
         });
+        triggerItemsOut.clear();
+        triggerItemsOut.addAll(triggerItems);
         return count[0];
     }
 
@@ -598,6 +643,54 @@ final class EvaluationScheduler {
     private static RoomInstance requireRoom(MinecraftServer server, EvaluationSession session) {
         return CompactMachines.room(server, session.roomCode()).orElseThrow(() ->
                 new IllegalStateException("源房间不存在：" + session.roomCode()));
+    }
+
+    // ===== T3：失败提示本地化（47 文档 §5.4；提示必须说清是哪条分支，物品用本地化显示名）=====
+
+    /**
+     * {@code 输入为「沙子」的分支评估失败（原因）}。
+     *
+     * <p>整场放弃的语义不变，仅把提示换成可本地化的两参文案：{@code %1$s} = 触发物品显示名
+     * （多物品已用本地化分隔符拼好；无触发物品 → lang 的"（无输入）"），{@code %2$s} = 失败原因。</p>
+     */
+    private static Component branchFailedMessage(EvaluationVerdict.Result result) {
+        List<String> triggers = result == null ? List.of() : result.triggerItems();
+        return Component.translatable("message.createcmpor.evaluation.branch_failed",
+                triggerItemsComponent(triggers),
+                rejectReasonComponent(result == null ? null : result.rejectReason()));
+    }
+
+    /** 触发物品显示名拼接：无 → 本地化"（无输入）"；多物品 → 本地化分隔符按序拼接。 */
+    private static Component triggerItemsComponent(List<String> triggerItems) {
+        if (triggerItems == null || triggerItems.isEmpty()) {
+            return Component.translatable("message.createcmpor.evaluation.no_input");
+        }
+        MutableComponent joined = Component.empty();
+        for (int index = 0; index < triggerItems.size(); index++) {
+            if (index > 0) {
+                joined.append(Component.translatable("message.createcmpor.evaluation.trigger_separator"));
+            }
+            joined.append(triggerItemName(triggerItems.get(index)));
+        }
+        return joined;
+    }
+
+    /** 身份签名 → 本地化显示名（{@link ItemIdentity} 只保留 id + 组件摘要 ⇒ 组件变体只能取回基础物品名）。 */
+    private static Component triggerItemName(String signature) {
+        ResourceLocation id = ItemIdentity.idOf(signature);
+        Item item = id == null ? null : BuiltInRegistries.ITEM.get(id);
+        if (item == null || item == Items.AIR) {
+            return Component.literal(signature == null ? "" : signature);
+        }
+        return new ItemStack(item).getHoverName();
+    }
+
+    /** 失败原因：{@code message.*} 形式的按本地化键解析，其余（历史中文文案）按字面量呈现。 */
+    private static Component rejectReasonComponent(String reason) {
+        if (reason == null || reason.isBlank()) {
+            return Component.literal(EvaluationVerdict.VERDICT_REJECTED);
+        }
+        return reason.startsWith("message.") ? Component.translatable(reason) : Component.literal(reason);
     }
 
     private static void notifyOwner(MinecraftServer server, EvaluationSession session, Component message) {

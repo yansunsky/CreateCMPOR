@@ -4,6 +4,7 @@ import com.yansunsky.createcmpor.Config;
 import com.yansunsky.createcmpor.CreateCMPOR;
 import com.yansunsky.createcmpor.preview.PreviewCapture;
 import com.yansunsky.createcmpor.preview.PreviewSnapshot;
+import com.yansunsky.createcmpor.stress.StressProfile;
 import dev.compactmods.machines.api.CompactMachines;
 import dev.compactmods.machines.api.room.RoomInstance;
 import net.minecraft.nbt.CompoundTag;
@@ -14,7 +15,6 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
-import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.chunk.storage.ChunkStorage;
 import net.minecraft.world.phys.AABB;
@@ -679,105 +679,101 @@ public final class EvaluationCloneManager {
         if (results.isEmpty()) {
             results.add(lastResult);
         }
+        // §5.3 固化前可触发性校验：触发物品不在该模式的输入表中 ⇒ 玩家永远喂不进去 ⇒ 该模式无法激活。
+        // 任一分支不满足即**整场放弃固化**（此时世界尚未改动，交给清理 + 回滚恢复原机器）。
+        // 返回的每个 Component 自带"哪个分支的哪个物品"的**本地化**描述，直接拼接，不得降级成 String。
+        List<Component> untriggerable = EvaluationVerdict.untriggerableModes(results);
+        if (!untriggerable.isEmpty()) {
+            Component detail = untriggerable.stream()
+                    .reduce((a, b) -> a.copy().append(Component.literal("  ")).append(b))
+                    .orElse(Component.empty());
+            notifyOwner(server, session, Component.translatable(
+                    "message.createcmpor.evaluation.untriggerable_mode")
+                    .append(Component.literal(" ")).append(detail));
+            CreateCMPOR.LOGGER.warn("评估会话 {} 固化取消：{} 个模式不可触发（{}）", session.id(),
+                    untriggerable.size(),
+                    String.join("; ", untriggerable.stream().map(Component::getString).toList()));
+            requestCleanup(server, data, session, "message.createcmpor.evaluation.untriggerable_mode");
+            return;
+        }
         ServerLevel machineLevel = server.getLevel(session.machinePos().dimension());
         if (machineLevel == null) {
             throw new IllegalStateException("机器维度未加载：" + session.machinePos().dimension().location());
         }
         BlockPos basePos = session.machinePos().pos();
-        int count = results.size();
         // 微缩预览（0.4.0）：固化是唯一采集窗口——此后源房间已卸载、staging 已删、manifest 只剩区块 hash
         PreviewSnapshot preview = capturePreview(server, session);
-        // 发布前提示：工厂将占用主位置向上 N 个方块（含覆盖掉落）
-        if (count > 1) {
-            notifyOwner(server, session, Component.literal(
-                    "多分支评估完成，将生成 " + count + " 个工厂：主位置 " + basePos
-                            + " 向上 " + count + " 格（重叠方块将被破坏掉落）"));
-            CreateCMPOR.LOGGER.info("评估会话 {} 多分支固化：主位置 {} 向上 {} 个工厂",
-                    session.id(), basePos, count);
+        // I1：无论评估了几个分支，只在 machinePos 生成 **1 个**工厂方块，N 个分支结果全部装成互斥模式。
+        // 主位置是评估方块（EvaluatorBlock）的安装位置：直接替换为工厂，不再有向上堆叠与重叠方块破坏。
+        machineLevel.removeBlockEntity(basePos);
+        machineLevel.setBlockAndUpdate(basePos,
+                com.yansunsky.createcmpor.init.ModBlocks.FACTORY.get().defaultBlockState()
+                        .setValue(com.yansunsky.createcmpor.block.FactoryBlock.ENCASED, false));
+        if (!(machineLevel.getBlockEntity(basePos) instanceof com.yansunsky.createcmpor.block.FactoryBlockEntity factory)) {
+            throw new IllegalStateException("工厂方块实体未创建 @" + basePos);
         }
-        for (int i = 0; i < count; i++) {
-            BlockPos pos = basePos.offset(0, i, 0);
-            if (i == 0) {
-                // 主位置是评估方块（EvaluatorBlock）的安装位置：
-                // 直接替换为工厂，不参与破坏检测（评估开始前已对上方 N-1 格做过预检测）。
-                machineLevel.removeBlockEntity(pos);
-                machineLevel.setBlockAndUpdate(pos,
-                        com.yansunsky.createcmpor.init.ModBlocks.FACTORY.get().defaultBlockState()
-                                .setValue(com.yansunsky.createcmpor.block.FactoryBlock.ENCASED, false));
-                if (!(machineLevel.getBlockEntity(pos) instanceof com.yansunsky.createcmpor.block.FactoryBlockEntity factory)) {
-                    throw new IllegalStateException("工厂方块实体未创建 @" + pos);
-                }
-                factory.setRoomCode(session.roomCode());
-                factory.setGroupInfo(i, count);
-                EvaluationVerdict.Result branchResult = results.get(i);
-                if (EvaluationVerdict.VERDICT_REPLAY.equals(branchResult.verdict())) {
-                    factory.installPatterns(branchResult.replayIn(), branchResult.replayOut(),
-                            branchResult.inputItemTemplates(), branchResult.outputItemTemplates(),
-                            branchResult.energyReplayIn(), branchResult.energyReplayOut(),
-                            branchResult.normalBurnDemandPerSecond(), branchResult.superBurnDemandPerSecond());
-                } else {
-                    factory.installRates(branchResult.inputRates(), branchResult.outputRates(),
-                            branchResult.inputItemTemplates(), branchResult.outputItemTemplates(),
-                            branchResult.inputEnergyRate(), branchResult.outputEnergyRate(),
-                            branchResult.normalBurnDemandPerSecond(), branchResult.superBurnDemandPerSecond());
-                }
-                factory.installRestoreData(session.originalState(), session.originalBlockEntityNbt(),
-                        branchResult.stressProfile());
-                factory.installPreview(preview);
-                continue;
-            }
-            // 上方位置：破坏重叠方块（掉落）；遇不可破坏方块（如基岩）→ 发布失败（评估开始前已预检测，此处兜底）
-            BlockState existing = machineLevel.getBlockState(pos);
-            if (!existing.isAir()) {
-                float destroySpeed = existing.getDestroySpeed(machineLevel, pos);
-                if (destroySpeed < 0) {
-                    requestCleanup(server, data, session, "message.createcmpor.evaluation.solidify_blocked");
-                    CreateCMPOR.LOGGER.error("评估会话 {} 固化失败：位置 {} 有不可破坏方块 {}",
-                            session.id(), pos, existing.getBlock());
-                    return;
-                }
-                machineLevel.destroyBlock(pos, true);
-                CreateCMPOR.LOGGER.info("评估会话 {} 固化：破坏 {} 处重叠方块 {}",
-                        session.id(), pos, existing.getBlock());
-            }
-            machineLevel.removeBlockEntity(pos);
-            machineLevel.setBlockAndUpdate(pos,
-                    com.yansunsky.createcmpor.init.ModBlocks.FACTORY.get().defaultBlockState()
-                            .setValue(com.yansunsky.createcmpor.block.FactoryBlock.ENCASED, false));
-            if (!(machineLevel.getBlockEntity(pos) instanceof com.yansunsky.createcmpor.block.FactoryBlockEntity factory)) {
-                throw new IllegalStateException("工厂方块实体未创建 @" + pos);
-            }
-            factory.setRoomCode(session.roomCode());
-            factory.setGroupInfo(i, count);
-            EvaluationVerdict.Result branchResult = results.get(i);
-            if (EvaluationVerdict.VERDICT_REPLAY.equals(branchResult.verdict())) {
-                factory.installPatterns(branchResult.replayIn(), branchResult.replayOut(),
-                        branchResult.inputItemTemplates(), branchResult.outputItemTemplates(),
-                        branchResult.energyReplayIn(), branchResult.energyReplayOut(),
-                        branchResult.normalBurnDemandPerSecond(), branchResult.superBurnDemandPerSecond());
-            } else {
-                factory.installRates(branchResult.inputRates(), branchResult.outputRates(),
-                        branchResult.inputItemTemplates(), branchResult.outputItemTemplates(),
-                        branchResult.inputEnergyRate(), branchResult.outputEnergyRate(),
-                        branchResult.normalBurnDemandPerSecond(), branchResult.superBurnDemandPerSecond());
-            }
-            factory.installRestoreData(session.originalState(), session.originalBlockEntityNbt(),
-                    branchResult.stressProfile());
-            factory.installPreview(preview);
-        }
-        // 登记 roomCode → 全部工厂位置（第一个=主位置；玩家进入压缩空间自动还原防复制 + 多工厂组还原数量校验用）
-        List<GlobalPos> groupPositions = new ArrayList<>();
-        for (int i = 0; i < count; i++) {
-            groupPositions.add(GlobalPos.of(machineLevel.dimension(), basePos.offset(0, i, 0)));
-        }
-        FactoryIndexSavedData.get(server).registerFactory(session.roomCode(), groupPositions);
+        factory.setRoomCode(session.roomCode());
+        // 模式表：模式索引 = 分支索引（branchResults 已按分支顺序累积）；trigger 取自评估侧采集的 triggerItems。
+        // 不再写 factory_count / branch_index：新工厂不属于任何组（旧档 factory_count > 1 走遗留兼容路径）。
+        factory.installModes(results);
+        // I5：N 份应力档案保守合并为**一份固定档案**（不随模式切换）；还原镜像与预览也各只写一份。
+        factory.installRestoreData(session.originalState(), session.originalBlockEntityNbt(),
+                mergeStressProfiles(results));
+        factory.installPreview(preview);
+        // 索引：只登记这一个位置（玩家进入压缩空间自动还原防复制用；多位置 API 保留给旧档的遗留组路径）
+        FactoryIndexSavedData.get(server).registerFactory(session.roomCode(),
+                List.of(GlobalPos.of(machineLevel.dimension(), basePos)));
         session.setFactoryInstalled(true);
         session.setState(EvaluationSession.State.CLEANING);
         data.changed();
         syncCriticalState(server, data);
         notifyOwner(server, session, Component.translatable("message.createcmpor.factory.installed"));
-        CreateCMPOR.LOGGER.info("评估会话 {} 已固化 {} 个工厂，开始清理副本",
-                session.id(), count);
+        CreateCMPOR.LOGGER.info("评估会话 {} 已在 {} 固化 1 个工厂（{} 个互斥模式），开始清理副本",
+                session.id(), basePos, results.size());
+    }
+
+    /**
+     * I5：把 N 个分支的应力档案**保守合并**成一份固定档案（安装时定死，不随模式切换）。
+     *
+     * <p><b>硬约束：强制单一角色——只要存在任何消耗，就绝不提供。</b>不能只做逐字段
+     * max/min：单个分支的档案**自身可以是双轴**的（{@code StressEvaluationRegistry} 按 networkId
+     * 分别累加，房间里同时存在电源网络与负载网络时 {@code inputSU > 0} 且 {@code outputSU > 0}），
+     * 此时 {@code outSU} 谁也拉不到 0 ⇒ {@code isProvide() && isConsume()} 同时为真 ⇒ 工厂成为
+     * "自转的源"，消耗型模式评估时测得的外部应力根本没付 = 白拿应力。</p>
+     *
+     * <ul>
+     *   <li>存在任一消耗分支（含混合、含单分支自身双轴）→ **纯消耗**：{@code (max inSU, max inRPM, 0, 0)}；</li>
+     *   <li>全为供给型 → **纯供给**：{@code (0, 0, min outSU, min outRPM)}（宁可少供，不可多供）；</li>
+     *   <li>全为 EMPTY → {@link StressProfile#EMPTY}。</li>
+     * </ul>
+     *
+     * <p>已知代价（刻意保守，方向是"少产"而非"超发"）：全消耗房间里的"纯供给"分支会失去供电能力
+     * ⇒ 激活它时下游拿不到应力；{@code outRPM = min(…)} 会把下游转速统一压到最慢分支。</p>
+     */
+    private static StressProfile mergeStressProfiles(List<EvaluationVerdict.Result> results) {
+        float maxInputSU = 0f;
+        float maxInputRPM = 0f;
+        float minOutputSU = Float.MAX_VALUE;
+        float minOutputRPM = Float.MAX_VALUE;
+        boolean anyConsume = false;
+        boolean anyProvide = false;
+        for (EvaluationVerdict.Result result : results) {
+            StressProfile profile = result.stressProfile() == null
+                    ? StressProfile.EMPTY : result.stressProfile();
+            maxInputSU = Math.max(maxInputSU, profile.inputSU());
+            maxInputRPM = Math.max(maxInputRPM, profile.inputRPM());
+            minOutputSU = Math.min(minOutputSU, profile.outputSU());
+            minOutputRPM = Math.min(minOutputRPM, profile.outputRPM());
+            anyConsume |= profile.inputSU() > 0f;
+            anyProvide |= profile.outputSU() > 0f;
+        }
+        if (anyConsume) {
+            return new StressProfile(maxInputSU, maxInputRPM, 0f, 0f);
+        }
+        if (anyProvide) {
+            return new StressProfile(0f, 0f, minOutputSU, minOutputRPM);
+        }
+        return StressProfile.EMPTY;
     }
 
     private void tickPublishing(MinecraftServer server, EvaluationSavedData data,

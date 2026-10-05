@@ -1,6 +1,7 @@
 package com.yansunsky.createcmpor.command;
 
 import com.yansunsky.createcmpor.CreateCMPOR;
+import com.yansunsky.createcmpor.Config;
 import com.yansunsky.createcmpor.block.FactoryBlockEntity;
 import com.yansunsky.createcmpor.compat.cm.CMAdapterV7;
 import com.yansunsky.createcmpor.compat.cm.ICompactMachinesAdapter;
@@ -12,6 +13,7 @@ import com.yansunsky.createcmpor.evaluation.EvaluationManager;
 import com.yansunsky.createcmpor.evaluation.EvaluationManifest;
 import com.yansunsky.createcmpor.evaluation.EvaluationSavedData;
 import com.yansunsky.createcmpor.evaluation.EvaluationSession;
+import com.yansunsky.createcmpor.evaluation.FactoryIndexSavedData;
 import com.yansunsky.createcmpor.evaluation.ParallelEvaluationWorlds;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -25,11 +27,13 @@ import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.GlobalPos;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.HoverEvent;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.phys.Vec3;
@@ -37,6 +41,7 @@ import net.neoforged.neoforge.event.RegisterCommandsEvent;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /** Phase 2 调试命令：检查原房间与 eval_world 同坐标副本。 */
@@ -74,6 +79,18 @@ public final class EvalWorldCommands {
                                 .then(Commands.argument("value", IntegerArgumentType.integer(1, 16))
                                         .executes(context -> setMaxEvaluations(context.getSource(),
                                                 IntegerArgumentType.getInteger(context, "value"))))))
+                .then(Commands.literal("factory")
+                        .then(Commands.literal("legacy")
+                                .then(Commands.literal("list")
+                                        .executes(context -> legacyList(context.getSource())))
+                                .then(Commands.literal("remove")
+                                        .then(Commands.argument("room", StringArgumentType.word())
+                                                .executes(context -> legacyRemove(context.getSource(),
+                                                        StringArgumentType.getString(context, "room")))))
+                                .then(Commands.literal("revert")
+                                        .then(Commands.argument("room", StringArgumentType.word())
+                                                .executes(context -> legacyRevert(context.getSource(),
+                                                        StringArgumentType.getString(context, "room")))))))
                 .then(Commands.literal("preview")
                         .then(Commands.literal("info")
                                 .executes(context -> showPreviewInfo(context.getSource())))
@@ -81,6 +98,194 @@ public final class EvalWorldCommands {
                                 .executes(context -> showEntitySizes(context.getSource())))
                         .then(Commands.literal("bumprev")
                                 .executes(context -> bumpPreviewRev(context.getSource())))));
+    }
+
+    /**
+     * 旧版多工厂组的清理命令组（T5，48 文档 §6.4）：
+     * {@code /ccmpor factory legacy <list|remove|revert> [room]}。
+     *
+     * <p>0.5.0 起一次评估只固化一个工厂，{@code factory_count > 1} 的组只可能来自旧存档。
+     * 这些组仍可运行、可用启动棒整组还原，本命令组给管理员三条出口：
+     * <ul>
+     *   <li>{@code list}：盘点所有遗留组（房间码、成员数、维度与坐标、成员现状）；</li>
+     *   <li>{@code remove <roomCode>}：直接清除该组全部工厂方块与索引条目（<b>不掉落</b>）；</li>
+     *   <li>{@code revert <roomCode>}：按组还原语义变回原机器（等效玩家用启动棒右键）。</li>
+     * </ul>
+     * 全部为 OP 命令（{@code ccmpor} 根节点已 requires(2)）。</p>
+     */
+    private static int legacyList(CommandSourceStack source) {
+        Map<String, List<GlobalPos>> all = FactoryIndexSavedData.get(source.getServer()).snapshotAll();
+        List<String> groups = new ArrayList<>();
+        for (Map.Entry<String, List<GlobalPos>> entry : all.entrySet()) {
+            if (entry.getValue().size() > 1) {
+                groups.add(entry.getKey());
+            }
+        }
+        if (groups.isEmpty()) {
+            source.sendSuccess(() -> Component.translatable("commands.createcmpor.factory.legacy.none"), false);
+            return 0;
+        }
+        // HashMap 无顺序：排序保证同一条命令每次输出一致（便于对日志/对报告）
+        groups.sort(null);
+        source.sendSuccess(() -> Component.translatable("commands.createcmpor.factory.legacy.header", groups.size()),
+                false);
+        for (String roomCode : groups) {
+            List<GlobalPos> positions = all.get(roomCode);
+            source.sendSuccess(() -> Component.translatable("commands.createcmpor.factory.legacy.entry",
+                    roomCode, positions.size()), false);
+            for (int index = 0; index < positions.size(); index++) {
+                GlobalPos member = positions.get(index);
+                final int number = index + 1;
+                // 维度/坐标是语言无关的，只有状态词走本地化
+                String head = "  #" + number + " " + member.dimension().location() + " @ "
+                        + member.pos().toShortString() + " ";
+                Component status = describeLegacyMember(source, member);
+                source.sendSuccess(() -> Component.literal(head).append(status), false);
+            }
+        }
+        return groups.size();
+    }
+
+    /** 遗留组成员现状：已加载的工厂方块（附 factory_count）/ 该位置不是工厂 / 区块未加载。 */
+    private static Component describeLegacyMember(CommandSourceStack source, GlobalPos member) {
+        ServerLevel level = source.getServer().getLevel(member.dimension());
+        if (level == null || !level.isLoaded(member.pos())) {
+            return Component.translatable("commands.createcmpor.factory.legacy.status_unloaded");
+        }
+        if (level.getBlockEntity(member.pos()) instanceof FactoryBlockEntity factory) {
+            return Component.translatable("commands.createcmpor.factory.legacy.status_loaded",
+                    factory.getFactoryCount());
+        }
+        return Component.translatable("commands.createcmpor.factory.legacy.status_missing");
+    }
+
+    /**
+     * {@code /ccmpor factory legacy remove <roomCode>}：清除整组工厂方块与索引条目（不掉落）。
+     *
+     * <p>与玩家启动棒还原的区别：这里<b>不做</b>还原（原机器不回来），也不消耗任何物品；
+     * 区块会被强制加载——管理员命令必须能清干净，不能因区块未加载而静默留下孤儿方块。</p>
+     */
+    @SuppressWarnings("deprecation") // 遗留命令：有意使用工厂索引的多位置查询 API
+    private static int legacyRemove(CommandSourceStack source, String roomCode) {
+        FactoryIndexSavedData index = FactoryIndexSavedData.get(source.getServer());
+        List<GlobalPos> positions = index.factoriesForRoom(roomCode).orElse(List.of());
+        if (positions.isEmpty()) {
+            source.sendFailure(Component.translatable(
+                    "commands.createcmpor.factory.legacy.no_group", roomCode));
+            return 0;
+        }
+        int removed = 0;
+        int skipped = 0;
+        for (GlobalPos member : positions) {
+            ServerLevel level = source.getServer().getLevel(member.dimension());
+            if (level == null) {
+                skipped++;
+                continue;
+            }
+            level.getChunkAt(member.pos());
+            if (!(level.getBlockEntity(member.pos()) instanceof FactoryBlockEntity)) {
+                skipped++;
+                continue;
+            }
+            level.removeBlockEntity(member.pos());
+            level.setBlock(member.pos(), Blocks.AIR.defaultBlockState(),
+                    net.minecraft.world.level.block.Block.UPDATE_ALL);
+            removed++;
+        }
+        index.removeFactory(roomCode);
+        final int removedCount = removed;
+        final int skippedCount = skipped;
+        source.sendSuccess(() -> Component.translatable("commands.createcmpor.factory.legacy.remove_done",
+                roomCode, removedCount, skippedCount), true);
+        CreateCMPOR.LOGGER.info("[遗留清理] 房间 {} 的旧版工厂组已清除：移除 {} 个方块，跳过 {} 个",
+                roomCode, removedCount, skippedCount);
+        return 1;
+    }
+
+    /**
+     * {@code /ccmpor factory legacy revert <roomCode>}：按组还原语义变回原机器。
+     *
+     * <p>与玩家右键完全一致的三条前置校验：还原开关、成员数量 == {@code factory_count}、
+     * 主位置有还原数据。校验通过后：主位置变回原 CM 机器，组内其余成员直接消失（不掉落），
+     * 索引条目由 {@code revertToMachine} 内部清除。</p>
+     *
+     * <p>命令没有"被右键的那一个"，故目标的选择是可判定的：优先索引主位置（{@code index[0]}），
+     * 主位置不可用时退化为第一个已加载成员。</p>
+     */
+    @SuppressWarnings("deprecation") // 遗留命令：有意使用工厂索引的多位置查询 API
+    private static int legacyRevert(CommandSourceStack source, String roomCode) {
+        if (!Config.ENABLE_FACTORY_REVERT.get()) {
+            source.sendFailure(Component.translatable("message.createcmpor.factory.revert_disabled"));
+            return 0;
+        }
+        FactoryIndexSavedData index = FactoryIndexSavedData.get(source.getServer());
+        List<GlobalPos> positions = index.factoriesForRoom(roomCode).orElse(List.of());
+        if (positions.isEmpty()) {
+            source.sendFailure(Component.translatable(
+                    "commands.createcmpor.factory.legacy.no_group", roomCode));
+            return 0;
+        }
+        // 收集"确实存在工厂方块"的成员（区块强制加载，保证命令语义稳定）
+        List<GlobalPos> present = new ArrayList<>();
+        for (GlobalPos member : positions) {
+            ServerLevel level = source.getServer().getLevel(member.dimension());
+            if (level == null) {
+                continue;
+            }
+            level.getChunkAt(member.pos());
+            if (level.getBlockEntity(member.pos()) instanceof FactoryBlockEntity) {
+                present.add(member);
+            }
+        }
+        if (present.isEmpty()) {
+            source.sendFailure(Component.translatable(
+                    "commands.createcmpor.factory.legacy.revert_no_block", roomCode));
+            return 0;
+        }
+        GlobalPos mainPos = present.contains(positions.get(0)) ? positions.get(0) : present.get(0);
+        ServerLevel mainLevel = source.getServer().getLevel(mainPos.dimension());
+        if (mainLevel == null
+                || !(mainLevel.getBlockEntity(mainPos.pos()) instanceof FactoryBlockEntity main)) {
+            source.sendFailure(Component.translatable(
+                    "commands.createcmpor.factory.legacy.revert_no_block", roomCode));
+            return 0;
+        }
+        int expected = main.getFactoryCount();
+        if (present.size() != expected) {
+            final int presentCount = present.size();
+            // 与玩家右键同一条提示（数量不符时不要擅自"尽力还原"）
+            source.sendFailure(Component.translatable("message.createcmpor.factory.group_rearrange",
+                    expected, presentCount));
+            return 0;
+        }
+        if (!main.hasRestoreData()) {
+            source.sendFailure(Component.translatable("message.createcmpor.factory.revert_unavailable"));
+            return 0;
+        }
+        // 组还原语义：非主位置成员直接消失（不掉落）
+        for (GlobalPos member : present) {
+            if (member.equals(mainPos)) {
+                continue;
+            }
+            ServerLevel level = source.getServer().getLevel(member.dimension());
+            if (level == null || !(level.getBlockEntity(member.pos()) instanceof FactoryBlockEntity)) {
+                continue;
+            }
+            level.removeBlockEntity(member.pos());
+            level.setBlock(member.pos(), Blocks.AIR.defaultBlockState(),
+                    net.minecraft.world.level.block.Block.UPDATE_ALL);
+        }
+        final int memberCount = present.size();
+        final String mainCoords = mainPos.pos().toShortString();
+        if (!main.revertToMachine(mainLevel)) {
+            source.sendFailure(Component.translatable("message.createcmpor.factory.revert_failed"));
+            return 0;
+        }
+        source.sendSuccess(() -> Component.translatable("commands.createcmpor.factory.legacy.revert_done",
+                roomCode, memberCount, mainCoords), true);
+        CreateCMPOR.LOGGER.info("[遗留清理] 房间 {} 的旧版工厂组已还原为原机器：主位置 {}，其余 {} 个成员已移除",
+                roomCode, mainCoords, memberCount - 1);
+        return 1;
     }
 
     /**

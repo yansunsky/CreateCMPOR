@@ -28,6 +28,13 @@ import java.util.Optional;
  *
  * <p>列表第一个元素 = 主位置（原机器位），其余为多工厂组中向上堆叠的成员。</p>
  *
+ * <p><b>0.5.0 起</b>：一次评估只固化一个工厂 ⇒ 每个房间的列表<b>恰好一个</b>位置。
+ * 写路径用 {@link #registerFactory(String, List)}（覆盖写，固化）与 {@link #removeFactory(String)}
+ * （彻底清除，还原）——一房间一台工厂时它们就是正确语义。"多位置 = 多工厂组"是
+ * <b>旧存档遗留形态</b>：只有<b>多位置查询</b> {@link #factoriesForRoom} / {@link #factoryForRoom}
+ * 标了 {@code @Deprecated}（{@code positions.get(0)} 语义只服务旧档遗留组，计划 0.6.x 彻底移除）；
+ * 旧档仍可读取、运行、整组还原，并可用 {@code /ccmpor factory legacy} 清理。</p>
+ *
  * <p>写入时机：工厂固化（{@code EvaluationCloneManager.tickSolidifying}）时。
  * 清除时机：工厂被启动棒还原（{@code FactoryBlockEntity.revertToMachine}）时。
  * 查询若未命中只记录 WARN 日志，不阻塞（旧存档兼容：旧工厂无索引条目）。</p>
@@ -85,7 +92,14 @@ public final class FactoryIndexSavedData extends SavedData {
         return data;
     }
 
-    /** 固化工厂时登记整组：roomCode → 工厂位置列表（第一个为主位置）。 */
+    /**
+     * 固化工厂时登记：roomCode → 工厂位置列表（第一个为主位置）。
+     *
+     * <p><b>0.5.0 起：一房间一台工厂，新固化路径就该用本方法</b>（传单位置列表）。
+     * 它是<b>覆盖写</b>——保证索引里不会残留旧档遗留组的位置或历史脏数据，而"索引干净"
+     * 正是评估前置闸门（判断该房间是否已固化出工厂）不误判的前提。
+     * 增量登记（工厂物品被放下/重放）用 {@link #registerFactoryPosition(String, GlobalPos)}。</p>
+     */
     public void registerFactory(String roomCode, List<GlobalPos> positions) {
         if (positions == null || positions.isEmpty()) {
             return;
@@ -94,7 +108,13 @@ public final class FactoryIndexSavedData extends SavedData {
         setDirty();
     }
 
-    /** 工厂还原时移除索引（整组）。 */
+    /**
+     * 工厂还原时清除该房间的索引（整条）。
+     *
+     * <p><b>0.5.0 起：一房间一台工厂，新还原路径就该用本方法</b>。它是<b>彻底清除</b>——
+     * 比按位置删更安全：位置一旦对不上（旧档坐标漂移、历史脏数据）就删不干净 ⇒ 残留 ⇒ 闸门误判。
+     * 增量移除（工厂被破坏/取走）用 {@link #removeFactoryPosition(String, GlobalPos)}。</p>
+     */
     public void removeFactory(String roomCode) {
         if (factoryByRoom.remove(roomCode) != null) {
             setDirty();
@@ -127,18 +147,45 @@ public final class FactoryIndexSavedData extends SavedData {
         }
     }
 
-    /** 按房间号查工厂位置列表（第一个 = 主位置）；未命中返回 empty。 */
+    /**
+     * 按房间号查工厂位置列表（第一个 = 主位置）；未命中返回 empty。
+     *
+     * @deprecated 遗留兼容：旧存档的多工厂组（factory_count &gt; 1），计划 0.6.x 彻底移除。
+     *     仅 {@code FactoryBlock.revertGroup} 与 {@code /ccmpor factory legacy remove|revert} 使用
+     *     （{@code legacy list} 用 {@link #snapshotAll()}）。
+     */
+    @Deprecated
     public Optional<List<GlobalPos>> factoriesForRoom(String roomCode) {
         return Optional.ofNullable(factoryByRoom.get(roomCode));
     }
 
-    /** 按房间号查主位置工厂（防复制自动还原用）；未命中返回 empty（旧存档兼容：仅 WARN，不阻塞）。 */
+    /**
+     * 按房间号查主位置工厂（防复制自动还原用）；未命中返回 empty（旧存档兼容：仅 WARN，不阻塞）。
+     *
+     * @deprecated 遗留兼容：旧存档的多工厂组（factory_count &gt; 1），计划 0.6.x 彻底移除。
+     *     防复制护栏"只还原 index[0]"是遗留行为，跨版本保持不变（见
+     *     {@code AntiDupeSpaceEntryHandler}）；新档每个房间只有一个位置，语义等价。
+     */
+    @Deprecated
     public Optional<GlobalPos> factoryForRoom(String roomCode) {
         List<GlobalPos> positions = factoryByRoom.get(roomCode);
         if (positions == null || positions.isEmpty()) {
             return Optional.empty();
         }
         return Optional.of(positions.get(0));
+    }
+
+    /**
+     * 全部房间 → 位置列表的只读快照（供诊断、清理命令与评估前置闸门使用；返回副本，改动不影响内部状态）。
+     *
+     * <p>不是遗留 API：需要枚举所有房间的场景（例如"该房间是否已固化出工厂"的前置校验、
+     * {@code /ccmpor factory legacy list} 挑出多成员组）无法用"按房间号逐个查"的旧 API 表达。
+     * 返回的列表顺序 = 登记顺序（第一个为主位置）。</p>
+     */
+    public Map<String, List<GlobalPos>> snapshotAll() {
+        Map<String, List<GlobalPos>> copy = new HashMap<>();
+        factoryByRoom.forEach((roomCode, positions) -> copy.put(roomCode, List.copyOf(positions)));
+        return copy;
     }
 
     @Override

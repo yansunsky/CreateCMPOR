@@ -52,6 +52,16 @@ public final class AntiDupeSpaceEntryHandler {
         }
     }
 
+    /**
+     * 玩家所在房间 → 主位置工厂 → 自动还原。
+     *
+     * <p><b>遗留行为（保持现状，不要"顺手修"）</b>：这里查的是
+     * {@link FactoryIndexSavedData#factoryForRoom(String)}，即列表的 {@code index[0]}。
+     * 旧存档的多工厂组（{@code factory_count > 1}，计划 0.6.x 彻底移除）在索引里是
+     * 多位置列表，本护栏<b>只还原主位置那一个</b>，其余成员不会被动到——这是 0.4.x 起就有的
+     * 既有语义，跨版本保持不变。0.5.0 起每个房间只有 1 个位置，两者等价。</p>
+     */
+    @SuppressWarnings("deprecation") // 遗留路径：有意使用工厂索引的多位置查询 API（index[0] 语义）
     private static void checkPlayer(ServerTickEvent.Post event, ServerPlayer player) {
         Optional<String> roomCode = CompactMachines.chunkManager()
                 .findRoomByChunk(new ChunkPos(player.blockPosition()));
@@ -59,6 +69,8 @@ public final class AntiDupeSpaceEntryHandler {
             return;
         }
         FactoryIndexSavedData index = FactoryIndexSavedData.get(event.getServer());
+        // 遗留兼容：旧存档的多工厂组（factory_count > 1）在索引里是多位置列表，这里只取 index[0]
+        // （主位置）自动还原，组内其余工厂不动——既有语义，计划 0.6.x 彻底移除。
         Optional<GlobalPos> factoryPos = index.factoryForRoom(roomCode.get());
         if (factoryPos.isEmpty()) {
             if (event.getServer().getLevel(CompactDimension.LEVEL_KEY) != null

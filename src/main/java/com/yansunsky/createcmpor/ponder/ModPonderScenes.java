@@ -54,7 +54,7 @@ public final class ModPonderScenes {
                 .addStoryBoard("io_extension/io_extension", IOExtensionScenes::ioExtensionBasics,
                         AllPonderTags.SYSTEM);
 
-        // 并行空间输入方块：认识/配置 → 同一产线逐物品分支评估 → 评估过程 → 生成 N 个工厂
+        // 并行空间输入方块：认识/配置 → 同一产线逐物品分支评估 → 评估过程 → 固化为一个工厂（内含互斥模式）
         helper.forComponents(parallelInput)
                 .addStoryBoard("parallel_input_block/parallel_input_block1", ParallelInputScenes::configure,
                         AllPonderTags.SYSTEM)

@@ -2,6 +2,7 @@ package com.yansunsky.createcmpor.evaluation;
 
 import com.yansunsky.createcmpor.CreateCMPOR;
 import com.yansunsky.createcmpor.block.EvaluatorBlockEntity;
+import com.yansunsky.createcmpor.block.FactoryBlockEntity;
 import com.yansunsky.createcmpor.init.ModBlocks;
 import com.yansunsky.createcmpor.init.ModItems;
 import dev.compactmods.machines.api.CompactMachines;
@@ -59,6 +60,16 @@ public final class EvaluationManager {
         if (CompactMachines.room(server, roomCode).isEmpty()) {
             return StartResult.failure(Component.translatable("message.createcmpor.evaluation.room_missing", roomCode));
         }
+        // 闸门（0.5.0，T2b）：一个房间只允许一台工厂。
+        // 铁律 I1 只覆盖"单次评估 → 一台工厂"，这里补上**时间维度**：registerFactory 是覆盖写、
+        // factoryForRoom 只返回 index[0]、防复制护栏也只自动还原那一台 ⇒ 若允许同一房间反复评估，
+        // 每次都会固化出新的一台，而索引与护栏只记得最后一台 ⇒ 多台满配工厂永久留产、
+        // 且"进空间搬走原机器"的护栏只挡得住一台。
+        // 放在评估最前面（而非固化前）：这里是唯一入口，早失败避免让玩家白等 60~120 秒的完整评估。
+        if (existingFactory(server, roomCode).isPresent()) {
+            return StartResult.failure(Component.translatable(
+                    "message.createcmpor.evaluation.room_already_solidified"));
+        }
 
         ServerLevel machineLevel = server.getLevel(machinePos.dimension());
         if (machineLevel == null) {
@@ -67,14 +78,6 @@ public final class EvaluationManager {
         BlockEntity machineBlockEntity = machineLevel.getBlockEntity(machinePos.pos());
         if (machineBlockEntity == null) {
             return StartResult.failure(Component.translatable("message.createcmpor.evaluation.machine_missing"));
-        }
-
-        // 预检测：工厂将占用的位置（机器位置向上 N 格）必须是可破坏方块（生存可清理）。
-        // 不可破坏方块（如基岩）无法被生存模式移动，评估固化必然失败 → 评估开始前就阻止。
-        // 主位置（i=0）是评估方块（EvaluatorBlock）的安装位置，固化时直接替换为工厂，无条件排除。
-        String blocked = precheckFactorySpace(server, machinePos, roomCode);
-        if (blocked != null) {
-            return StartResult.failure(Component.literal(blocked));
         }
 
         BlockState originalState = machineLevel.getBlockState(machinePos.pos());
@@ -108,43 +111,51 @@ public final class EvaluationManager {
     }
 
     /**
-     * 评估开始前预检测：工厂固化将占用的位置（机器位置向上 N 格，N = 并行方块配置物品数，
-     * 无并行方块则为 1）必须全部是可破坏方块。不可破坏方块（destroySpeed < 0，如基岩）无法被
-     * 生存模式移动，固化必然失败 → 在评估开始前就阻止，让玩家先清理。
+     * 闸门（0.5.0，T2b）：该房间是否**已存在实际仍在的工厂**。
      *
-     * <p>主位置（i = 0，机器位置本身）无条件排除：评估期间它是评估方块（EvaluatorBlock）的安装位置，
-     * 固化时直接替换为工厂，不参与破坏检测。</p>
+     * <p><b>判据落在"实体仍在"而不是"索引里有记录"</b>：索引存的是 {@link GlobalPos}，可能是残留条目
+     * ——任何没走 {@code FactoryBlock.removeFromFactoryIndex} 的移除（世界编辑、区块回档、
+     * {@code /setblock} 等）都会留下它。只有该维度、该位置**当前仍是 {@link FactoryBlockEntity}**
+     * 才算命中；维度未加载、区块未加载、方块已被挖走一律视为"不存在"，
+     * 避免一条残留索引把该房间的合法重评永久误判成复制。</p>
      *
-     * @return 第一个不可破坏方块的位置描述；全部可破坏（或无可检测问题）返回 null
+     * <p>用 {@link FactoryIndexSavedData#snapshotAll()} 而不是多位置遗留 API：旧档的多工厂组
+     * （{@code factory_count > 1}）在索引里是**多条位置**，闸门语义就是"这个房间有没有工厂"，
+     * 因此任一位置仍有工厂即算命中（旧档玩家需先用启动棒整组还原、或挖走、或用
+     * {@code /ccmpor factory legacy} 清理，才能重新评估）。{@code snapshotAll()} 返回副本，
+     * 且不是 {@code @Deprecated} 的遗留 API。</p>
+     *
+     * <p>玩家**挖走**工厂时 {@code FactoryBlock.removeFromFactoryIndex} 会摘掉索引条目 ⇒ 该路径
+     * 自然放行，符合预期（他手里那台仍是自己的"工厂"分支）。</p>
+     *
+     * <p>⚠️ 注意：护栏 {@link AntiDupeSpaceEntryHandler} 是**索引驱动**的（拿 roomCode 去查
+     * {@code factoryForRoom}），而"挖走"恰好把索引条目摘掉 ⇒ <b>物品形态的工厂在护栏眼里不存在</b>，
+     * 玩家此后从非机器入口进房间不会被拦。这是护栏自身的**结构性缺口**（既有、非本闸门引入），
+     * 记档于 {@code docs/48} 的 <b>R-7</b>；<b>本闸门不覆盖它</b>——闸门只看"世界里还有没有实体工厂"，
+     * 看不到玩家背包。</p>
+     *
+     * @return 仍在的工厂位置；该房间没有仍在的工厂返回 {@link Optional#empty()}
      */
-    private static String precheckFactorySpace(MinecraftServer server, GlobalPos machinePos, String roomCode) {
-        ServerLevel machineLevel = server.getLevel(machinePos.dimension());
-        if (machineLevel == null) {
-            return null;
+    private static Optional<GlobalPos> existingFactory(MinecraftServer server, String roomCode) {
+        List<GlobalPos> positions = FactoryIndexSavedData.get(server).snapshotAll().get(roomCode);
+        if (positions == null) {
+            return Optional.empty();
         }
-        int factoryCount = parallelBranchCount(server, roomCode);
-
-        BlockPos base = machinePos.pos();
-        for (int i = 0; i < factoryCount; i++) {
-            if (i == 0) {
-                continue; // 主位置是评估方块安装位置，无条件排除
+        for (GlobalPos candidate : positions) {
+            ServerLevel level = server.getLevel(candidate.dimension());
+            if (level == null || !level.isLoaded(candidate.pos())) {
+                continue;
             }
-            BlockPos pos = base.offset(0, i, 0);
-            BlockState state = machineLevel.getBlockState(pos);
-            if (!state.isAir() && state.getDestroySpeed(machineLevel, pos) < 0) {
-                CreateCMPOR.LOGGER.warn("评估预检测失败：工厂位置 {} 有不可破坏方块 {}",
-                        pos, state.getBlock());
-                return "工厂位置 " + pos.toShortString() + " 有不可破坏方块 "
-                        + state.getBlock().getName().getString()
-                        + "（无法被生存模式移动），请先清理后再开始评估";
+            if (level.getBlockEntity(candidate.pos()) instanceof FactoryBlockEntity) {
+                return Optional.of(candidate);
             }
         }
-        return null;
+        return Optional.empty();
     }
 
     /** 房间内所有并行空间输入方块配置物品数的最大值；无并行方块为 1。 */
     private static int parallelBranchCount(MinecraftServer server, String roomCode) {
-        int[] factoryCount = {1};
+        int[] branchCount = {1};
         CompactMachines.room(server, roomCode).ifPresent(room -> {
             AABB bounds = room.boundaries().outerBounds();
             int startX = (int) Math.floor(bounds.minX);
@@ -161,15 +172,15 @@ public final class EvaluationManager {
                                 && room.level().getBlockEntity(pos)
                                 instanceof com.yansunsky.createcmpor.block.ParallelInputBlockEntity parallel) {
                             int count = parallel.configuredItemCount();
-                            if (count > factoryCount[0]) {
-                                factoryCount[0] = count;
+                            if (count > branchCount[0]) {
+                                branchCount[0] = count;
                             }
                         }
                     }
                 }
             }
         });
-        return factoryCount[0];
+        return branchCount[0];
     }
 
     public boolean isRoomLocked(MinecraftServer server, String roomCode) {
