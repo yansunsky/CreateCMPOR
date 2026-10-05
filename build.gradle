@@ -50,6 +50,8 @@ neoForge {
     runs {
         client {
             client()
+            // 自动化测试便利：直接进入单人存档，跳过主菜单点击（平时可注释掉）
+            programArguments.addAll '--quickPlaySingleplayer', '测试-0.5.0'
             systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
             // 软件渲染（仅无 GPU 环境需要）。测试机有独立显卡，已注释。
             // 如需在无 GPU 服务器跑 runClient，取消下列注释并把 Mesa 的 opengl32.dll/libgallium_wgl.dll 放入 mesa/ 目录：
