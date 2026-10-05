@@ -72,7 +72,10 @@ public final class SableBlueprintGuard implements SableBlueprintBlockMapper {
         register(ModBlocks.STRESS_INPUT.get());
         register(ModBlocks.STRESS_OUTPUT.get());
 
-        CreateCMPOR.LOGGER.info("[蓝图安全] 已注册 Sable 蓝图防护（工厂 / 应力输入 / 应力输出）");
+        // 方块状态层净化（NBT 白名单覆盖不到 ACTIVE 状态），见 SableBlueprintStateSanitizer
+        SableBlueprintStateSanitizer.register();
+
+        CreateCMPOR.LOGGER.info("[蓝图安全] 已注册 Sable 蓝图防护（NBT 白名单 + 落地状态净化）");
     }
 
     private static void register(Block block) {
