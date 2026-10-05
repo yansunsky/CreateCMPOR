@@ -99,6 +99,11 @@ dependencies {
     compileOnly files("${projectDir}/libs/compactmachines-core-api-7.0.81.jar")
     compileOnly "curse.maven:compact-machines-224218:${compactmachines_file}"
     localRuntime "curse.maven:compact-machines-224218:${compactmachines_file}"
+
+    // === Sable Photomancy / sable-schematic-api（可选联动，非必需依赖）===
+    // 只用其蓝图 API（SableBlueprintBlockMapper）做"蓝图不复制 BE 载荷"的防护。
+    // compileOnly：不打包、不强制安装；未安装时 BlueprintSafety 里的 isLoaded 守卫保证不加载我们的实现类。
+    compileOnly files("${projectDir}/libs/sable-photomancy-1.0.1.jar")
 }
 
 tasks.withType(JavaCompile).configureEach {

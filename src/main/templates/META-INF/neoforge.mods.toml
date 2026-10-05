@@ -42,6 +42,15 @@ versionRange = "[7.0,)"
 ordering = "AFTER"
 side = "BOTH"
 
+# Sable Photomancy / sable-schematic-api：可选联动（不安装也能正常运行）
+# 仅用于给本模组方块注册蓝图防护，防止蓝图复制带出会话数据与原机器还原镜像。
+[[dependencies.${mod_id}]]
+modId = "sable_schematic_api"
+type = "optional"
+versionRange = "[1.0.0,)"
+ordering = "AFTER"
+side = "BOTH"
+
 # Mixin 配置（后续阶段注入 CompactMachines 的入口交互）
 [[mixins]]
 config = "createcmpor.mixins.json"
