@@ -1,8 +1,0 @@
-{
-  "replace": false,
-  "values": [
-    "createcmpor:factory_block",
-    "createcmpor:stress_input",
-    "createcmpor:stress_output"
-  ]
-}
