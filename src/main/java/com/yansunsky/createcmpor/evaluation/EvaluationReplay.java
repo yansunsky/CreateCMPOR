@@ -40,7 +40,14 @@ final class EvaluationReplay {
             });
             int[] energyIn = trace.energy().input == null ? new int[recordLength] : trace.energy().input.clone();
             int[] energyOut = trace.energy().output == null ? new int[recordLength] : trace.energy().output.clone();
-            applyLossAndFilter(in, out, energyOut, recordLength);
+            // 简化路径只"清空行"、**不做量级过滤**：
+            // 这里的 in 全部来自 IO 追踪（series.input），而中间产物不可能穿越输入方块
+            // ⇒ 能出现在这里的每一条都是真实的过界输入。对它做 total < 秒数×比例 的删除，
+            // 删掉的一定是真实原料（免费生产，与 docs/21:426 冲突），
+            // 而且顺带制造大量 total=0 的误导日志（实测占历史命中 85%）。
+            // 产出侧折扣 lossRate 照常。
+            applyOutputLoss(out, energyOut, recordLength);
+            removeEmptyInputRows(in);
             return new ReplayResult(in, out, energyIn, energyOut, 0, 0);
         }
 
@@ -192,29 +199,55 @@ final class EvaluationReplay {
         CreateCMPOR.LOGGER.info("回放-能量: net={}", net);
     }
 
+    /**
+     * 三扫描主路径的收尾：产出折扣 + 输入侧量级过滤。
+     *
+     * <p><b>为什么简化路径不调用它</b>：简化路径（S0 全空）的 {@code in} 直接来自 IO 追踪，
+     * 中间产物不可能出现在那里，量级过滤只会删真实原料 ⇒ 由调用方改用
+     * {@link #applyOutputLoss} + {@link #removeEmptyInputRows}。</p>
+     */
     private static void applyLossAndFilter(Map<EvaluationTrace.FlowKey, int[]> in,
                                            Map<EvaluationTrace.FlowKey, int[]> out,
                                            int[] energyOut, int recordLength) {
-        double lossRate = Config.LOSS_RATE.get();
-        double intermediateRatio = Config.INTERMEDIATE_RATIO.get();
-        Set<ResourceLocation> catalysts = catalystSet();
+        applyOutputLoss(out, energyOut, recordLength);
+        filterIntermediateInputs(in, recordLength);
+    }
 
+    /** 产出折扣（{@code lossRate}）——只作用于产出侧（{@code out} / {@code energyOut}），与输入侧无关。 */
+    private static void applyOutputLoss(Map<EvaluationTrace.FlowKey, int[]> out,
+                                        int[] energyOut, int recordLength) {
+        double lossRate = Config.LOSS_RATE.get();
         for (int[] pattern : out.values()) {
             applyLoss(pattern, lossRate, recordLength);
         }
         applyLoss(energyOut, lossRate, recordLength);
+    }
 
+    /** 输入侧量级过滤（催化剂豁免 + 中间产物/噪声门槛），门槛口径与 RATE 共用。 */
+    private static void filterIntermediateInputs(Map<EvaluationTrace.FlowKey, int[]> in, int recordLength) {
+        Set<ResourceLocation> catalysts = catalystSet();
         for (Map.Entry<EvaluationTrace.FlowKey, int[]> entry : new HashSet<>(in.entrySet())) {
             if ("item".equals(entry.getKey().kind()) && catalysts.contains(entry.getKey().id())) {
                 CreateCMPOR.LOGGER.info("回放-催化剂保留: {}", entry.getKey().id());
                 continue;
             }
             long total = EvaluationTrace.total(entry.getValue());
-            if (total < (long) (recordLength * intermediateRatio) && total < recordLength) {
+            if (EvaluationAudit.belowIntermediateThreshold(total, recordLength)) {
                 in.remove(entry.getKey());
                 CreateCMPOR.LOGGER.info("回放-中间产物过滤: {} total={}", entry.getKey().signature(), total);
             }
         }
+    }
+
+    /**
+     * 清掉 {@code in} 里的"全零行"——这是<b>清理</b>，不是策略过滤。
+     *
+     * <p>{@code trace.series()} 里"只有输出方向"的键同样会被克隆进 {@code in}（全零数组），
+     * 不清掉就会固化成 0 速率输入槽。三扫描主路径不会产生这种行（净平衡后的输入行
+     * 其 pattern 总和恒等于 {@code |net| ≥ 1}），故只有简化路径调用。</p>
+     */
+    private static void removeEmptyInputRows(Map<EvaluationTrace.FlowKey, int[]> in) {
+        in.entrySet().removeIf(entry -> EvaluationTrace.total(entry.getValue()) <= 0);
     }
 
     private static void applyLoss(int[] pattern, double lossRate, int recordLength) {

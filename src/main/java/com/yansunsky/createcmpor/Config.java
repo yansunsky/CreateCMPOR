@@ -378,8 +378,14 @@ public class Config {
                 .defineInRange("lossRate", 0.95, 0.0, 1.0);
         INTERMEDIATE_RATIO = builder
                 .comment(
-                        "中间产物过滤比例：总量低于 评估秒数×该比例 的条目视为中间产物。",
-                        "Intermediate product filter ratio: entries below (evaluation seconds × this ratio) are treated as intermediates.")
+                        "中间产物过滤比例：总量低于 评估秒数×该比例 的条目视为中间产物。RATE 与 REPLAY 同口径。",
+                        "Intermediate product filter ratio: entries below (evaluation seconds × this ratio) are treated as intermediates. Same rule for RATE and REPLAY.",
+                        "只作用于输入（低于门槛的输入条目不建通道），产出条目不受影响；阈值随评估秒数线性放大（60 秒 × 0.25 = 15）。",
+                        "Applies to inputs only (below-threshold input entries get no channel); outputs are unaffected. The threshold scales with the evaluation length (60 s × 0.25 = 15).",
+                        "调大它 = 允许小额真实原料不喂也能产出（评估欺骗面），请谨慎。",
+                        "Raising it lets small amounts of real input go unfed (an evaluation-deception surface); use with care.",
+                        "附带用途：它同时是 REPLAY 能量噪声阈值的地板（能量阈 = max(评估秒数×该比例, 能量流量×ioErrorRatio)）。",
+                        "Side use: it also floors the REPLAY energy noise threshold (max(evaluation seconds × this ratio, energy flow × ioErrorRatio)).")
                 .defineInRange("intermediateRatio", 0.25, 0.0, 1.0);
         IO_ERROR_RATIO = builder
                 .comment(

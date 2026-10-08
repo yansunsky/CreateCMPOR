@@ -305,8 +305,19 @@ final class EvaluationAudit {
                 continue;
             }
             if (isOutputType && net > 0) {
+                // 与 REPLAY 的「回放-净产物」对称：RATE 此前两个方向都完全静默，
+                // 导致无法诊断"某个输入/产物是怎么来的、有多大"（熔岩案现场就卡在这里）。
+                CreateCMPOR.LOGGER.info("审计-净产物: {} net={}", key.signature(), net);
                 outputs.put(key, (double) net / elapsedTicks);
             } else if (net < 0) {
+                CreateCMPOR.LOGGER.info("审计-净原料: {} net={}", key.signature(), net);
+                // 与 REPLAY 同口径（0.5.1）：小额输入视为中间产物/噪声，不建通道。
+                // 不过滤的后果不是理论问题：RATE 会把"1 个物品的漂移"固化成永久输入槽
+                // （rate≈0.0167/s、容量保底 1）⇒ 工厂持 1 个、约 60 秒后耗尽并卡停。
+                if (belowIntermediateThreshold(-net, seconds)) {
+                    CreateCMPOR.LOGGER.info("审计-中间产物过滤: {} total={}", key.signature(), -net);
+                    continue;
+                }
                 inputs.put(key, (double) (-net) / elapsedTicks);
             }
         }
@@ -326,6 +337,28 @@ final class EvaluationAudit {
             inputs.merge(EvaluationTrace.FlowKey.item(entry.getKey()), entry.getValue(), Double::sum);
         }
         return new RateAudit(inputs, outputs, burner.normalDemandPerSecond(), burner.superDemandPerSecond());
+    }
+
+    /**
+     * 中间产物量级门槛（RATE 与 REPLAY <b>共用同一口径</b>）：
+     * 总量低于 {@code 评估秒数 × intermediateRatio} 的条目视为中间产物/噪声。
+     *
+     * <p><b>为什么合并成一个方法</b>：0.5.1 之前只有 REPLAY 读这个配置，导致同一房间
+     * 仅因判定模式不同（RATE / REPLAY）就得到不同的输入表——"模式判定"与"这条输入该不该存在"
+     * 本不该耦合。现在两条路径调用同一个方法，口径无法再各自漂移。</p>
+     *
+     * <p><b>旧写法的死条件</b>：REPLAY 原为
+     * {@code total < (long)(recordLength * ratio) && total < recordLength}。
+     * 但 {@code ratio ∈ [0,1]}（{@code Config.java} 声明为 0.0~1.0，NeoForge 会把越界值钳到边界），
+     * 故 {@code floor(L·r) ≤ L}：前一项成立必然推出后一项，第二项是死条件。
+     * 合并为单一比较，<b>不改变任何判定结果</b>。</p>
+     *
+     * <p><b>⚠️ 本门槛只作用于输入（不删产出）</b>，所以它是"少要一点输入"的方向：
+     * 把比例调大 = 允许小额真实原料不喂也能产出（评估欺骗面）。这是刻意保留的取舍，
+     * 用于压制"自产中间产物残留成零星输入需求 ⇒ 工厂缺料卡停"（见 docs/54）。</p>
+     */
+    static boolean belowIntermediateThreshold(long total, int seconds) {
+        return total < (long) (seconds * Config.INTERMEDIATE_RATIO.get());
     }
 
     /**
