@@ -64,6 +64,8 @@ final class EvaluationScheduler {
         EvaluationVerdict.Result result;
         boolean entityTickingApplied;
         Map<EvaluationTrace.FlowKey, Long> floorItems = Map.of();
+        /** 本分支的净化统计（非净化评估为 null）——只用于 S0 之后给发起人的那条结论提示。 */
+        EvaluationCleaner.Stats purificationStats;
         /**
          * T3：本分支（串行） / 本 lane（并行）激活 IO 方块时采集到的触发物品身份签名。
          * <p>去重、保持方块扫描顺序；由 {@code activateIoBlocks} 写入，随 {@link EvaluationVerdict.Result} 一并保存。</p>
@@ -239,6 +241,8 @@ final class EvaluationScheduler {
         }
         RoomInstance room = requireRoom(server, session);
         AABB bounds = room.boundaries().outerBounds();
+        // 净化启动棒：S0 扫描前清空副本容器残余物（必须在 scan 之前，否则 S0 仍带残留物）
+        state.purificationStats = applyPurification(session, target, bounds);
         state.s0 = EvaluationAudit.scan(target, bounds);
         EvaluationAudit.logInventory("S0", state.s0);
         String key = parallelTraceKey(branch);
@@ -273,6 +277,9 @@ final class EvaluationScheduler {
             }
         } else {
             beginParallelSampling(server, target, session, branch, state);
+        }
+        if (branch.index() == 0) {
+            deliverPurificationMessage(server, session, state.purificationStats, state.s0);
         }
         notifyOwner(server, session, Component.translatable(
                 "message.createcmpor.evaluation.evaluation_started",
@@ -376,6 +383,8 @@ final class EvaluationScheduler {
         }
         RoomInstance room = requireRoom(server, session);
         AABB bounds = room.boundaries().outerBounds();
+        // 净化启动棒：S0 扫描前清空副本容器残余物（必须在 scan 之前，否则 S0 仍带残留物）
+        state.purificationStats = applyPurification(session, target, bounds);
         // S0 初次扫描必须在 IO 激活前：代表房间"未开工"的初始态（防刷兜底基准，过滤中间产物用）
         state.s0 = EvaluationAudit.scan(target, bounds);
         EvaluationAudit.logInventory("S0", state.s0);
@@ -407,6 +416,7 @@ final class EvaluationScheduler {
         } else {
             beginSampling(server, target, session, state);
         }
+        deliverPurificationMessage(server, session, state.purificationStats, state.s0);
         notifyOwner(server, session, Component.translatable(
                 "message.createcmpor.evaluation.evaluation_started",
                 Config.EVALUATE_SECONDS.get(), warmupSeconds));
@@ -691,6 +701,113 @@ final class EvaluationScheduler {
             return Component.literal(EvaluationVerdict.VERDICT_REJECTED);
         }
         return reason.startsWith("message.") ? Component.translatable(reason) : Component.literal(reason);
+    }
+
+    /**
+     * 净化启动棒的入口：在 S0 扫描前清空副本房间内的容器残余物。
+     *
+     * <p>必须紧跟 S0 扫描之前调用（{@code tickStarting} / {@code tickParallelStarting}），
+     * 否则 S0 快照仍带残留物、简化路径不会触发。</p>
+     *
+     * <p><b>回退语义（整场统一）</b>：房间内有动态结构（机械动力装置）时放弃净化、按普通评估照常执行
+     * ——装置内部的库存本次不做清理，清出一半的房间会让 S0 非空、净化静默失效。
+     * 并行评估下每个 lane 都会执行一次本方法：检测结论与会话内的降级原因都是<b>会话级一次性</b>的
+     * （首个到达的 lane 写入、其余 lane 直接读到同一结论），所以不会出现"某条分支净化了、另一条没有"。</p>
+     *
+     * @return 净化统计（供 S0 之后下结论时引用）；非净化评估返回 {@code null}
+     */
+    private static EvaluationCleaner.Stats applyPurification(EvaluationSession session,
+                                                             ServerLevel target, AABB bounds) {
+        if (!session.purified()) {
+            return null;
+        }
+        CreateCMPOR.LOGGER.info("评估会话 {} 净化：开始清理副本容器残余物（维度 {}）",
+                session.id(), target.dimension().location());
+
+        if (Config.PURIFICATION_FALLBACK_ON_CONTRAPTION.get() && roomHasDynamicStructure(session, target, bounds)) {
+            session.setPurificationFallbackReason(Component.translatable(
+                    "message.createcmpor.evaluation.purification_fallback_contraption"));
+            CreateCMPOR.LOGGER.info("评估会话 {} 净化回退：房间内存在动态结构，按普通评估执行", session.id());
+            return EvaluationCleaner.Stats.none();
+        }
+
+        EvaluationCleaner.Stats stats = EvaluationCleaner.clean(
+                target, bounds, EvaluationCleaner.Policy.fromConfig(), EvaluationCleaner.Action.CLEAR_AND_RESTORE);
+        if (stats.hasLeftover()) {
+            session.setPurificationFallbackReason(Component.translatable(
+                    "message.createcmpor.evaluation.purification_fallback_leftover", stats.leftoverSummary()));
+            CreateCMPOR.LOGGER.warn("评估会话 {} 净化未完全生效（回退普通评估）：{}", session.id(), stats.leftoverSummary());
+        } else {
+            CreateCMPOR.LOGGER.info("评估会话 {} 净化完成：{}", session.id(), stats.summary());
+        }
+        return stats;
+    }
+
+    /**
+     * 房间内是否存在动态结构（机械动力装置 / 移动结构）。
+     *
+     * <p>判定语义是"房间内"而非"容器内"：装置可以停在房间任意位置，只查容器会漏判。
+     * "装置装配成功"等价于"世界里出现了装置实体"（装配那一刻方块被搬出世界、同时生成实体），
+     * 所以查装置实体即可，不需要再去逐个认轴承/活塞/滑轮。</p>
+     *
+     * <p><b>会话级一旦判定就不再改变</b>：并行评估每个 lane 各自查一遍，只要任一条 lane
+     * 查到装置，整场就按普通评估执行（见 {@link EvaluationSession#hasDynamicStructureDecision()}）。</p>
+     */
+    private static boolean roomHasDynamicStructure(EvaluationSession session, ServerLevel target, AABB bounds) {
+        if (Boolean.TRUE.equals(session.hasDynamicStructureDecision())) {
+            // 已经有分支发现装置 → 整场既定事实，后续 lane 连查都不用查
+            return true;
+        }
+        if (!DynamicStructureDetector.findIn(target, bounds).isEmpty()) {
+            session.markDynamicStructureFound();
+            return true;
+        }
+        session.markDynamicStructureAbsent();
+        return false;
+    }
+
+    /**
+     * 净化结果提示的送达点：S0 之后、开始提示之前（否则会被开始提示盖掉），每个会话只达一次。
+     *
+     * <p><b>为什么结论在这里才下</b>：能不能走"S0 全空简化路径"取决于 {@code s0.isEmpty()}
+     * （它还把燃烧室余热算在内），而不是取决于我们"自认为清干净了"。所以直到 S0 快照出来，
+     * 这条提示才敢下结论——否则会出现"提示说走了简化路径，实际没有"的假话。</p>
+     */
+    private static void deliverPurificationMessage(MinecraftServer server, EvaluationSession session,
+                                                   EvaluationCleaner.Stats stats,
+                                                   EvaluationAudit.InventorySnapshot s0) {
+        if (!session.purified() || session.isPurificationReported()) {
+            return;
+        }
+        session.markPurificationReported();
+
+        Component fallback = session.purificationFallbackReason();
+        if (fallback != null) {
+            notifyOwner(server, session, fallback);
+            return;
+        }
+        if (stats == null || s0 == null) {
+            return;
+        }
+        if (s0.isEmpty()) {
+            notifyOwner(server, session, Component.translatable(
+                    "message.createcmpor.evaluation.purified", stats.summary()));
+        } else {
+            // 清完了、S0 却还非空：说明有"清不掉的残余物"（典型是烈焰人燃烧室余热）
+            notifyOwner(server, session, Component.translatable(
+                    "message.createcmpor.evaluation.purification_fallback_leftover", s0LeftoverSummary(s0)));
+            CreateCMPOR.LOGGER.warn("评估会话 {} 净化后 S0 仍非空（退回完整三扫描）：{}",
+                    session.id(), s0LeftoverSummary(s0));
+        }
+    }
+
+    /** S0 非空的成分摘要（只给几个计数，足够定位到燃烧室/能量这一类）。 */
+    private static String s0LeftoverSummary(EvaluationAudit.InventorySnapshot s0) {
+        if (s0 == null) {
+            return "S0 快照缺失";
+        }
+        return "物品 " + s0.items().size() + " 种 / 流体 " + s0.fluids().size() + " 种 / 能量 " + s0.energy()
+                + " / 燃烧余热 " + (s0.normalBurnTicks() + s0.superBurnTicks()) + " tick";
     }
 
     private static void notifyOwner(MinecraftServer server, EvaluationSession session, Component message) {

@@ -6,6 +6,7 @@ import net.minecraft.core.HolderLookup;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtUtils;
+import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.Level;
@@ -64,6 +65,52 @@ public final class EvaluationSession {
     private final java.util.List<EvaluationVerdict.Result> branchResults = new java.util.ArrayList<>();
     /** 分支间清理标记：advanceBranch 后进入 CLEANING 是"正常分支间清理"；失败清理会清掉此标记。 */
     private boolean branchTransitionPending = false;
+    /**
+     * 净化评估标记：发起人用的是净化启动棒（详见 {@code EvaluationCleaner}）。
+     *
+     * <p>运行时会话状态（模块内可变），<b>不持久化</b>：评估本就不跨重启续跑
+     * （重启走 cleanup-first 回滚），净化标志随会话一起消失即可，无需进 NBT。</p>
+     */
+    private boolean purified = false;
+    /** 净化结果是否已报告（并行 lane 去重；运行期状态，不持久化）。 */
+    private boolean purificationReported = false;
+    /**
+     * 待送达的净化降级原因（见 {@link #purificationFallbackReason()}）。
+     */
+    private Component purificationFallbackReason;
+
+    /**
+     * 净化评估的"房间内有动态结构"会话级判定（{@code null} = 还没有分支作出判定）。
+     *
+     * <p>并行评估每个 lane 是独立维度、各自跑一遍检测，理论上结论一致；
+     * 但装配是延迟一 tick 的、lane 的 tick 时序也可能不同，于是存在某条 lane
+     * 检测不到而另一条检测到的窗口。这里把它钉成会话级既定事实：
+     * <b>任一条 lane 发现装置，整场就按普通评估执行</b>——同一根净化棒、同一次评估，
+     * 不该出现"分支 1 净化了、分支 2 没净化"这种口径分裂。</p>
+     */
+    private Boolean hasDynamicStructure;
+
+    public Boolean hasDynamicStructureDecision() {
+        return hasDynamicStructure;
+    }
+
+    /**
+     * 记录"房间内有动态结构"的判定，<b>只会上调不会下调</b>。
+     *
+     * <p>并行评估的多个 lane 可能落在<b>同一个 tick</b> 各自判定，若允许互相覆盖，
+     * 一条 lane 的"有"会被另一条同 tick 的"无"冲掉。粘性写入保证
+     * "任一 lane 发现装置 ⇒ 整场按普通评估执行"这条语义是硬保证。</p>
+     */
+    public void markDynamicStructureFound() {
+        this.hasDynamicStructure = Boolean.TRUE;
+    }
+
+    /** 记录"本 lane 未发现动态结构"；已经判为"有"时不会被覆盖。 */
+    public void markDynamicStructureAbsent() {
+        if (this.hasDynamicStructure == null) {
+            this.hasDynamicStructure = Boolean.FALSE;
+        }
+    }
     /** 并行评估退回串行的原因；null 表示源内容允许并行。 */
     private String serialFallbackReason;
     /** 真正并行模式下的独立分支事务；未初始化时为空。 */
@@ -138,6 +185,39 @@ public final class EvaluationSession {
         return launcherReturnEligible;
     }
 
+    /** 本次评估是否为净化评估（净化启动棒发起）。 */
+    public boolean purified() {
+        return purified;
+    }
+
+    public void setPurified(boolean purified) {
+        this.purified = purified;
+    }
+
+    /** 净化结果是否已向发起人报告（并行 lane 各跑一次净化，靠它去重）。 */
+    public boolean isPurificationReported() {
+        return purificationReported;
+    }
+
+    public void markPurificationReported() {
+        this.purificationReported = true;
+    }
+
+    /**
+     * 净化评估降级为普通评估的原因（null = 净化正常）。
+     *
+     * <p>为什么不在净化那一刻直接发提示：那一刻的提示会被紧接着的
+     * "评估开始：采样 N 秒（预热 N 秒）"盖掉，玩家根本看不清。改为暂存，
+     * 由 S0 扫描完成后与开始提示相邻送达。</p>
+     */
+    public Component purificationFallbackReason() {
+        return purificationFallbackReason;
+    }
+
+    public void setPurificationFallbackReason(Component reason) {
+        this.purificationFallbackReason = reason;
+    }
+
     public EvaluationManifest manifest() {
         return manifest;
     }
@@ -207,6 +287,9 @@ public final class EvaluationSession {
         tag.putString("rollback_message_key", rollbackMessageKey);
         tag.putBoolean("factory_installed", factoryInstalled);
         tag.putBoolean("clean_target_on_cancel", cleanTargetOnCancel);
+        // 净化标志必须落盘：启动棒是在会话移除之后才退还的（addPendingLauncherReturn → 玩家上线/轮询时发放），
+        // 那时已经读不到会话了；不写这里，用净化棒评估完拿回来的会是普通启动棒（道具掉级）。
+        tag.putBoolean("purified", purified);
         tag.putInt("branch_index", branchIndex);
         tag.putInt("branch_count", branchCount);
         if (serialFallbackReason != null) {
@@ -261,6 +344,7 @@ public final class EvaluationSession {
                 rollbackMessageKey,
                 tag.getBoolean("factory_installed"));
         session.cleanTargetOnCancel = tag.getBoolean("clean_target_on_cancel");
+        session.purified = tag.getBoolean("purified");
         session.branchIndex = tag.getInt("branch_index");
         session.branchCount = Math.max(1, tag.getInt("branch_count"));
         session.serialFallbackReason = tag.contains("serial_fallback_reason")

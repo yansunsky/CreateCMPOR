@@ -224,6 +224,40 @@ public class Config {
      */
     public static final ModConfigSpec.IntValue PREVIEW_ENTITY_TABLE_MAX_KB;
 
+    /** 净化启动棒的清理范围模式。 */
+    public enum PurificationClearMode {
+        /** 无条件：清理判定为「容器」的一切（含白/黑名单之外的自定义容器）。 */
+        ALL,
+        /** 仅白名单（默认）：只清 {@link #PURIFICATION_WHITELIST} 里的方块。 */
+        WHITELIST,
+        /** 仅黑名单：清一切容器，但跳过 {@link #PURIFICATION_BLACKLIST} 里的方块。 */
+        BLACKLIST
+    }
+
+    /**
+     * 净化启动棒：是否允许使用（允许时评估开始时按下面的模式清理副本容器残余物）。
+     * Purification launcher: whether it may be used (clears leftover container contents in the replica).
+     */
+    public static final ModConfigSpec.BooleanValue ENABLE_PURIFICATION;
+
+    /**
+     * 净化启动棒的清理范围模式（ALL / WHITELIST / BLACKLIST）。
+     * <p>默认 {@code WHITELIST}：只清机械动力那批「物流/处理缓冲」方块里的东西。</p>
+     */
+    public static final ModConfigSpec.EnumValue<PurificationClearMode> PURIFICATION_CLEAR_MODE;
+
+    /** 净化白名单：{@code WHITELIST} 模式下会被清理残余物的方块 ID。 */
+    public static final ModConfigSpec.ConfigValue<List<? extends String>> PURIFICATION_WHITELIST;
+
+    /** 净化豁免名单：{@code BLACKLIST} 模式下被跳过的方块 ID（其余容器照清）。 */
+    public static final ModConfigSpec.ConfigValue<List<? extends String>> PURIFICATION_BLACKLIST;
+
+    /**
+     * 净化评估时若房间内检测到动态结构（机械动力装置/移动结构）是否**回退为普通评估**。
+     * <p>装置内部的库存本次不做清理，故默认 {@code true}：检测到就放弃净化、按普通评估照常执行。</p>
+     */
+    public static final ModConfigSpec.BooleanValue PURIFICATION_FALLBACK_ON_CONTRAPTION;
+
     /** 微缩预览快照的同步模式。 */
     public enum PreviewSyncMode {
         /** 快照随方块实体 NBT 一起发（0.4.19 及以前的行为）。 */
@@ -454,6 +488,100 @@ public class Config {
                         "允许观察评估副本的权限等级（0=所有玩家，2=仅管理员）。",
                         "Permission level required to observe an evaluation replica (0 = everyone, 2 = operators only).")
                 .defineInRange("observationPermissionLevel", 0, 0, 4);
+        builder.pop();
+
+        builder.comment(
+                "净化启动棒：评估开始时清理副本房间内的容器残余物（0.5.2）",
+                "Purification launcher: clear leftover container contents in the replica at evaluation start (0.5.2)").push("purification");
+        ENABLE_PURIFICATION = builder
+                .comment(
+                        "是否允许使用净化启动棒。",
+                        "Whether the purification launcher stick may be used.",
+                        "true（默认）：手持净化启动棒右键机器 → 评估开始前清空副本房间内的容器残余物，",
+                        "true (default): right-click the machine with the purification stick; the replica's containers",
+                        "随后走既有的「S0 全空简化路径」（只用 IO 追踪的输入/输出，不做 S1/S2 容器净平衡）。",
+                        "are emptied first, so the existing \"empty S0 simplification path\" is used instead.",
+                        "false：净化启动棒等同于普通启动棒（仍可合成/持有，但不清理）。",
+                        "false: the purification stick behaves exactly like the normal launcher (no clearing).")
+                .define("enablePurification", true);
+        PURIFICATION_CLEAR_MODE = builder
+                .comment(
+                        "清理范围模式。",
+                        "Clearing scope mode.",
+                        "ALL：无条件清一切判定为容器的方块（含自定义模组容器）。",
+                        "ALL: unconditionally clear every block detected as a container.",
+                        "WHITELIST（默认）：只清 purificationWhitelist 里的方块。",
+                        "WHITELIST (default): clear only the blocks listed in purificationWhitelist.",
+                        "BLACKLIST：清一切容器，但跳过 purificationBlacklist 里的方块。",
+                        "BLACKLIST: clear every container except the blocks listed in purificationBlacklist.",
+                        "无论哪种模式，掉落物实体一律清理；烈焰人燃烧室的预存余热本次不清理",
+                        "（Create 无公开的清零 API），故房间里有带余热的燃烧室时 S0 仍可能非空 → 自动退回完整三扫描。",
+                        "In every mode dropped items are always cleared. Blaze burner pre-stored heat is NOT cleared",
+                        "for now (Create exposes no public API); a heated burner can therefore keep S0 non-empty,",
+                        "in which case the evaluation silently falls back to the full three-scan path.")
+                .defineEnum("purificationClearMode", PurificationClearMode.WHITELIST);
+        PURIFICATION_WHITELIST = builder
+                .comment(
+                        "净化白名单（WHITELIST 模式的清理对象）：机械动力的物流/处理缓冲方块。",
+                        "Purification whitelist (cleared in WHITELIST mode): Create logistics / processing buffers.",
+                        "为什么默认只清这一批：它们是「评估期间吃进原料、留下半成品」的地方，",
+                        "Why only these by default: they are where raw materials are consumed and half-products",
+                        "也就是调试时最容易残留、最会污染三扫描基线的东西。",
+                        "left behind, i.e. the most common leftovers that pollute the scan baseline.",
+                        "自定义模组容器请用 purificationClearMode = ALL，或把方块 ID 加进本表。",
+                        "For custom mod containers use purificationClearMode = ALL or add the block ids here.")
+                .defineListAllowEmpty("purificationWhitelist",
+                        List.of(
+                                "create:belt",
+                                "create:chute",
+                                "create:smart_chute",
+                                "create:depot",
+                                "create:weighted_ejector",
+                                "create:andesite_funnel",
+                                "create:brass_funnel",
+                                "create:andesite_tunnel",
+                                "create:brass_tunnel",
+                                "create:item_hatch",
+                                "create:packager",
+                                "create:repackager",
+                                "create:package_frogport",
+                                "create:stock_link",
+                                "create:stock_ticker",
+                                "create:portable_storage_interface",
+                                "create:redstone_requester",
+                                "create:basin",
+                                "create:spout",
+                                "create:item_drain",
+                                "create:crushing_wheel",
+                                "create:millstone",
+                                "create:mechanical_press",
+                                "create:mechanical_mixer",
+                                "create:mechanical_saw",
+                                "create:deployer",
+                                "create:item_vault",
+                                "create:fluid_tank"),
+                        value -> value instanceof String);
+        PURIFICATION_BLACKLIST = builder
+                .comment(
+                        "净化豁免名单（BLACKLIST 模式下被跳过的方块）。",
+                        "Purification exemption list (blocks skipped in BLACKLIST mode).",
+                        "默认空。用途：切到 BLACKLIST（清一切自定义容器）后，把不想被清的本模组/他模组方块填进来。",
+                        "Empty by default: switch to BLACKLIST, then list blocks you do not want cleared.")
+                .defineListAllowEmpty("purificationBlacklist", List.of(), value -> value instanceof String);
+        PURIFICATION_FALLBACK_ON_CONTRAPTION = builder
+                .comment(
+                        "净化评估时检测到房间内有动态结构（机械动力装置/移动结构）是否回退为普通评估。",
+                        "Whether the purification evaluation falls back to a normal evaluation when a moving",
+                        "structure (a Create contraption) is found in the room.",
+                        "true（默认）：放弃清理、按普通评估照常执行，并提示发起人原因。",
+                        "true (default): skip the clearing, run a normal evaluation and tell the initiator why.",
+                        "为什么：装置内部的库存要跟方块库存双向同步，本次不做支持；",
+                        "Why: a contraption's cargo must be kept in sync with its block inventory, which is not",
+                        "与其清出「半净化」的房间（S0 非空 → 净化静默失效），不如明确回退。",
+                        "supported yet. A half-purified room would silently disable the whole feature.",
+                        "false：忽略动态结构继续清理（S0 可能因此非空）。",
+                        "false: clear anyway (S0 may stay non-empty because of the contraption's cargo).")
+                .define("purificationFallbackOnContraption", true);
         builder.pop();
 
         builder.comment(

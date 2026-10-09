@@ -19,6 +19,7 @@ public class ModCreativeTabs {
                     .icon(() -> ModItems.IO_EXTENSION.get().getDefaultInstance())
                     .displayItems((parameters, output) -> {
                         output.accept(ModItems.LAUNCHER_STICK.get());
+                        output.accept(ModItems.PURIFICATION_STICK.get());
                         output.accept(ModItems.IO_EXTENSION.get());
                         output.accept(ModItems.FACTORY.get());
                         output.accept(ModItems.INPUT.get());

@@ -15,6 +15,7 @@ import com.yansunsky.createcmpor.evaluation.EvaluationSavedData;
 import com.yansunsky.createcmpor.evaluation.EvaluationSession;
 import com.yansunsky.createcmpor.evaluation.FactoryIndexSavedData;
 import com.yansunsky.createcmpor.evaluation.ParallelEvaluationWorlds;
+import com.yansunsky.createcmpor.evaluation.PurificationCommandFacade;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
@@ -97,7 +98,16 @@ public final class EvalWorldCommands {
                         .then(Commands.literal("entities")
                                 .executes(context -> showEntitySizes(context.getSource())))
                         .then(Commands.literal("bumprev")
-                                .executes(context -> bumpPreviewRev(context.getSource())))));
+                                .executes(context -> bumpPreviewRev(context.getSource()))))
+                .then(Commands.literal("clean")
+                        .then(Commands.argument("room", StringArgumentType.word())
+                                .executes(context -> PurificationCommandFacade.cleanRoom(
+                                        context.getSource(),
+                                        StringArgumentType.getString(context, "room"), false))
+                                .then(Commands.literal("execute")
+                                        .executes(context -> PurificationCommandFacade.cleanRoom(
+                                                context.getSource(),
+                                                StringArgumentType.getString(context, "room"), true))))));
     }
 
     /**

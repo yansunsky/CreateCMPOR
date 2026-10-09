@@ -2,6 +2,7 @@ package com.yansunsky.createcmpor.mixin;
 
 import com.yansunsky.createcmpor.evaluation.EvaluationManager;
 import com.yansunsky.createcmpor.init.ModItems;
+import com.yansunsky.createcmpor.item.LauncherStickItem;
 import dev.compactmods.machines.machine.block.BoundCompactMachineBlock;
 import dev.compactmods.machines.machine.block.BoundCompactMachineBlockEntity;
 import net.minecraft.core.BlockPos;
@@ -36,7 +37,7 @@ public class BoundCompactMachineBlockMixin {
 
         String roomCode = machine.connectedRoom();
         GlobalPos machinePos = GlobalPos.of(level.dimension(), pos);
-        boolean launcher = stack.is(ModItems.LAUNCHER_STICK.get());
+        boolean launcher = stack.getItem() instanceof LauncherStickItem;
 
         if (level.isClientSide) {
             if (launcher) {

@@ -42,6 +42,13 @@ public class EvaluatorBlockEntity extends RoomCodeBlockEntity implements IHaveGo
     @Nullable
     private UUID ownerId;
     private boolean launcherReturnEligible;
+    /**
+     * 本次评估由净化启动棒发起（决定最终退还哪一根棒子）。
+     *
+     * <p>为什么存在方块实体上：会话（{@code EvaluationSession}）会在退还之前就被移除，
+     * 而孤立方块恢复路径只能读到这里的数据。不记这一位，玩家用净化棒评估完会拿回普通启动棒。</p>
+     */
+    private boolean purifiedLauncher;
     @Nullable
     private CompoundTag originalMachineState;
     @Nullable
@@ -59,11 +66,17 @@ public class EvaluatorBlockEntity extends RoomCodeBlockEntity implements IHaveGo
         super(ModBlockEntities.EVALUATOR.get(), pos, state);
     }
 
-    public void initialize(UUID sessionId, UUID ownerId, boolean launcherReturnEligible,
+    /**
+     * 安装评估方块时登记本次事务。
+     *
+     * @param purifiedLauncher 本次是否由净化启动棒发起 —— 决定最终退还哪一根棒子
+     */
+    public void initialize(UUID sessionId, UUID ownerId, boolean launcherReturnEligible, boolean purifiedLauncher,
                            String roomCode, BlockState originalState, CompoundTag beNbt) {
         this.sessionId = sessionId;
         this.ownerId = ownerId;
         this.launcherReturnEligible = launcherReturnEligible;
+        this.purifiedLauncher = purifiedLauncher;
         this.roomCode = roomCode;
         originalMachineState = NbtUtils.writeBlockState(originalState);
         savedOriginalNbt = beNbt.copy();
@@ -71,6 +84,12 @@ public class EvaluatorBlockEntity extends RoomCodeBlockEntity implements IHaveGo
         // 评估方块装上即进入"准备中"，等待调度器切换预热/采样
         setStage(EvaluationStage.PREPARING, 0);
     }
+
+    /** 本次评估是否由净化启动棒发起（决定退还哪一根棒子）。 */
+    public boolean isPurifiedLauncher() {
+        return purifiedLauncher;
+    }
+
 
     @Nullable
     public UUID getSessionId() {
@@ -193,6 +212,7 @@ public class EvaluatorBlockEntity extends RoomCodeBlockEntity implements IHaveGo
         sessionId = tag.hasUUID("session_id") ? tag.getUUID("session_id") : null;
         ownerId = tag.hasUUID("owner_id") ? tag.getUUID("owner_id") : null;
         launcherReturnEligible = tag.getBoolean("launcher_return_eligible");
+        purifiedLauncher = tag.getBoolean("purified_launcher");
         originalMachineState = tag.contains("original_machine_state")
                 ? tag.getCompound("original_machine_state").copy()
                 : null;
@@ -220,6 +240,7 @@ public class EvaluatorBlockEntity extends RoomCodeBlockEntity implements IHaveGo
             tag.putUUID("owner_id", ownerId);
         }
         tag.putBoolean("launcher_return_eligible", launcherReturnEligible);
+        tag.putBoolean("purified_launcher", purifiedLauncher);
         if (originalMachineState != null) {
             tag.put("original_machine_state", originalMachineState.copy());
         }

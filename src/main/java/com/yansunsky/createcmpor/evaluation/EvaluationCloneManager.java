@@ -1053,7 +1053,7 @@ public final class EvaluationCloneManager {
         if (session.factoryInstalled()) {
             // 固化收尾：工厂保留（还原数据在工厂 BE 内），删除会话、退还启动棒、释放房间锁
             if (session.launcherReturnEligible()) {
-                data.addPendingLauncherReturn(session.id(), session.owner());
+                data.addPendingLauncherReturn(session.id(), session.owner(), session.purified());
             }
             data.remove(session.id());
             // 成功路径（固化完成）同样必须把观察者送出：否则会滞留在评估副本里

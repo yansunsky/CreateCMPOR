@@ -2,6 +2,7 @@ package com.yansunsky.createcmpor.init;
 
 import com.yansunsky.createcmpor.CreateCMPOR;
 import com.yansunsky.createcmpor.item.LauncherStickItem;
+import com.yansunsky.createcmpor.item.PurificationStickItem;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.neoforged.bus.api.IEventBus;
@@ -37,6 +38,9 @@ public class ModItems {
 
     public static final DeferredItem<LauncherStickItem> LAUNCHER_STICK =
             ITEMS.register("launcher_stick", () -> new LauncherStickItem(new Item.Properties().stacksTo(1)));
+
+    public static final DeferredItem<PurificationStickItem> PURIFICATION_STICK =
+            ITEMS.register("purification_stick", () -> new PurificationStickItem(new Item.Properties().stacksTo(1)));
 
     public static void register(IEventBus modEventBus) {
         ITEMS.register(modEventBus);

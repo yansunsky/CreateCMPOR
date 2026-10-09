@@ -1,5 +1,6 @@
 package com.yansunsky.createcmpor.evaluation;
 
+import com.yansunsky.createcmpor.Config;
 import com.yansunsky.createcmpor.CreateCMPOR;
 import com.yansunsky.createcmpor.block.EvaluatorBlockEntity;
 import com.yansunsky.createcmpor.block.FactoryBlockEntity;
@@ -90,6 +91,17 @@ public final class EvaluationManager {
                     session.originalState(), session.originalBlockEntityNbt(), false);
         }
         session.setBranchCount(parallelBranchCount(server, roomCode));
+        // 净化评估：发起人用的是净化启动棒（配置关闭时等同普通启动棒，不留痕迹）
+        boolean purificationEnabled;
+        try {
+            purificationEnabled = Config.ENABLE_PURIFICATION.get();
+        } catch (RuntimeException ignored) {
+            purificationEnabled = true;
+        }
+        if (purificationEnabled && launcher.is(ModItems.PURIFICATION_STICK.get())) {
+            session.setPurified(true);
+            CreateCMPOR.LOGGER.info("评估会话 {} 为净化评估（发起人 {}）", session.id(), player.getGameProfile().getName());
+        }
         data.put(session);
         try {
             flushTransactions(server);
@@ -436,7 +448,7 @@ public final class EvaluationManager {
         if (!(level.getBlockEntity(pos) instanceof EvaluatorBlockEntity evaluator)) {
             throw new IllegalStateException("评估方块实体未创建");
         }
-        evaluator.initialize(session.id(), session.owner(), session.launcherReturnEligible(),
+        evaluator.initialize(session.id(), session.owner(), session.launcherReturnEligible(), session.purified(),
                 session.roomCode(), session.originalState(), session.originalBlockEntityNbt());
     }
 
@@ -522,7 +534,8 @@ public final class EvaluationManager {
             return;
         }
         EvaluationSavedData data = EvaluationSavedData.get(server);
-        data.addPendingLauncherReturn(evaluator.getSessionId(), evaluator.getOwnerId());
+        data.addPendingLauncherReturn(evaluator.getSessionId(), evaluator.getOwnerId(),
+                evaluator.isPurifiedLauncher());
         flushTransactions(server);
         ServerPlayer owner = server.getPlayerList().getPlayer(evaluator.getOwnerId());
         if (owner != null) {
@@ -605,7 +618,7 @@ public final class EvaluationManager {
         rollbackWrites.remove(session.id());
 
         if (session.launcherReturnEligible()) {
-            data.addPendingLauncherReturn(session.id(), session.owner());
+            data.addPendingLauncherReturn(session.id(), session.owner(), session.purified());
         }
         data.remove(session.id());
         // 会话结束：把仍在观察该副本的玩家送出并恢复其游戏模式（自愈兜底，防遗留观察者）
@@ -682,12 +695,16 @@ public final class EvaluationManager {
 
     static void deliverPendingLaunchers(ServerPlayer player, EvaluationSavedData data) {
         boolean inventoryChanged = false;
-        for (UUID sessionId : data.pendingLauncherReturns(player.getUUID()).keySet()) {
+        for (Map.Entry<UUID, EvaluationSavedData.PendingLauncher> entry
+                : data.pendingLauncherReturns(player.getUUID()).entrySet()) {
+            UUID sessionId = entry.getKey();
             if (!hasLauncherTransaction(player, sessionId)) {
                 data.removePendingLauncherReturn(sessionId);
                 continue;
             }
-            ItemStack launcher = new ItemStack(ModItems.LAUNCHER_STICK.get());
+            // 退还当初那一种棒子：用净化棒发起就还净化棒（否则等于把玩家的道具降级成普通启动棒）
+            ItemStack launcher = new ItemStack(entry.getValue().purified()
+                    ? ModItems.PURIFICATION_STICK.get() : ModItems.LAUNCHER_STICK.get());
             if (!player.getInventory().add(launcher)) {
                 player.displayClientMessage(
                         Component.translatable("message.createcmpor.evaluation.launcher_inventory_full"), false);
