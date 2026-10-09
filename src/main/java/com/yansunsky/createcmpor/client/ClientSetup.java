@@ -154,8 +154,9 @@ public class ClientSetup {
                 .skipVanillaRender(be -> false)
                 .apply();
 
+        // 应力输入方块**只从 FACING 面接轴** ⇒ 必须用半轴；用全长的 shaft() 会从背面捅出一截。
         SimpleBlockEntityVisualizer.<StressInputBlockEntity>builder(ModBlockEntities.STRESS_INPUT.get())
-                .factory(SingleAxisRotatingVisual::shaft)
+                .factory(SingleSidedShaftVisual.of())
                 .skipVanillaRender(be -> false)
                 .apply();
 
