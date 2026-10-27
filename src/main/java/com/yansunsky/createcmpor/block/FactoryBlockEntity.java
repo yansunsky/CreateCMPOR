@@ -1040,6 +1040,10 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
     @Override
     public void tick() {
         super.tick();
+        // 应力重报欠账必须在任何网络迭代之外兑现，且要早于下面所有早退分支
+        // （installed 为假 / 无转速暂停 都会 return，放在它们之后会让欠账永不兑现）。
+        // 位置要求见 flushStressReport() 的注释：这里是"super.tick() 已返回、尚未进入任何 sync()"的安全点。
+        flushStressReport();
         if (level == null || level.isClientSide || !installed) {
             return;
         }
@@ -2762,17 +2766,59 @@ public class FactoryBlockEntity extends GeneratingKineticBlockEntity
     }
 
     /**
-     * 转速变化后主动向网络重报应力数据。
+     * 转速变化后<b>标记</b>需要向网络重报应力数据（0.5.4 起改为延迟兑现）。
      *
-     * <p>原因：Create 的 {@code KineticNetwork.add()} 只在方块加入网络时调用一次
+     * <p><b>为什么需要重报</b>：Create 的 {@code KineticNetwork.add()} 只在方块加入网络时调用一次
      * {@code calculateStressApplied()} 存入 members——静态 impact（BlockStressValues）没问题，
      * 但工厂的动态 impact（inputSU/|speed|）在被动接入时 add 发生在 speed 设置之前，
      * speed=0 导致 members 存 0 且此后无人重算（{@code updateStressFor} 只有源方块会调）。
-     * 这里对齐 GeneratingKineticBlockEntity 的自报模式，在速度变化后重新上报。
+     * 所以必须对齐 {@code GeneratingKineticBlockEntity} 的自报模式，在速度变化后重新上报。
+     *
+     * <p><b>⚠️ 为什么不能在这里同步上报（0.5.4 崩溃修复）</b>：本方法会被 Create
+     * {@code KineticBlockEntity.updateFromNetwork} 在 {@code overStressed} 翻转时回调，而它的调用者
+     * {@code KineticNetwork.sync()} 正在 {@code for (be : members.keySet())} 遍历 members：
+     * <pre>
+     * sync():99 → updateFromNetwork():163-168 → onSpeedChanged()
+     *   → updateStressFor() → updateStress() → calculateStress()
+     *     → iterator.remove()   ← 对 members 结构性修改 ⇒ 外层迭代器失效 ⇒ CME
+     * </pre>
+     * 而 {@code calculateStress()} 里的 {@code iterator.remove()} 是 Create 的 stale 清理：判据
+     * {@code be.getLevel().getBlockEntity(be.getBlockPos()) != be}。区块卸载时
+     * {@code SmartBlockEntity.setRemoved()} 因 {@code chunkUnloaded} 为真而<b>跳过</b>
+     * {@code remove()}，旧 BE 实例因此滞留在 members 中——这就是区块加载后首次 sync 会走到
+     * 清理分支的原因，也是线上 CME 的现场。
+     *
+     * <p>⇒ 这里<b>只置脏标记</b>，真正上报由 {@link #flushStressReport()} 在 {@code tick()} 中
+     * {@code super.tick()} 之后执行——那一刻一定不在任何网络迭代过程中。
+     * 代价是应力聚合最多晚 1 tick（超载判定随之抖动一帧），不影响 20 tick 周期的量级。
      */
     @Override
     public void onSpeedChanged(float previousSpeed) {
         super.onSpeedChanged(previousSpeed);
+        if (level == null || level.isClientSide || !hasNetwork()) {
+            return;
+        }
+        stressReportPending = true;
+    }
+
+    /** 是否有一笔"转速已变、应力待重报"的欠账（纯瞬时状态，不落盘）。 */
+    private boolean stressReportPending;
+
+    /**
+     * 兑现 {@link #onSpeedChanged(float)} 记下的重报欠账。
+     *
+     * <p><b>只能在 tick() 里、且在任何网络迭代之外调用</b>——它内部会走
+     * {@code updateCapacityFor}/{@code updateStressFor}，两者都可能触发
+     * {@code calculateCapacity()}/{@code calculateStress()} 的 stale 清理（结构性修改）。
+     *
+     * <p>自守卫：{@code stressReportPending} 在入口即清零，即使内部再被回调
+     * （{@code sync()} 会回调其他成员的 {@code onSpeedChanged}）也不会重入本方法。
+     */
+    private void flushStressReport() {
+        if (!stressReportPending) {
+            return;
+        }
+        stressReportPending = false;
         if (level == null || level.isClientSide || !hasNetwork()) {
             return;
         }
