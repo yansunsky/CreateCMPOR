@@ -2,7 +2,7 @@
 
 > Create（机械动力）× CompactMachines 平行房间评估系统
 > Minecraft 1.21.1 · NeoForge 21.1.x · Create 6.0.10-281 · CompactMachines 7.0.81
-> 当前版本：**0.4.27**
+> 当前版本：**0.5.5**
 
 ## 简介
 
@@ -24,9 +24,30 @@ CreateCMPOR 是一个附属模组，把 [Create（机械动力）](https://githu
 5. 评估方块固化为**工厂方块**：按录得模式持续吞吐，可通过漏斗等物流接入。
 6. 手持启动棒右键工厂，可还原为原 CompactMachines 机器。
 
+### 净化启动棒（0.5.2+）
+
+房间里难免有上次调试留下的残渣。三扫描早就有一条「房间初始全空 → 只按实测流量结算」的简化路径，但只要有遗留物就永远走不到。
+
+**净化启动棒**（红色，5 根木棍摆成倒置启动棒形状）在评估开始前清空**副本**里的容器残留物——原房间完全不动，只动那个用完即弃的副本。清完之后评估稳定落入「全空简化路径」。
+
+- 清理范围由 `[purification]` 段控制：`purificationClearMode` = `WHITELIST`（默认，只清 Create 物流/处理缓冲）/ `ALL`（所有容器）/ `BLACKLIST`（除名单外全清）。掉落物始终清理。
+- 过滤器物品不受影响——它们存在物品组件里，不在容器库存里。
+- 房间里若有移动装置（Create contraption）或某个容器清不掉，会自动退回普通评估并在聊天栏说明，不会假装成功。
+- `/ccmpor clean <房号> [execute]`：默认**只报告不动手**（列出会清什么），加 `execute` 才真清。作用于源房间，即冷冻克隆之前。
+- 用完退还**同种**棒子（0.5.2 之前会降级退成普通启动棒）。
+- `enablePurification = false` 整体关闭。
+
+> **已知限制**：烈焰人燃烧室的**余热不清**。房间里有烧过的燃烧室时 S0 仍非空，净化无法生效，会自动退回完整评估并在聊天栏说明。评估前把燃烧室烧空即可。
+
 ### 并行空间输入方块（多工厂评估）
 
 在房间里放置**并行空间输入方块**（`parallel_input_block`），与普通输入方块一样用物品右键配置白名单。一次评估会**按白名单物品逐个分支评估**（每个分支只暴露该物品采样），评估完成后在机器位置**垂直向上固化 N 个工厂方块**（N = 白名单物品数）。重叠方块会被破坏掉落——但**不可破坏方块（如基岩）会在评估开始前就被预检测拦截**（生存模式无法移动它们）。组内每个工厂的护目镜 tooltip 都显示**房间号**与**同类工厂数量**，右键任一个成员会**整组还原**（其余成员消失不掉落）。
+
+### 单一固化工厂 + 互斥模式表（0.5.0+）
+
+一次评估现在只固化**一个**工厂方块，它内部带一张**互斥模式表**：同一时刻至多有一个模式在产出，按输入/燃料/输出的实际情况自动切换。这样既保住了多种产物的复刻，又堵住了「廉价垃圾 + 并行方块复制产线」这类刷取漏洞。
+
+护目镜会显示当前生效的是哪个模式；模式切换有 1 包/秒的限流同步，机器交替投料也不会刷包。
 
 ## 工厂微缩预览（0.4.0+）
 
@@ -54,7 +75,8 @@ CreateCMPOR 是一个附属模组，把 [Create（机械动力）](https://githu
 | 方块 | 说明 |
 |------|------|
 | **平行评估启动棒**（`launcher_stick`） | 右键房间机器开始评估；右键工厂可还原为原机器。 |
-| **工厂方块**（`factory_block`） | 评估结果落点。默认「展示形态」：方块内渲染正在运转的**微缩产线**（见上节）。手持安山机壳右键切成传统机壳外形（六面用扳手按面开关应力接口），手持边框玻璃右键撤掉自带罩子。按 RATE/REPLAY 模式复刻产线，自带输入/输出缓存。 |
+| **净化启动棒**（`purification_stick`） | 右键房间机器开始评估，但**先把副本里的容器残留物清空**，让评估稳定落入「全空简化路径」。原房间不受影响。见上文。 |
+| **工厂方块**（`factory_block`） | 评估结果落点。默认「展示形态」：方块内渲染正在运转的**微缩产线**（见上节）。手持安山机壳右键切成传统机壳外形（六面用扳手按面开关应力接口），手持边框玻璃右键撤掉自带罩子。按 RATE/REPLAY 模式复刻产线，自带输入/输出缓存，内部带互斥模式表。 |
 | **IO 拓展方块**（`io_extension`） | 像普通传动轴一样接入 Create 应力网络。**轴向两端**为应力接口面（贴工厂开口面/接传动杆/轴向相连其他拓展方块）；**非轴向四面**把链上触达的工厂的物品/流体/能量缓存（输入+输出）拓展到此处（直接指向工厂自身缓存，不复制物品）。若轴向两端同时连到两个工厂缓存，自动破坏自身防止物品复制漏洞。 |
 | **并行空间输入方块**（`parallel_input_block`） | 与输入方块类似，但白名单里每个物品成为一个评估分支，每个分支固化一个工厂（垂直堆叠）。 |
 | **应力输入方块**（`stress_input`） | 房间内，评估期激活作为应力源，驱动内部机器以测得真实应力消耗。右键拖拽注记框可调转速/转向（-256~+256 RPM，默认 16）。 |
@@ -71,7 +93,7 @@ CreateCMPOR 是一个附属模组，把 [Create（机械动力）](https://githu
 | `devManualActivation` | `false` | 开发期是否允许空手右键手动切换应力 IO 方块（生产默认关闭） |
 | `stressLossFactor` | `0.1` | 应力输出损耗系数（0~1） |
 | `enableInventoryAudit` | `true` | 是否启用评估前后库存守恒审计 |
-| `suspiciousMods` | `["ae2","refinedstorage"]` | 不可审计存储方块的模组 ID |
+| `suspiciousMods` | `[]` | 不可审计存储方块的模组 ID（**默认空**，需要时自行加入） |
 | `suspiciousBlocks` | `[]` | 明确禁止进入评估的方块 ID |
 | `suspiciousItems` | `[]` | 明确禁止进入评估的物品 ID |
 | `maxConcurrentEvaluations` | `4` | 同时克隆副本的评估会话上限 |
@@ -79,17 +101,29 @@ CreateCMPOR 是一个附属模组，把 [Create（机械动力）](https://githu
 | `recordStart` | `60` | 评估开始时的预热秒数（不计入结果） |
 | `evaluationMode` | `["AUTO"]` | 评估模式：AUTO / FORCE_RATE / FORCE_REPLAY |
 | `lossRate` | `0.95` | 产出损耗护栏（0-1，默认扣 5%） |
-| `intermediateRatio` | `0.25` | 中间产物过滤比例 |
+| `intermediateRatio` | `0.25` | 中间产物过滤比例（**0.5.1 起 RATE 与 REPLAY 统一口径**） |
 | `ioErrorRatio` | `0.001` | 动态噪声阈值比例 |
 | `catalystItems` | `[]` | 催化剂保留清单（量小也保留为输入） |
 | `dedupBlocks` | Storage Drawers 压缩抽屉等 | 库存扫描去重方块 ID |
 | `energyStabilityRelaxation` | `2.0` | 能量条目稳定性容差放宽倍数 |
 | `stressStabilityRelaxation` | `2.0` | 应力条目稳定性容差放宽倍数 |
 | `continueOnSourceReloaded` | `false` | 源房间区块被卸载/重载后是否继续评估 |
-| `unloadStuckPendingTicks` | `0` | 副本区块卡在卸载队列多少 tick 后放行（0=严格等待） |
 | `enableEvaluationObservation` | `true` | 是否启用评估维度的观察者监管（越界自动退出） |
 | `observationPermissionLevel` | `0` | 可自由进入评估副本观察的权限等级 |
 | `enableFactoryRevert` | `true` | 是否允许启动棒把工厂还原为原机器 |
+
+> **0.4.28 变更**：`unloadStuckPendingTicks` 已被**移除**。它当年的「等 N tick 后放行」计时豁免正是冻结期失败的主要来源——放宽了等待卸载的计时，却没放宽严格复检，放行后必然被否决。现在冻结门控统一按「逐区块内容是否真的卸载干净」判定，不再有 tick 豁免。
+
+### 净化启动棒（0.5.2+）
+
+| 配置项 | 默认 | 说明 |
+|--------|------|------|
+| `enablePurification` | `true` | 是否启用净化功能（关掉后净化棒等同普通启动棒） |
+| `purificationClearMode` | `WHITELIST` | 清理范围：`WHITELIST` / `ALL` / `BLACKLIST` |
+| `purificationWhitelist` | Create 物流/处理缓冲 | WHITELIST 模式下会被清理的方块 ID |
+| `purificationBlacklist` | `[]` | BLACKLIST 模式下豁免不清的方块 ID |
+| `purificationFallbackOnContraption` | `true` | 房间里检测到移动装置时是否退回普通评估 |
+
 
 ### 微缩预览（0.4.0+，单位 KB 的都是 NBT 体积）
 
@@ -121,6 +155,10 @@ CreateCMPOR 是一个附属模组，把 [Create（机械动力）](https://githu
 | `/ccmpor evaluation list` | 列出进行中的评估会话 |
 | `/ccmpor evaluation max` | 查看当前并发评估上限 |
 | `/ccmpor evaluation max <value>` | 设置并发评估上限（1-16，本次运行生效） |
+| `/ccmpor clean <room> [execute]` | 净化：默认**只报告**副本/源房间里会被清掉什么，加 `execute` 才真清 |
+| `/ccmpor factory legacy list` | 列出旧版（`compactmachinespor:factory_block`）遗留工厂 |
+| `/ccmpor factory legacy remove <pos>` | 移除指定的遗留工厂 |
+| `/ccmpor factory legacy revert <pos>` | 把遗留工厂还原为原机器 |
 | `/ccmpor preview info` | 查看附近工厂的预览状态（体积、版本号、实体数） |
 | `/ccmpor preview entities` | 列出快照里每只实体的体积与前几大 NBT 键（排查裁剪用） |
 | `/ccmpor preview bumprev` | 把最近工厂的快照版本顶一格并强制走一遍按需同步链路（调试） |
