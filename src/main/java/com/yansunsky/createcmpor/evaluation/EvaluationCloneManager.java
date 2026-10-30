@@ -987,8 +987,13 @@ public final class EvaluationCloneManager {
         ServerLevel target = requireTarget(server, manifest);
         RuntimeState runtime = runtime(server, session);
         if (!runtime.ticketsRemoved) {
-            EvaluationTicketManager.remove(target, manifest);
-            EvaluationTicketManager.setChunksForced(target, manifest, false);
+            // 分批撤票（0.5.5）：每 tick 只撤一批，未撤完就 return 等下一 tick。
+            if (runtime.ticketRemoveCursor == null) {
+                runtime.ticketRemoveCursor = new EvaluationTicketManager.RemoveCursor();
+            }
+            if (!runtime.ticketRemoveCursor.advance(target, manifest, true)) {
+                return;
+            }
             manifest.setTicketsAdded(false);
             manifest.setTargetReady(false);
             runtime.ticketsRemoved = true;
@@ -1098,8 +1103,14 @@ public final class EvaluationCloneManager {
             RuntimeState branchRuntime = runtime(server, branch.branchId(), manifest);
             ServerLevel target = requireTarget(server, manifest);
             if (!branch.ticketsRemoved()) {
-                EvaluationTicketManager.remove(target, manifest);
-                EvaluationTicketManager.setChunksForced(target, manifest, false);
+                // 分批撤票（0.5.5）：每个分支各有一个游标，未撤完本 tick 先不往下走。
+                if (branchRuntime.ticketRemoveCursor == null) {
+                    branchRuntime.ticketRemoveCursor = new EvaluationTicketManager.RemoveCursor();
+                }
+                if (!branchRuntime.ticketRemoveCursor.advance(target, manifest, true)) {
+                    allBranchesCleaned = false;
+                    continue;
+                }
                 manifest.setTicketsAdded(false);
                 manifest.setTargetReady(false);
                 branch.setTicketsRemoved(true);
@@ -1414,6 +1425,14 @@ public final class EvaluationCloneManager {
         private int footprintIndex;
         private boolean targetFlushed;
         private boolean ticketsRemoved;
+        /**
+         * 分批撤票游标（0.5.5）。非 null 且未 {@code finished()} 时，CLEANING 阶段每 tick
+         * 只推进一批 ticket 撤销，撤完后才置 {@link #ticketsRemoved} 继续后续清理。
+         * 目的：避免单 tick 内数百区块同时降级为 HIDDEN，触发
+         * {@code PersistentEntitySectionManager.processUnloads} 里 fastutil 迭代器的
+         * 缩容 rehash 越界（详见 {@code docs/58-*}）。
+         */
+        private EvaluationTicketManager.RemoveCursor ticketRemoveCursor;
         private boolean railwayCleaned;
         private boolean backpackCleaned;
         private boolean evaluationCleaned;
