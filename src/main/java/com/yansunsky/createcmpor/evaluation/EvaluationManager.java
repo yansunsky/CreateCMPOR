@@ -43,11 +43,23 @@ public final class EvaluationManager {
     public static final EvaluationManager INSTANCE = new EvaluationManager();
 
     private static final int UNLOAD_TIMEOUT_TICKS = 200;
+    /**
+     * 落盘探测的等待上限（tick）。
+     *
+     * <p>卡顿服上 {@code processUnloads} 受 {@code hasMoreTime} 预算限制，一个区块从
+     * 「等待卸载」到「真正 save 完」可能滞后数分钟，但评估事务不能无限挂起。
+     * 超时后按 {@code source_not_persisted} 回滚并把证据写进日志——这正是
+     * 0.5.4 那 24 次失败的场景，现在应当给出**可诊断**的原因而不是笼统的克隆失败。</p>
+     */
+    private static final int PERSIST_PROBE_TIMEOUT_TICKS = 400;
     private static final int PLAYER_EXIT_TIMEOUT_TICKS = 100;
     private static final int PLAYER_EXIT_FALLBACK_TICKS = 40;
     private static final String LAUNCHER_TRANSACTIONS_TAG = "createcmpor_launcher_transactions";
     private final Map<UUID, EvictionAttempt> playersBeingEvicted = new HashMap<>();
     private final Map<UUID, CompletableFuture<Void>> rollbackWrites = new HashMap<>();
+    /** 落盘探测的在途 future（按会话）；探测只读，不会被取消，完成后由 tick 消费。 */
+    private final Map<UUID, CompletableFuture<EvaluationStorageBridge.PersistProbeReport>> persistProbes =
+            new HashMap<>();
 
     private EvaluationManager() {
     }
@@ -232,6 +244,7 @@ public final class EvaluationManager {
     public void onServerStarted(ServerStartedEvent event) {
         playersBeingEvicted.clear();
         rollbackWrites.clear();
+        persistProbes.clear();
         MinecraftServer server = event.getServer();
         EvaluationSavedData data = EvaluationSavedData.get(server);
         EvaluationCloneManager.INSTANCE.onServerStarted(server, data);
@@ -410,6 +423,14 @@ public final class EvaluationManager {
         // 把 !pendingUnloads 当门控 ⇒ 房间几乎永远无法评估（实测 35/35 次失败全部因此）。
         // 详见 EvaluationStorageBridge.areChunksUnloadedForFreeze 的长注释。
         if (EvaluationStorageBridge.areChunksUnloadedForFreeze(room.level(), roomChunks)) {
+            // 内存态已卸载 —— 但**这还不够**：该判据对「已落盘的区块」与「从未落盘的区块」
+            // 给出相同答案。0.5.4 那 24/24 次「源区块记录缺失」全部发生在后者：
+            // 房间新建 / 玩家反复进出后立即评估，区块要么从未进过内存，要么还滞留在
+            // vanilla 卸载队列（卡顿服 processUnloads 拿不到时间预算），磁盘上根本没有。
+            // 因此冻结前用只读探针确认「持久化存储里真的有这些区块」。
+            if (!probeSourcePersisted(server, data, session, room, roomChunks)) {
+                return;
+            }
             if (EvaluationStorageBridge.hasChunkUnloadBacklog(room.level(), roomChunks)) {
                 // 内容已卸载、只是 vanilla 收尾没跑完：不再阻塞冻结。
                 // 这里刻意保持**单行**——卡顿服上每次评估都会走到，完整逐区块诊断会刷爆日志
@@ -419,6 +440,7 @@ public final class EvaluationManager {
                         session.roomCode(),
                         EvaluationStorageBridge.describeUnloadBlocker(room.level(), roomChunks));
             }
+            persistProbes.remove(session.id());
             transition(data, session, EvaluationSession.State.FROZEN);
             notifyOwner(server, session, Component.translatable("message.createcmpor.evaluation.frozen"));
             CreateCMPOR.LOGGER.info("房间 {} 已冻结，会话 {}", session.roomCode(), session.id());
@@ -438,6 +460,87 @@ public final class EvaluationManager {
             rollback(server, data, session,
                     "message.createcmpor.evaluation.unload_timeout");
         }
+    }
+
+    /**
+     * 冻结前的落盘存在性门控。
+     *
+     * <p>返回 {@code true} 表示「磁盘上确认有全部源区块，可以继续冻结」；返回 {@code false}
+     * 表示本 tick 不能冻结（探测在途或已回滚），调用方必须直接 return。</p>
+     *
+     * <p>只在「内存态已卸载」之后调用。判定路线：
+     * <ol>
+     *   <li>全部区块都在持久化存储里 ⇒ 放行（正常路径，行为与 0.5.5 完全一致）；</li>
+     *   <li>有区块缺失 ⇒ 记录证据并等 vanilla 把它们落盘（不主动 save，避免把整维 IO
+     *       压在 tick 上）。下一 tick 重新探测——玩家刚离开房间时区块往往还在
+     *       {@code pendingUnloads} 里，给它几个 tick 通常就落了；</li>
+     *   <li>超时仍未落盘 ⇒ 以 {@code source_not_persisted} 回滚，日志给出逐区块证据
+     *       （内存态 + pendingUnload + 票据），把「从未加载过」与「加载了没落盘」分开。</li>
+     * </ol>
+     */
+    private boolean probeSourcePersisted(MinecraftServer server, EvaluationSavedData data,
+                                         EvaluationSession session, RoomInstance room,
+                                         List<ChunkPos> roomChunks) {
+        CompletableFuture<EvaluationStorageBridge.PersistProbeReport> probe = persistProbes.get(session.id());
+        if (probe == null) {
+            probe = EvaluationStorageBridge.probePersistedAll(room.level(), roomChunks);
+            persistProbes.put(session.id(), probe);
+        }
+        if (!probe.isDone()) {
+            // 探测走维度自己的 IOWorker，不阻塞 tick。此时**不能**推进状态——
+            // 否则会在「还没确认落盘」的情况下冻结，正是 0.5.4 的失败模式。
+            session.tickState();
+            data.changed();
+            return false;
+        }
+
+        EvaluationStorageBridge.PersistProbeReport report;
+        try {
+            report = probe.join();
+        } catch (CompletionException exception) {
+            // 探测本身出错（IO 异常等）不应成为新的失败源：退回到原有行为放行，
+            // 只记日志。真正的缺块仍会在克隆阶段以原有签名暴露。
+            persistProbes.remove(session.id());
+            CreateCMPOR.LOGGER.warn("评估会话 {} 的源区块落盘探测失败，按原逻辑继续：{}",
+                    session.id(), exception.getCause() == null ? exception : exception.getCause());
+            return true;
+        }
+
+        if (report.allPersisted()) {
+            persistProbes.remove(session.id());
+            return true;
+        }
+
+        // 有区块在磁盘上找不到。先不急着失败——它们可能只是还没被 vanilla 落盘。
+        // 用一个更宽松的节奏重新探测（每 20 tick 一次），避免每 tick 都发起一轮 IO。
+        if (session.stateTicks() < PERSIST_PROBE_TIMEOUT_TICKS) {
+            if (session.stateTicks() % 20 == 0) {
+                CreateCMPOR.LOGGER.info(
+                        "评估会话 {} 等待源房间 {} 落盘：{}/{} 个区块在持久化存储中暂不可见，继续等待",
+                        session.id(), session.roomCode(),
+                        report.missing().size(), roomChunks.size());
+            }
+            session.tickState();
+            data.changed();
+            if (session.stateTicks() % 20 == 0) {
+                // 每 20 tick 重发一次探测（消费掉上一轮结果）。
+                persistProbes.remove(session.id());
+            }
+            return false;
+        }
+
+        CreateCMPOR.LOGGER.error(
+                "评估会话 {} 等待源房间 {} 落盘超时（{} tick）：{}/{} 个区块在持久化存储中不存在。\n"
+                        + "逐区块证据（visible/updating/chunkNow/entities/pendingUnload/ticketed）：\n{}"
+                        + "判读：pendingUnload=true ⇒ 区块加载过、vanilla 卸载流程尚未落盘；"
+                        + "全部为 false ⇒ 该区块从未被加载/保存过。",
+                session.id(), session.roomCode(), PERSIST_PROBE_TIMEOUT_TICKS,
+                report.missing().size(), roomChunks.size(),
+                report.describeMissing());
+        persistProbes.remove(session.id());
+        rollback(server, data, session,
+                "message.createcmpor.evaluation.source_not_persisted");
+        return false;
     }
 
     private static void installEvaluator(ServerLevel level, EvaluationSession session) {

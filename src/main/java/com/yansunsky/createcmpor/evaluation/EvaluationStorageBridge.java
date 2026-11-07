@@ -424,11 +424,90 @@ final class EvaluationStorageBridge {
     static CompletableFuture<SourceRecords> readSourceRecords(ServerLevel level, ChunkPos pos) {
         // 源房间在 WAITING_UNLOAD 阶段由 vanilla ChunkMap 逐区块提交到同一 IOWorker；
         // 这里的 read 会优先返回 pendingWrites，因此不需要再次 per-chunk synchronize/全量 flush。
+        //
+        // ⚠️ 0.5.6-alpha 教训（「源区块记录缺失」稳定复现 24/24）：上面这条假设只在
+        // 「区块确实被 vanilla 卸载流程提交过」时成立。冻结门控 areChunksUnloadedForFreeze
+        // 只看内存态（四个表全空），对「从未加载过」与「加载过但还没落盘」这两种情况给出
+        // **完全相同**的答案 ⇒ 本方法会读到空。落盘存在性由 probePersisted 在冻结前把关。
         CompletableFuture<Optional<CompoundTag>> chunk = chunkStorage(level).read(pos);
         CompletableFuture<Optional<CompoundTag>> entities = entityStorage(level).read(pos);
         CompletableFuture<Optional<CompoundTag>> poi = poiStorage(level).read(pos);
         return CompletableFuture.allOf(chunk, entities, poi)
                 .thenApply(ignored -> new SourceRecords(pos, chunk.join(), entities.join(), poi.join()));
+    }
+
+    /**
+     * 冻结前探针：源区块是否**真的存在于持久化存储**里。
+     *
+     * <p><b>为什么需要它</b>：{@link #areChunksUnloadedForFreeze} 是纯内存态判据，对下面两种情况
+     * 给出相同结果（都判「已卸载」）：
+     * <ul>
+     *   <li>区块已经正常卸载并落盘 —— 可以安全冷拷贝；</li>
+     *   <li>区块从未加载过，或加载过但 vanilla 卸载流程还没跑到它（卡顿服 processUnloads
+     *       受 hasMoreTime 预算限制，可滞后数分钟） —— <b>磁盘上没有</b>，冷拷贝必然读空。</li>
+     * </ul>
+     * 实测证据（0.5.4，24/24 次失败）：房间新建、玩家反复进出后立即评估，
+     * 每次都在**第一个区块、第一次读取**上抛「源区块记录缺失」。
+     *
+     * <p>只读探测，不修改任何状态、不阻塞 tick（IO 走维度自己的 IOWorker）。
+     */
+    static CompletableFuture<ChunkPersistProbe> probePersisted(ServerLevel level, ChunkPos pos) {
+        return chunkStorage(level).read(pos)
+                .thenApply(records -> new ChunkPersistProbe(
+                        pos, records.isPresent(), describeProbeState(level, pos)));
+    }
+
+    /** 探针结果：磁盘上有没有，以及该区块此刻的内存态证据（用于区分两种失败机制）。 */
+    record ChunkPersistProbe(ChunkPos pos, boolean persisted, String state) {
+    }
+
+    /**
+     * 内存态取证：区分「从未加载过」与「加载过但仍在卸载队列」。
+     * 前者 {@code everLoaded} 为假，后者 {@code pendingUnload} 为真。
+     */
+    private static String describeProbeState(ServerLevel level, ChunkPos pos) {
+        long key = pos.toLong();
+        var map = level.getChunkSource().chunkMap;
+        boolean pendingUnload = map.pendingUnloads.containsKey(key);
+        boolean visible = map.getVisibleChunkIfPresent(key) != null;
+        boolean updating = map.getUpdatingChunkIfPresent(key) != null;
+        boolean chunkNow = level.getChunkSource().getChunkNow(pos.x, pos.z) != null;
+        boolean entities = level.areEntitiesLoaded(key);
+        boolean ticketed = !chunkTicketNames(level, key).isEmpty();
+        return "visible=" + visible + ", updating=" + updating + ", chunkNow=" + chunkNow
+                + ", entities=" + entities + ", pendingUnload=" + pendingUnload
+                + ", ticketed=" + ticketed;
+    }
+
+    /** 逐区块探针汇总；{@code missing} 非空即表示磁盘上确实缺块。 */
+    static CompletableFuture<PersistProbeReport> probePersistedAll(ServerLevel level, List<ChunkPos> chunks) {
+        CompletableFuture<?>[] futures = chunks.stream()
+                .map(pos -> probePersisted(level, pos))
+                .toArray(CompletableFuture[]::new);
+        return CompletableFuture.allOf(futures).thenApply(ignored -> {
+            List<ChunkPersistProbe> probes = java.util.Arrays.stream(futures)
+                    .map(future -> ((CompletableFuture<ChunkPersistProbe>) future).join())
+                    .toList();
+            List<ChunkPersistProbe> missing = probes.stream()
+                    .filter(probe -> !probe.persisted())
+                    .toList();
+            return new PersistProbeReport(probes, missing);
+        });
+    }
+
+    record PersistProbeReport(List<ChunkPersistProbe> probes, List<ChunkPersistProbe> missing) {
+        boolean allPersisted() {
+            return missing.isEmpty();
+        }
+
+        /** 逐区块单行明细（只在缺块时输出，避免正常路径刷日志）。 */
+        String describeMissing() {
+            StringBuilder sb = new StringBuilder();
+            for (ChunkPersistProbe probe : missing) {
+                sb.append("  ").append(probe.pos()).append(" 磁盘无记录 {").append(probe.state()).append("}\n");
+            }
+            return sb.toString();
+        }
     }
 
     static CompletableFuture<StoredRecords> readStoredRecords(ServerLevel level, ChunkPos pos) {
