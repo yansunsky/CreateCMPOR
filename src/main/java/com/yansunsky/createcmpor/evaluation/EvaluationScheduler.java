@@ -71,6 +71,21 @@ final class EvaluationScheduler {
          * <p>去重、保持方块扫描顺序；由 {@code activateIoBlocks} 写入，随 {@link EvaluationVerdict.Result} 一并保存。</p>
          */
         final List<String> triggerItems = new ArrayList<>();
+        /**
+         * 方块点名快照（0.5.6）：评估起点（S0 之前）的方块清单。
+         *
+         * <p>与 {@link #s0} 同一点采集，但<b>独立</b>于库存快照 —— 方块不是"库存内容"，
+         * 它只用于在收尾时算出"哪些方块消失了"，折算成掉落物后从 S1 扣掉。</p>
+         */
+        BlockCensus.Snapshot blocksStart = BlockCensus.Snapshot.EMPTY;
+        /**
+         * 方块点名折算表（0.5.6）：评估期间<b>消失的方块</b>折算出的物品件数。
+         *
+         * <p>作为独立减法项参与两条判定路径的净额：
+         * {@code net = (S2-S1) - V + IO输出 - IO输入}。
+         * 空表 = 没有方块消失，公式与 0.5.5 逐位一致。</p>
+         */
+        Map<EvaluationTrace.FlowKey, Long> blockDeduction = Map.of();
     }
 
     private static final Map<UUID, State> STATES = new ConcurrentHashMap<>();
@@ -243,7 +258,10 @@ final class EvaluationScheduler {
         AABB bounds = room.boundaries().outerBounds();
         // 净化启动棒：S0 扫描前清空副本容器残余物（必须在 scan 之前，否则 S0 仍带残留物）
         state.purificationStats = applyPurification(session, target, bounds);
+        // 实体态包裹：同样必须在 S0 之前处理（DELETE 策略删掉；COUNT 策略交给下面的 scan 计入）
+        CreatePackageEntities.apply(target, bounds);
         state.s0 = EvaluationAudit.scan(target, bounds);
+        state.blocksStart = captureBlocks(target, bounds);
         EvaluationAudit.logInventory("S0", state.s0);
         String key = parallelTraceKey(branch);
         int ioCount = activateIoBlocks(target, bounds, key, session, branch.index(), session.branchCount(),
@@ -336,7 +354,7 @@ final class EvaluationScheduler {
         RoomInstance room = requireRoom(server, session);
         AABB bounds = room.boundaries().outerBounds();
         deactivateIoBlocks(target, bounds);
-        state.s1 = EvaluationAudit.scan(target, bounds);
+        state.s1 = finishScan(target, bounds, state);
         EvaluationAudit.logInventory("S1", state.s1);
         state.stressProfile = StressEvaluationRegistry.consume(parallelTraceKey(branch));
         if (!state.stressProfile.isEmpty()) {
@@ -357,7 +375,8 @@ final class EvaluationScheduler {
             result = EvaluationVerdict.reject("采样数据缺失", "trace_missing", state.triggerItems);
         } else {
             result = EvaluationVerdict.decide(
-                    trace, state.s0, state.s1, state.warmup, state.stressProfile, state.triggerItems);
+                    trace, state.s0, state.s1, state.warmup, state.stressProfile, state.triggerItems,
+                    state.blockDeduction);
         }
         EvaluationTicketManager.switchToBlockTicking(target, manifest);
         branch.setResult(result);
@@ -385,8 +404,11 @@ final class EvaluationScheduler {
         AABB bounds = room.boundaries().outerBounds();
         // 净化启动棒：S0 扫描前清空副本容器残余物（必须在 scan 之前，否则 S0 仍带残留物）
         state.purificationStats = applyPurification(session, target, bounds);
+        // 实体态包裹：同样必须在 S0 之前处理（DELETE 策略删掉；COUNT 策略交给下面的 scan 计入）
+        CreatePackageEntities.apply(target, bounds);
         // S0 初次扫描必须在 IO 激活前：代表房间"未开工"的初始态（防刷兜底基准，过滤中间产物用）
         state.s0 = EvaluationAudit.scan(target, bounds);
+        state.blocksStart = captureBlocks(target, bounds);
         EvaluationAudit.logInventory("S0", state.s0);
         int ioCount = activateIoBlocks(target, bounds, session.roomCode(), session, state.triggerItems);
         CreateCMPOR.LOGGER.info("评估会话 {} 已激活 {} 个 IO 方块（分支 {}/{} 触发物品：{}）",
@@ -476,7 +498,7 @@ final class EvaluationScheduler {
         RoomInstance room = requireRoom(server, session);
         AABB bounds = room.boundaries().outerBounds();
         deactivateIoBlocks(target, bounds);
-        state.s1 = EvaluationAudit.scan(target, bounds);
+        state.s1 = finishScan(target, bounds, state);
         EvaluationAudit.logInventory("S1", state.s1);
         state.stressProfile = StressEvaluationRegistry.consume(session.roomCode());
         if (!state.stressProfile.isEmpty()) {
@@ -494,7 +516,8 @@ final class EvaluationScheduler {
             state.result = EvaluationVerdict.reject("采样数据缺失", "trace_missing", state.triggerItems);
         } else {
             state.result = EvaluationVerdict.decide(
-                    trace, state.s0, state.s1, state.warmup, state.stressProfile, state.triggerItems);
+                    trace, state.s0, state.s1, state.warmup, state.stressProfile, state.triggerItems,
+                    state.blockDeduction);
         }
         EvaluationTicketManager.switchToBlockTicking(target, manifest);
         session.setEvaluationResult(state.result);
@@ -808,6 +831,62 @@ final class EvaluationScheduler {
         }
         return "物品 " + s0.items().size() + " 种 / 流体 " + s0.fluids().size() + " 种 / 能量 " + s0.energy()
                 + " / 燃烧余热 " + (s0.normalBurnTicks() + s0.superBurnTicks()) + " tick";
+    }
+
+    /**
+     * 收尾扫描（S1/S2）：库存快照 + <b>方块点名折算</b>。
+     *
+     * <p><b>为什么折算不是"改进快照"而是独立减法项</b>：机器破坏方块后掉落物通常
+     * <b>不经容器常驻</b>，直接被吸入输出方块送走 —— 此时终态里根本没有那件物品，
+     * 从快照里扣等于扣空气。正确口径是把方块也当作房间库存：
+     * {@code net = (S2-S1) - V + IO输出 - IO输入}（{@code V} = 消失方块的折算量）。
+     * 推导与实测验算见 {@link BlockCensus} 的类注释与 {@code docs/60}。</p>
+     *
+     * <p><b>两条跳过条件</b>（任一命中就把折算表留空，公式退回原样）：</p>
+     * <ol>
+     *   <li>起点没采到方块（{@link State#blocksStart} 为空）——没有基线就没有"消失"可言；</li>
+     *   <li>配置关闭（{@code anticheat.blockCensusEnabled}）。</li>
+     * </ol>
+     *
+     * <p><b>⚠️ 装置（contraption）不再是跳过条件</b>：首版曾"房间内有装置就整场跳过"，
+     * 实测证明那条豁免把修复整个废掉了（玩家的机器就是轴承 + 钻头）。
+     * 现在改为由 {@link BlockCensus#capture} 把装置内部方块<b>并入点名</b>。</p>
+     *
+     * @return 收尾库存快照（<b>未被修改</b>）；方块折算写进 {@code state.blockDeduction}
+     */
+    private static EvaluationAudit.InventorySnapshot finishScan(ServerLevel target, AABB bounds, State state) {
+        EvaluationAudit.InventorySnapshot snapshot = EvaluationAudit.scan(target, bounds);
+        BlockCensus.Snapshot start = state.blocksStart;
+        if (start == null || start.isEmpty()) {
+            return snapshot;
+        }
+        BlockCensus.Snapshot end = BlockCensus.capture(target, bounds);
+        Map<EvaluationTrace.FlowKey, Long> vanished = BlockCensus.vanishedAsItems(
+                target, start, end, target.registryAccess());
+        if (vanished.isEmpty()) {
+            return snapshot;
+        }
+        state.blockDeduction = vanished;
+        CreateCMPOR.LOGGER.info("方块点名：折算 {} 种物品共 {} 件，作为独立减法项参与净平衡",
+                vanished.size(), vanished.values().stream().mapToLong(Long::longValue).sum());
+        return snapshot;
+    }
+
+    /** 采集起点方块清单（诊断日志与异常兜底都收在这个方法里）。 */
+    private static BlockCensus.Snapshot captureBlocks(ServerLevel target, AABB bounds) {
+        try {
+            BlockCensus.Snapshot snapshot = BlockCensus.capture(target, bounds);
+            if (!snapshot.isEmpty()) {
+                CreateCMPOR.LOGGER.info("方块点名 S0：房间方块 {} 个（{} 种方块）",
+                        snapshot.size(), BlockCensus.flatten(snapshot).size());
+            }
+            return snapshot;
+        } catch (RuntimeException | LinkageError exception) {
+            // 采集失败：退回"不做方块点名"（漏洞侧开放，但绝不把评估打崩）
+            CreateCMPOR.LOGGER.warn("方块点名 S0 采集失败（{}），本次评估不做方块点名",
+                    exception.getClass().getSimpleName());
+            return BlockCensus.Snapshot.EMPTY;
+        }
     }
 
     private static void notifyOwner(MinecraftServer server, EvaluationSession session, Component message) {

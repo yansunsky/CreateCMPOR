@@ -80,6 +80,11 @@ public final class ContainerItemExpander {
 
         List<ReadResult> results = new ArrayList<>();
         results.add(readVanillaContainers(stack));
+        // Create 包裹：内容是自己的数据组件 create:package_contents，原版 CONTAINER 读不到。
+        // 不展开它 ⇒ 「预存装有物品的包裹 → 拆包输出」可以骗过三扫描（0.5.6 修复）。
+        // Create 是本模组的必需依赖（neoforge.mods.toml type="required"），
+        // 且真正的类型引用都关在 CreatePackageContents 里（延迟加载，坏版本只损失这一条通道）。
+        results.add(CreatePackageContents.read(stack, registries));
         if (ModList.get().isLoaded("sophisticatedbackpacks")) {
             results.add(SophisticatedBackpackContents.read(stack, registries));
         }
@@ -160,7 +165,13 @@ public final class ContainerItemExpander {
         items.merge(signature, amount, ContainerItemExpander::saturatingAdd);
     }
 
-    static long saturatingMultiply(long left, long right) {
+    /**
+     * 饱和乘法（防 long 溢出）。
+     *
+     * <p>提升为 {@code public}：{@code evaluation.BlockCensus} 需要把"消失方块数 × 单一掉落数量"
+     * 同样按饱和语义算出，避免大房间/大堆叠时溢出成负数。语义与 {@link #saturatingAdd} 配套。</p>
+     */
+    public static long saturatingMultiply(long left, long right) {
         if (left <= 0 || right <= 0) {
             return 0;
         }

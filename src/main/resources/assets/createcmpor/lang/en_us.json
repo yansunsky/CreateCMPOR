@@ -32,6 +32,7 @@
   "message.createcmpor.evaluation.recovered_after_restart": "The unfinished evaluation was cancelled and the machine restored after restart.",
   "message.createcmpor.evaluation.players_remain": "Players could not leave the room in time; evaluation was cancelled.",
   "message.createcmpor.evaluation.unload_timeout": "The source room did not finish unloading before the timeout; evaluation was cancelled (see the server log for the exact blocker).",
+  "message.createcmpor.evaluation.source_not_persisted": "The source room's chunks have not been written to storage yet, so evaluation was safely cancelled (wait a moment after creating or modifying a room, then retry; see the server log for details).",
   "message.createcmpor.evaluation.frozen": "The source room was saved and unloaded; freezing is complete.",
   "message.createcmpor.evaluation.started": "The evaluation transaction started; players are being removed and the source room frozen.",
   "message.createcmpor.evaluation.launcher_returned": "The evaluation launcher was returned.",

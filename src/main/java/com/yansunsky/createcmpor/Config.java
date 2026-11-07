@@ -224,6 +224,36 @@ public class Config {
      */
     public static final ModConfigSpec.IntValue PREVIEW_ENTITY_TABLE_MAX_KB;
 
+    /** 副本内实体态包裹（Create {@code create:package}）的处理策略。 */
+    public enum PackageEntityPolicy {
+        /**
+         * 删除（默认）：副本生成后、S0 扫描前清掉房间内的包裹实体。
+         * <p>彻底断源——包裹内容存在实体 NBT 里，两条库存通道都看不见它，
+         * 允许它存在就等于允许「地上丢包裹 → 拆开 → 走输出」这条无损耗产出路径。</p>
+         */
+        DELETE,
+        /**
+         * 计入快照：不删除，把包裹内部物品计入 S0/S1/S2。
+         * <p>保留「用实体包裹跑物流」的产线，守恒由三扫描天然保证
+         * （S1 有、拆开后 S2 无 ⇒ net&lt;0 ⇒ 自动记为输入）。</p>
+         */
+        COUNT
+    }
+
+    /**
+     * 副本内实体态包裹的处理策略（0.5.6）。
+     * <p>Create 的包裹掉落时会变成 {@code PackageEntity}（继承 LivingEntity，不是 ItemEntity），
+     * 既不在容器能力里、也不被掉落物段扫描，是"包裹逃逸 IO 平衡"漏洞的另一半。
+     * 配置未加载时按 {@link PackageEntityPolicy#DELETE} 处理（绝不放行漏洞）。</p>
+     */
+    public static final ModConfigSpec.EnumValue<PackageEntityPolicy> PACKAGE_ENTITY_POLICY;
+
+    /**
+     * 方块点名（0.5.6）：把「房间里作为方块存在的库存」纳入三扫描。
+     * <p>关闭时「预置方块 → 机器破坏 → 输出」这条无损耗产出路径重新开放。默认开启。</p>
+     */
+    public static final ModConfigSpec.BooleanValue BLOCK_CENSUS_ENABLED;
+
     /** 净化启动棒的清理范围模式。 */
     public enum PurificationClearMode {
         /** 无条件：清理判定为「容器」的一切（含白/黑名单之外的自定义容器）。 */
@@ -488,6 +518,45 @@ public class Config {
                         "允许观察评估副本的权限等级（0=所有玩家，2=仅管理员）。",
                         "Permission level required to observe an evaluation replica (0 = everyone, 2 = operators only).")
                 .defineInRange("observationPermissionLevel", 0, 0, 4);
+        builder.pop();
+
+        builder.comment(
+                "防复制：方块点名与实体态包裹（0.5.6）",
+                "Anti-duplication: block census and package entities (0.5.6)").push("anticheat");
+        BLOCK_CENSUS_ENABLED = builder
+                .comment(
+                        "方块点名：把「房间里作为方块存在的库存」纳入三扫描。",
+                        "Block census: include blocks that exist as world blocks in the three-scan balance.",
+                        "为什么：库存扫描原本只看容器能力与掉落物，「预置一批方块 → 机器把方块破坏成物品 → 输出方块送出」",
+                        "Why: the inventory scan only saw container capabilities and dropped items, so \"pre-place blocks -> a machine",
+                        "会算出 S2-S1 = 0 而把破坏产物全额当成净产出，固化出不需要任何输入的产出机器。",
+                        "breaks them into items -> sends them out\" yielded S2-S1 = 0 and booked the drops as pure output.",
+                        "开启（默认）：终态相对起始态消失的方块按其实掉落物折算并从终态扣掉，等价于记成消耗。",
+                        "true (default): blocks that vanished between baseline and end are converted to their actual drops and",
+                        "subtracted from the end snapshot, i.e. booked as consumption.",
+                        "关闭：上面那条复制路径重新开放，仅在确认误伤时临时关闭。",
+                        "false: reopens that duplication path; only turn it off when you are sure about a false positive.",
+                        "口径：空气/流体/随机 tick 方块（雪、树叶等）/本模组方块不参与；房间内 Create 装置携带的方块会被并入统计。",
+                        "Scope: air/fluids/randomly-ticking blocks (snow, leaves, ...) and this mod's own blocks are excluded; blocks",
+                        "carried by Create contraption entities in the room are included.")
+                .define("blockCensusEnabled", true);
+        PACKAGE_ENTITY_POLICY = builder
+                .comment(
+                        "副本房间里实体态包裹（create:package）的处理策略。",
+                        "How package entities (create:package) inside the replica room are handled.",
+                        "为什么单独处理：Create 的包裹掉落时会变成 PackageEntity（继承 LivingEntity，不是 ItemEntity），",
+                        "Why: a dropped Create package becomes a PackageEntity (a LivingEntity, not an ItemEntity), which is",
+                        "既不在容器能力里、也不被掉落物段扫描 —— 「往地上丢一堆装着物品的包裹 → 拆开 → 输出」",
+                        "invisible to both container capabilities and the dropped-item scan, so \"dump loaded packages on the",
+                        "全程零库存，物品凭空成为净产出。",
+                        "floor -> unpack -> output\" had zero visible inventory and produced items out of nothing.",
+                        "DELETE（默认）：副本生成后、S0 扫描前删除房间内的包裹实体，彻底断源。",
+                        "DELETE (default): discard package entities in the room after the replica is created and before S0.",
+                        "COUNT：不删除，把包裹内部物品计入 S0/S1/S2（保留用实体包裹跑物流的产线；",
+                        "COUNT: keep them and fold their contents into S0/S1/S2 (keeps package-logistics lines working;",
+                        "拆包后内容消失会自动记为输入）。",
+                        "unpacking then shows up as input consumption).")
+                .defineEnum("packageEntityPolicy", PackageEntityPolicy.DELETE);
         builder.pop();
 
         builder.comment(
