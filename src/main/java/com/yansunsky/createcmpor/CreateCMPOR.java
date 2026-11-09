@@ -89,6 +89,12 @@ public class CreateCMPOR {
         NeoForge.EVENT_BUS.addListener(com.yansunsky.createcmpor.evaluation.EvaluationObservationManager::onPlayerLogin);
         // 防复制护栏：玩家进入已评估房间的空间时自动还原工厂
         NeoForge.EVENT_BUS.addListener(com.yansunsky.createcmpor.evaluation.AntiDupeSpaceEntryHandler::onServerTick);
+        // CompactMachines 7.0.81 兼容兜底：无 floor 模板建的房间不写 default_spawn，
+        // 存档时 SpawnManager.CODEC 编码 null 会 NPE 崩服。挂在 HIGHEST 以先于
+        // 上游自己的 levelSaved（LOW）执行，在 saveAll 之前把字段补上。
+        NeoForge.EVENT_BUS.addListener(
+                net.neoforged.bus.api.EventPriority.HIGHEST,
+                com.yansunsky.createcmpor.compat.cm.CompactMachinesSpawnGuard::onLevelSave);
 
         // 配置文件（含 enableStressOutput）
         modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
