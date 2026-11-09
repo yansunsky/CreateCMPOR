@@ -500,9 +500,10 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
             return revertGroup(serverLevel, pos, factory, stack, player);
         }
         if (factory.revertToMachine(serverLevel)) {
-            if (!player.isCreative()) {
-                stack.shrink(1);
-            }
+            // 扣 1 点耐久：创造模式由 ItemStack#hurtAndBreak 内部的 hasInfiniteMaterials() 自动免扣，
+            // 不需要（也不能）自己判 isCreative——手写判断会漏掉「背包编辑器」等其他无限物品来源。
+            stack.hurtAndBreak(1, serverLevel, player, item -> {
+            });
             player.displayClientMessage(
                     Component.translatable("message.createcmpor.factory.reverted"), false);
         } else {
@@ -587,9 +588,9 @@ public class FactoryBlock extends KineticBlock implements EntityBlock {
         com.yansunsky.createcmpor.evaluation.FactoryIndexSavedData.get(level.getServer())
                 .removeFactory(roomCode);
         if (factory.revertToMachine(level)) {
-            if (!player.isCreative()) {
-                stack.shrink(1);
-            }
+            // 同 useItemOn 路径：耐久由 hurtAndBreak 扣，创造模式自动免扣。
+            stack.hurtAndBreak(1, level, player, item -> {
+            });
             player.displayClientMessage(
                     Component.translatable("message.createcmpor.factory.reverted"), false);
         } else {

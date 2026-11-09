@@ -24,7 +24,6 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
-import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
@@ -54,7 +53,7 @@ public final class EvaluationManager {
     private static final int PERSIST_PROBE_TIMEOUT_TICKS = 400;
     private static final int PLAYER_EXIT_TIMEOUT_TICKS = 100;
     private static final int PLAYER_EXIT_FALLBACK_TICKS = 40;
-    private static final String LAUNCHER_TRANSACTIONS_TAG = "createcmpor_launcher_transactions";
+
     private final Map<UUID, EvictionAttempt> playersBeingEvicted = new HashMap<>();
     private final Map<UUID, CompletableFuture<Void>> rollbackWrites = new HashMap<>();
     /** 落盘探测的在途 future（按会话）；探测只读，不会被取消，完成后由 tick 消费。 */
@@ -94,14 +93,9 @@ public final class EvaluationManager {
         }
 
         BlockState originalState = machineLevel.getBlockState(machinePos.pos());
-        boolean consumeLauncher = !player.isCreative();
         EvaluationSession session = new EvaluationSession(
                 UUID.randomUUID(), player.getUUID(), machinePos, roomCode, originalState,
                 machineBlockEntity.saveWithFullMetadata(machineLevel.registryAccess()));
-        if (!consumeLauncher) {
-            session = new EvaluationSession(session.id(), session.owner(), session.machinePos(), session.roomCode(),
-                    session.originalState(), session.originalBlockEntityNbt(), false);
-        }
         session.setBranchCount(parallelBranchCount(server, roomCode));
         // 净化评估：发起人用的是净化启动棒（配置关闭时等同普通启动棒，不留痕迹）
         boolean purificationEnabled;
@@ -117,14 +111,14 @@ public final class EvaluationManager {
         data.put(session);
         try {
             flushTransactions(server);
-            if (consumeLauncher) {
-                markLauncherTransaction(player, session.id(), true);
-                launcher.shrink(1);
-                server.getPlayerList().saveAll();
-            }
             installEvaluator(machineLevel, session);
             transition(data, session, EvaluationSession.State.EVALUATOR_INSTALLED);
             transition(data, session, EvaluationSession.State.EVICTING_PLAYERS);
+            // 0.5.9 耐久制：扣耐久放在**所有可能失败的动作之后** ⇒ 失败时自然不扣，
+            // 也就不需要任何「退还启动棒」的回滚逻辑（这正是旧「消耗 + 退还」机制的全部复杂度来源）。
+            // 创造模式免扣、耐久附魔、爆装消失都由 ItemStack.hurtAndBreak 原生处理，不必自己判。
+            launcher.hurtAndBreak(1, machineLevel, player, item -> {
+            });
             return StartResult.success(session);
         } catch (RuntimeException exception) {
             CreateCMPOR.LOGGER.error("无法建立评估会话 {}", session.id(), exception);
@@ -265,14 +259,6 @@ public final class EvaluationManager {
         }
     }
 
-    public void onPlayerLogin(PlayerEvent.PlayerLoggedInEvent event) {
-        if (!(event.getEntity() instanceof ServerPlayer player)) {
-            return;
-        }
-        EvaluationSavedData data = EvaluationSavedData.get(player.server);
-        deliverPendingLaunchers(player, data);
-    }
-
     /**
      * 评估方块被玩家破坏：把「破坏」接管为还原流程而不是普通移除。
      *
@@ -326,7 +312,6 @@ public final class EvaluationManager {
             return;
         }
         if (restoreOrphanEvaluator(level, evaluator)) {
-            queueOrphanLauncherReturn(player.server, evaluator);
             player.displayClientMessage(
                     Component.translatable("message.createcmpor.evaluation.orphan_restored"), false);
             return;
@@ -551,7 +536,7 @@ public final class EvaluationManager {
         if (!(level.getBlockEntity(pos) instanceof EvaluatorBlockEntity evaluator)) {
             throw new IllegalStateException("评估方块实体未创建");
         }
-        evaluator.initialize(session.id(), session.owner(), session.launcherReturnEligible(), session.purified(),
+        evaluator.initialize(session.id(), session.owner(),
                 session.roomCode(), session.originalState(), session.originalBlockEntityNbt());
     }
 
@@ -568,7 +553,6 @@ public final class EvaluationManager {
         }
         return !session.id().equals(evaluator.getSessionId())
                 || !session.owner().equals(evaluator.getOwnerId())
-                || session.launcherReturnEligible() != evaluator.isLauncherReturnEligible()
                 || !session.roomCode().equals(evaluator.getRoomCode())
                 || evaluator.getOriginalMachineState() == null
                 || evaluator.getSavedOriginalNbt() == null;
@@ -627,22 +611,6 @@ public final class EvaluationManager {
         } catch (RuntimeException exception) {
             CreateCMPOR.LOGGER.error("无法从孤立 Evaluator 镜像恢复原机器", exception);
             return false;
-        }
-    }
-
-    private static void queueOrphanLauncherReturn(MinecraftServer server, EvaluatorBlockEntity evaluator) {
-        if (!evaluator.isLauncherReturnEligible()
-                || evaluator.getSessionId() == null
-                || evaluator.getOwnerId() == null) {
-            return;
-        }
-        EvaluationSavedData data = EvaluationSavedData.get(server);
-        data.addPendingLauncherReturn(evaluator.getSessionId(), evaluator.getOwnerId(),
-                evaluator.isPurifiedLauncher());
-        flushTransactions(server);
-        ServerPlayer owner = server.getPlayerList().getPlayer(evaluator.getOwnerId());
-        if (owner != null) {
-            deliverPendingLaunchers(owner, data);
         }
     }
 
@@ -720,19 +688,14 @@ public final class EvaluationManager {
         }
         rollbackWrites.remove(session.id());
 
-        if (session.launcherReturnEligible()) {
-            data.addPendingLauncherReturn(session.id(), session.owner(), session.purified());
-        }
+        // 0.5.9 耐久制：不再有「退还启动棒」这一步 —— 棒子从未离开玩家背包，
+        // 因此下线 / 背包满 / 崩服 / 孤立方块恢复这些失败路径一并消失。
         data.remove(session.id());
         // 会话结束：把仍在观察该副本的玩家送出并恢复其游戏模式（自愈兜底，防遗留观察者）
         EvaluationObservationManager.exitObserversOf(server, session.id(),
                 "message.createcmpor.observation.finished");
         flushTransactions(server);
         EvaluationCloneManager.INSTANCE.afterSessionRemoved(server, data);
-        ServerPlayer owner = server.getPlayerList().getPlayer(session.owner());
-        if (owner != null) {
-            deliverPendingLaunchers(owner, data);
-        }
         Component reason = rollbackReason(session);
         notifyOwner(server, session, reason);
         CreateCMPOR.LOGGER.warn("评估会话 {} 已回滚：{}", session.id(), reason.getString());
@@ -794,54 +757,6 @@ public final class EvaluationManager {
                                    EvaluationSession.State state) {
         session.setState(state);
         data.changed();
-    }
-
-    static void deliverPendingLaunchers(ServerPlayer player, EvaluationSavedData data) {
-        boolean inventoryChanged = false;
-        for (Map.Entry<UUID, EvaluationSavedData.PendingLauncher> entry
-                : data.pendingLauncherReturns(player.getUUID()).entrySet()) {
-            UUID sessionId = entry.getKey();
-            if (!hasLauncherTransaction(player, sessionId)) {
-                data.removePendingLauncherReturn(sessionId);
-                continue;
-            }
-            // 退还当初那一种棒子：用净化棒发起就还净化棒（否则等于把玩家的道具降级成普通启动棒）
-            ItemStack launcher = new ItemStack(entry.getValue().purified()
-                    ? ModItems.PURIFICATION_STICK.get() : ModItems.LAUNCHER_STICK.get());
-            if (!player.getInventory().add(launcher)) {
-                player.displayClientMessage(
-                        Component.translatable("message.createcmpor.evaluation.launcher_inventory_full"), false);
-                continue;
-            }
-            markLauncherTransaction(player, sessionId, false);
-            inventoryChanged = true;
-            player.displayClientMessage(Component.translatable("message.createcmpor.evaluation.launcher_returned"), false);
-        }
-        if (inventoryChanged) {
-            player.server.getPlayerList().saveAll();
-        }
-        for (UUID sessionId : data.pendingLauncherReturns(player.getUUID()).keySet()) {
-            if (!hasLauncherTransaction(player, sessionId)) {
-                data.removePendingLauncherReturn(sessionId);
-            }
-        }
-        flushTransactions(player.server);
-    }
-
-    private static boolean hasLauncherTransaction(ServerPlayer player, UUID sessionId) {
-        return player.getPersistentData().getCompound(LAUNCHER_TRANSACTIONS_TAG)
-                .getBoolean(sessionId.toString());
-    }
-
-    private static void markLauncherTransaction(ServerPlayer player, UUID sessionId, boolean present) {
-        net.minecraft.nbt.CompoundTag transactions = player.getPersistentData()
-                .getCompound(LAUNCHER_TRANSACTIONS_TAG);
-        if (present) {
-            transactions.putBoolean(sessionId.toString(), true);
-        } else {
-            transactions.remove(sessionId.toString());
-        }
-        player.getPersistentData().put(LAUNCHER_TRANSACTIONS_TAG, transactions);
     }
 
     public static void moveToOverworldSpawn(ServerPlayer player) {

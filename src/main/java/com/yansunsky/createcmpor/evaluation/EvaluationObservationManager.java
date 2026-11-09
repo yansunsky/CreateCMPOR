@@ -61,7 +61,6 @@ import java.util.UUID;
  * 全部只在<b>状态变化</b>时打，不刷屏。
  *
  * <p><b>离线/崩溃安全</b>：观察记录写在玩家 {@code PersistentData}（随玩家存档持久化），
- * 与既有启动棒事务（{@code EvaluationManager.markLauncherTransaction}）同一模式，
  * 因此跨下线、跨服务器重启都能在下次登录时自愈（见 {@link #onPlayerLogin}）。
  */
 public final class EvaluationObservationManager {

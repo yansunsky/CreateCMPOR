@@ -1056,10 +1056,7 @@ public final class EvaluationCloneManager {
         closeRuntime(session.id());
         EvaluationStorageBridge.deleteStaging(server, manifest);
         if (session.factoryInstalled()) {
-            // 固化收尾：工厂保留（还原数据在工厂 BE 内），删除会话、退还启动棒、释放房间锁
-            if (session.launcherReturnEligible()) {
-                data.addPendingLauncherReturn(session.id(), session.owner(), session.purified());
-            }
+            // 固化收尾：工厂保留（还原数据在工厂 BE 内），删除会话、释放房间锁
             data.remove(session.id());
             // 成功路径（固化完成）同样必须把观察者送出：否则会滞留在评估副本里
             // （此前只在 rollback 路径挂了踢出，导致"评估完成工厂固化后观察者不被踢出"）
@@ -1069,7 +1066,6 @@ public final class EvaluationCloneManager {
             EvaluationCloneManager.INSTANCE.afterSessionRemoved(server, data);
             var owner = server.getPlayerList().getPlayer(session.owner());
             if (owner != null) {
-                EvaluationManager.deliverPendingLaunchers(owner, data);
                 owner.displayClientMessage(
                         Component.translatable("message.createcmpor.factory.ready"), false);
                 // 一次性聊天提醒：启动棒可还原工厂（空手右键提示已移除）

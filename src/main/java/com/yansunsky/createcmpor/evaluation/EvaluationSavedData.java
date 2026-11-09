@@ -15,25 +15,15 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
-/** 保存冻结事务和待退还启动棒，供崩溃恢复使用。 */
+/** 保存冻结事务，供崩溃恢复使用。 */
 public final class EvaluationSavedData extends SavedData {
     private static final String DATA_NAME = CreateCMPOR.MOD_ID + "_evaluations";
-    private static final int SCHEMA_VERSION = 2;
+    private static final int SCHEMA_VERSION = 3;
     private static final Factory<EvaluationSavedData> FACTORY = new Factory<>(
             EvaluationSavedData::new, EvaluationSavedData::load);
 
     private final Map<UUID, EvaluationSession> sessions = new LinkedHashMap<>();
-    private final Map<UUID, PendingLauncher> pendingLauncherReturns = new LinkedHashMap<>();
     private final ListTag failedSessionTags = new ListTag();
-
-    /**
-     * 待退还的启动棒记录。
-     *
-     * <p>{@code purified} 决定退还哪一根：会话在退还之前就已经被移除，读不到会话字段，
-     * 因此必须把"当初用的是净化棒"一并存下来，否则玩家用净化棒评估完会拿回一根普通启动棒。</p>
-     */
-    public record PendingLauncher(UUID playerId, boolean purified) {
-    }
 
     public static EvaluationSavedData get(MinecraftServer server) {
         return server.overworld().getDataStorage().computeIfAbsent(FACTORY, DATA_NAME);
@@ -52,14 +42,6 @@ public final class EvaluationSavedData extends SavedData {
             }
         }
 
-        ListTag returnTags = tag.getList("pending_launcher_returns", Tag.TAG_COMPOUND);
-        for (int index = 0; index < returnTags.size(); index++) {
-            CompoundTag returnTag = returnTags.getCompound(index);
-            if (returnTag.hasUUID("session") && returnTag.hasUUID("player")) {
-                data.pendingLauncherReturns.put(returnTag.getUUID("session"),
-                        new PendingLauncher(returnTag.getUUID("player"), returnTag.getBoolean("purified")));
-            }
-        }
         ListTag failedTags = tag.getList("recovery_failed_sessions", Tag.TAG_COMPOUND);
         for (int index = 0; index < failedTags.size(); index++) {
             data.failedSessionTags.add(failedTags.getCompound(index).copy());
@@ -122,26 +104,6 @@ public final class EvaluationSavedData extends SavedData {
         setDirty();
     }
 
-    public void addPendingLauncherReturn(UUID sessionId, UUID playerId, boolean purified) {
-        pendingLauncherReturns.putIfAbsent(sessionId, new PendingLauncher(playerId, purified));
-        setDirty();
-    }
-
-    public Map<UUID, PendingLauncher> pendingLauncherReturns(UUID playerId) {
-        Map<UUID, PendingLauncher> result = new LinkedHashMap<>();
-        pendingLauncherReturns.forEach((sessionId, pending) -> {
-            if (pending.playerId().equals(playerId)) {
-                result.put(sessionId, pending);
-            }
-        });
-        return result;
-    }
-
-    public void removePendingLauncherReturn(UUID sessionId) {
-        pendingLauncherReturns.remove(sessionId);
-        setDirty();
-    }
-
     @Override
     public CompoundTag save(CompoundTag tag, HolderLookup.Provider registries) {
         tag.putInt("schema_version", SCHEMA_VERSION);
@@ -149,15 +111,6 @@ public final class EvaluationSavedData extends SavedData {
         sessions.values().forEach(session -> sessionTags.add(session.save()));
         tag.put("sessions", sessionTags);
 
-        ListTag returnTags = new ListTag();
-        pendingLauncherReturns.forEach((sessionId, pending) -> {
-            CompoundTag returnTag = new CompoundTag();
-            returnTag.putUUID("session", sessionId);
-            returnTag.putUUID("player", pending.playerId());
-            returnTag.putBoolean("purified", pending.purified());
-            returnTags.add(returnTag);
-        });
-        tag.put("pending_launcher_returns", returnTags);
         tag.put("recovery_failed_sessions", failedSessionTags.copy());
         return tag;
     }
