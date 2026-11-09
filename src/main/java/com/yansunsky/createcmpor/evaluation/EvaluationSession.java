@@ -49,7 +49,6 @@ public final class EvaluationSession {
     private final CompoundTag originalBlockEntityNbt;
     private State state;
     private int stateTicks;
-    private final boolean launcherReturnEligible;
     private EvaluationManifest manifest;
     private String rollbackMessageKey;
     private EvaluationVerdict.Result evaluationResult;
@@ -119,20 +118,12 @@ public final class EvaluationSession {
     public EvaluationSession(UUID id, UUID owner, GlobalPos machinePos, String roomCode,
                              BlockState originalState, CompoundTag originalBlockEntityNbt) {
         this(id, owner, machinePos, roomCode, originalState, originalBlockEntityNbt,
-                State.PREPARED, 0, true, null, "message.createcmpor.evaluation.runtime_failed", false);
-    }
-
-    public EvaluationSession(UUID id, UUID owner, GlobalPos machinePos, String roomCode,
-                             BlockState originalState, CompoundTag originalBlockEntityNbt,
-                             boolean launcherReturnEligible) {
-        this(id, owner, machinePos, roomCode, originalState, originalBlockEntityNbt,
-                State.PREPARED, 0, launcherReturnEligible, null,
-                "message.createcmpor.evaluation.runtime_failed", false);
+                State.PREPARED, 0, null, "message.createcmpor.evaluation.runtime_failed", false);
     }
 
     private EvaluationSession(UUID id, UUID owner, GlobalPos machinePos, String roomCode,
                                BlockState originalState, CompoundTag originalBlockEntityNbt,
-                               State state, int stateTicks, boolean launcherReturnEligible,
+                               State state, int stateTicks,
                                EvaluationManifest manifest, String rollbackMessageKey,
                                boolean factoryInstalled) {
         this.id = id;
@@ -143,7 +134,6 @@ public final class EvaluationSession {
         this.originalBlockEntityNbt = originalBlockEntityNbt.copy();
         this.state = state;
         this.stateTicks = stateTicks;
-        this.launcherReturnEligible = launcherReturnEligible;
         this.manifest = manifest;
         this.rollbackMessageKey = rollbackMessageKey;
         this.factoryInstalled = factoryInstalled;
@@ -179,10 +169,6 @@ public final class EvaluationSession {
 
     public int stateTicks() {
         return stateTicks;
-    }
-
-    public boolean launcherReturnEligible() {
-        return launcherReturnEligible;
     }
 
     /** 本次评估是否为净化评估（净化启动棒发起）。 */
@@ -280,15 +266,13 @@ public final class EvaluationSession {
         tag.put("original_block_entity", originalBlockEntityNbt.copy());
         tag.putString("state", state.name());
         tag.putInt("state_ticks", stateTicks);
-        tag.putBoolean("launcher_return_eligible", launcherReturnEligible);
         if (manifest != null) {
             tag.put("manifest", manifest.save());
         }
         tag.putString("rollback_message_key", rollbackMessageKey);
         tag.putBoolean("factory_installed", factoryInstalled);
         tag.putBoolean("clean_target_on_cancel", cleanTargetOnCancel);
-        // 净化标志必须落盘：启动棒是在会话移除之后才退还的（addPendingLauncherReturn → 玩家上线/轮询时发放），
-        // 那时已经读不到会话了；不写这里，用净化棒评估完拿回来的会是普通启动棒（道具掉级）。
+        // 净化标志必须落盘：并行 lane / 断线重连后仍要按净化口径给出判定文案。
         tag.putBoolean("purified", purified);
         tag.putInt("branch_index", branchIndex);
         tag.putInt("branch_count", branchCount);
@@ -337,9 +321,6 @@ public final class EvaluationSession {
                 tag.getCompound("original_block_entity"),
                 state,
                 tag.getInt("state_ticks"),
-                tag.contains("launcher_return_eligible")
-                        ? tag.getBoolean("launcher_return_eligible")
-                        : tag.getBoolean("launcher_consumed"),
                 manifest,
                 rollbackMessageKey,
                 tag.getBoolean("factory_installed"));

@@ -80,7 +80,6 @@ public class CreateCMPOR {
         NeoForge.EVENT_BUS.addListener(EvalWorldCommands::onRegisterCommands);
         NeoForge.EVENT_BUS.addListener(EvaluationManager.INSTANCE::onServerTick);
         NeoForge.EVENT_BUS.addListener(EvaluationManager.INSTANCE::onServerStarted);
-        NeoForge.EVENT_BUS.addListener(EvaluationManager.INSTANCE::onPlayerLogin);
         NeoForge.EVENT_BUS.addListener(EvaluationManager.INSTANCE::onBlockBreak);
         NeoForge.EVENT_BUS.addListener(EvalWorldGuard::onServerTick);
         NeoForge.EVENT_BUS.addListener(EvalWorldGuard::onPlayerRespawn);
