@@ -2,7 +2,7 @@
 
 > Create × CompactMachines: Parallel Room Evaluation System
 > Minecraft 1.21.1 · NeoForge 21.1.x · Create 6.0.10-281 · CompactMachines 7.0.81
-> Current version: **0.5.5**
+> Current version: **0.5.9**
 
 ## Introduction
 
@@ -34,7 +34,7 @@ The **Purification Launcher Stick** (red, five sticks in an inverted launcher pa
 - Filter items are never touched — they live in item components, not container inventories.
 - If the room contains a moving structure (a Create contraption) or some container cannot be cleared, the run quietly falls back to a normal evaluation and says so in chat, rather than pretending it worked.
 - `/ccmpor clean <roomCode> [execute]` — report-only by default (lists what *would* be cleared); add `execute` to actually do it. Works on the room you stand in, i.e. before anything is frozen or cloned.
-- The stick comes back in the same variety you used (before 0.5.2 it downgraded to a normal launcher).
+- The stick comes back in the same variety you used (before 0.5.2 it downgraded to a normal launcher). **Since 0.5.9 the launcher is durability-based**: it is no longer consumed and refunded — each evaluation costs 1 durability (64 for the launcher, 32 for the purification stick) and the item breaks when exhausted.
 - `enablePurification = false` turns the feature off.
 
 > **Known limitation:** blaze burner pre-stored heat is **not** cleared. If a room contains a burner that still has fuel, S0 stays non-empty, purification cannot take effect, and the run automatically falls back to the full evaluation with a chat notice. Let your burners burn out first.
