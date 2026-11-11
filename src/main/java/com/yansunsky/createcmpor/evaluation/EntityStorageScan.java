@@ -12,6 +12,7 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.Container;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.animal.horse.AbstractHorse;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.vehicle.AbstractMinecartContainer;
@@ -40,7 +41,8 @@ import java.util.Map;
  * <h2>读取优先级（同一实体只走一条路径）</h2>
  * <ol>
  *   <li>{@link ContainerEntity}：<b>有掉落表就走掉落表</b>（见下），否则遍历 {@code getItemStacks()}。</li>
- *   <li>{@link AbstractHorse}：遍历 {@code getInventory()} 的全部槽位，包括鞍。</li>
+ *   <li>{@link AbstractHorse}：遍历 {@code getInventory()} 的全部槽位（鞍 + 箱子），
+ *       并额外补一次 {@link EquipmentSlot#BODY}（马铠不在那个 inventory 里，见下）。</li>
  *   <li>其它实体：优先使用 {@link Capabilities.ItemHandler#ENTITY}，非空即不读 NBT。
  *       NeoForge 为普通 {@code LivingEntity} 兜底暴露双手和四件护甲；这些是装备位，
  *       不是额外的存储空间，但装备同样属于房间里的真实物品。</li>
@@ -146,6 +148,15 @@ final class EntityStorageScan {
                 ItemStack stack = inventory.getItem(slot);
                 ContainerItemExpander.addToSnapshot(stack, stack.getCount(), registries, items);
             }
+            // ⚠️ 马铠（{@link EquipmentSlot#BODY} / {@code ANIMAL_ARMOR}）<b>不在</b> {@code getInventory()} 里：
+            // 那个 inventory 的槽 0 是鞍（{@code isSaddled()} 就是判槽 0 非空），
+            // 而动物护甲存在 {@code Mob.bodyArmorItem} 字段里，只能经 {@code getItemBySlot(BODY)} 取。
+            // 又因为 NeoForge 的兜底能力 {@code EntityArmorInvWrapper} 是
+            // {@code super(entity, Type.HUMANOID_ARMOR)}（只覆盖人形四槽、不含 ANIMAL_ARMOR），
+            // 而本分支不查能力 ⇒ 不单独补这一次，马铠就会被完全漏掉，
+            // 构成与本次修复同形的逃逸路径（马铠是可被机器扒下来送输出的物品）。
+            ItemStack bodyArmor = horse.getItemBySlot(EquipmentSlot.BODY);
+            ContainerItemExpander.addToSnapshot(bodyArmor, bodyArmor.getCount(), registries, items);
         } else {
             IItemHandler handler = entity.getCapability(Capabilities.ItemHandler.ENTITY);
             if (handler != null) {
