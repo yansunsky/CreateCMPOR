@@ -79,11 +79,19 @@ final class EvaluationScheduler {
          */
         BlockCensus.Snapshot blocksStart = BlockCensus.Snapshot.EMPTY;
         /**
+         * 活体掉落基线：S0 先采集，预热结束时以 S1 覆盖；与普通物品快照独立记账。
+         */
+        Map<String, Long> livingLootBaseline = Map.of();
+        /**
+         * 活体掉落折算 L：基线相对终态减少的预期掉落，独立于普通物品快照与方块折算。
+         */
+        Map<EvaluationTrace.FlowKey, Long> entityLootDeduction = Map.of();
+        /**
          * 方块点名折算表（0.5.6）：评估期间<b>消失的方块</b>折算出的物品件数。
          *
          * <p>作为独立减法项参与两条判定路径的净额：
-         * {@code net = (S2-S1) - V + IO输出 - IO输入}。
-         * 空表 = 没有方块消失，公式与 0.5.5 逐位一致。</p>
+         * {@code net = (S2-S1) - V - L + IO输出 - IO输入}。
+         * 实体掉落点名关闭时 L 恒为空，保持原方块点名口径。</p>
          */
         Map<EvaluationTrace.FlowKey, Long> blockDeduction = Map.of();
     }
@@ -262,6 +270,7 @@ final class EvaluationScheduler {
         CreatePackageEntities.apply(target, bounds);
         state.s0 = EvaluationAudit.scan(target, bounds);
         state.blocksStart = captureBlocks(target, bounds);
+        state.livingLootBaseline = EntityLootCensus.livingLootSnapshot(target, bounds);
         EvaluationAudit.logInventory("S0", state.s0);
         String key = parallelTraceKey(branch);
         int ioCount = activateIoBlocks(target, bounds, key, session, branch.index(), session.branchCount(),
@@ -326,6 +335,7 @@ final class EvaluationScheduler {
         }
         RoomInstance room = requireRoom(server, session);
         state.warmup = EvaluationAudit.scan(target, room.boundaries().outerBounds());
+        state.livingLootBaseline = EntityLootCensus.livingLootSnapshot(target, room.boundaries().outerBounds());
         EvaluationAudit.logInventory("S_warmup", state.warmup);
         beginParallelSampling(server, target, session, branch, state);
     }
@@ -376,7 +386,7 @@ final class EvaluationScheduler {
         } else {
             result = EvaluationVerdict.decide(
                     trace, state.s0, state.s1, state.warmup, state.stressProfile, state.triggerItems,
-                    state.blockDeduction);
+                    state.blockDeduction, state.entityLootDeduction);
         }
         EvaluationTicketManager.switchToBlockTicking(target, manifest);
         branch.setResult(result);
@@ -409,6 +419,7 @@ final class EvaluationScheduler {
         // S0 初次扫描必须在 IO 激活前：代表房间"未开工"的初始态（防刷兜底基准，过滤中间产物用）
         state.s0 = EvaluationAudit.scan(target, bounds);
         state.blocksStart = captureBlocks(target, bounds);
+        state.livingLootBaseline = EntityLootCensus.livingLootSnapshot(target, bounds);
         EvaluationAudit.logInventory("S0", state.s0);
         int ioCount = activateIoBlocks(target, bounds, session.roomCode(), session, state.triggerItems);
         CreateCMPOR.LOGGER.info("评估会话 {} 已激活 {} 个 IO 方块（分支 {}/{} 触发物品：{}）",
@@ -467,6 +478,7 @@ final class EvaluationScheduler {
         }
         RoomInstance room = requireRoom(server, session);
         state.warmup = EvaluationAudit.scan(target, room.boundaries().outerBounds());
+        state.livingLootBaseline = EntityLootCensus.livingLootSnapshot(target, room.boundaries().outerBounds());
         EvaluationAudit.logInventory("S_warmup", state.warmup);
         beginSampling(server, target, session, state);
         notifyOwner(server, session, Component.translatable("message.createcmpor.evaluation.warmup_done"));
@@ -517,7 +529,7 @@ final class EvaluationScheduler {
         } else {
             state.result = EvaluationVerdict.decide(
                     trace, state.s0, state.s1, state.warmup, state.stressProfile, state.triggerItems,
-                    state.blockDeduction);
+                    state.blockDeduction, state.entityLootDeduction);
         }
         EvaluationTicketManager.switchToBlockTicking(target, manifest);
         session.setEvaluationResult(state.result);
@@ -834,15 +846,17 @@ final class EvaluationScheduler {
     }
 
     /**
-     * 收尾扫描（S1/S2）：库存快照 + <b>方块点名折算</b>。
+     * 收尾扫描（S2，字段沿用旧名 s1）：库存快照 + <b>方块与活体掉落点名折算</b>。
      *
      * <p><b>为什么折算不是"改进快照"而是独立减法项</b>：机器破坏方块后掉落物通常
      * <b>不经容器常驻</b>，直接被吸入输出方块送走 —— 此时终态里根本没有那件物品，
      * 从快照里扣等于扣空气。正确口径是把方块也当作房间库存：
-     * {@code net = (S2-S1) - V + IO输出 - IO输入}（{@code V} = 消失方块的折算量）。
+     * {@code net = (S2-S1) - V - L + IO输出 - IO输入}（{@code V} = 消失方块折算，{@code L} = 消失活体折算）。
      * 推导与实测验算见 {@link BlockCensus} 的类注释与 {@code docs/60}。</p>
      *
-     * <p><b>两条跳过条件</b>（任一命中就把折算表留空，公式退回原样）：</p>
+     * <p>活体掉落点名先以预热结束的基线计算 L，无预热时回退 S0；不受方块点名跳过条件影响。</p>
+     *
+     * <p><b>方块点名的两条跳过条件</b>（任一命中就跳过方块折算，不影响 L）：</p>
      * <ol>
      *   <li>起点没采到方块（{@link State#blocksStart} 为空）——没有基线就没有"消失"可言；</li>
      *   <li>配置关闭（{@code anticheat.blockCensusEnabled}）。</li>
@@ -852,10 +866,12 @@ final class EvaluationScheduler {
      * 实测证明那条豁免把修复整个废掉了（玩家的机器就是轴承 + 钻头）。
      * 现在改为由 {@link BlockCensus#capture} 把装置内部方块<b>并入点名</b>。</p>
      *
-     * @return 收尾库存快照（<b>未被修改</b>）；方块折算写进 {@code state.blockDeduction}
+     * @return 收尾库存快照（<b>未被修改</b>）；V 与 L 分别写进 {@code state.blockDeduction} 与 {@code state.entityLootDeduction}
      */
     private static EvaluationAudit.InventorySnapshot finishScan(ServerLevel target, AABB bounds, State state) {
         EvaluationAudit.InventorySnapshot snapshot = EvaluationAudit.scan(target, bounds);
+        Map<String, Long> livingLootEnd = EntityLootCensus.livingLootSnapshot(target, bounds);
+        state.entityLootDeduction = EntityLootCensus.vanishedAsItems(state.livingLootBaseline, livingLootEnd);
         BlockCensus.Snapshot start = state.blocksStart;
         if (start == null || start.isEmpty()) {
             return snapshot;

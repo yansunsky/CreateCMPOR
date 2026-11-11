@@ -254,6 +254,12 @@ public class Config {
      */
     public static final ModConfigSpec.BooleanValue BLOCK_CENSUS_ENABLED;
 
+    /**
+     * 实体掉落点名：把预养活体动物按预期掉落纳入三扫描。默认关闭，有意保留自动屠宰玩法。
+     * Living-entity loot census: count pre-raised animals as expected loot; disabled by default by design.
+     */
+    public static final ModConfigSpec.BooleanValue ENTITY_LOOT_CENSUS_ENABLED;
+
     /** 净化启动棒的清理范围模式。 */
     public enum PurificationClearMode {
         /** 无条件：清理判定为「容器」的一切（含白/黑名单之外的自定义容器）。 */
@@ -557,6 +563,27 @@ public class Config {
                         "拆包后内容消失会自动记为输入）。",
                         "unpacking then shows up as input consumption).")
                 .defineEnum("packageEntityPolicy", PackageEntityPolicy.DELETE);
+        ENTITY_LOOT_CENSUS_ENABLED = builder
+                .comment(
+                        "实体掉落点名：把「房间里预养的活体动物」按预期掉落纳入三扫描。",
+                        "Living-entity loot census: include pre-raised animals as expected loot in the three-scan balance.",
+                        "为什么：预养动物是房间库存，但不是任何容器，旧扫描看不见；评估中屠宰并输出掉落物，",
+                        "Why: pre-raised animals are room inventory, but not containers, so the old scan could not see them;",
+                        "就会把这批库存变成没有输入的纯产出。",
+                        "slaughtering them during evaluation and exporting their drops turned that inventory into pure output without input.",
+                        "开启（防护）：起始态每只活体动物按其实体掉落表折算为预期掉落，采集 S0/S1/S2；",
+                        "true (protection): convert each starting living animal into expected drops using its entity loot table at S0/S1/S2;",
+                        "S1/S2 活体库存减少量作为独立减法项，屠宰即库存消耗，对应产出在净平衡中自然抵消。",
+                        "the decrease from S1 to S2 is an independent deduction: slaughter consumes inventory and offsets the corresponding output.",
+                        "关闭（默认）：保留「预养大批动物 → 自动屠宰」玩法。这是有意的产品选择：玩法本身有趣，",
+                        "false (default): keep the pre-raise-many-animals -> automatic-slaughter play style. This is an intentional product choice:",
+                        "大量实体确实卡服务器，用这种方式消费掉是可接受的；而且动物是玩家自己繁殖出来的，不是无中生有。",
+                        "it is fun, many entities do cause server lag, consuming them this way is acceptable, and players bred the animals themselves.",
+                        "口径：只统计活体生物（LivingEntity），排除玩家、已移除实体与幼体（对齐原版幼体不掉落的语义）；",
+                        "Scope: living entities only (LivingEntity), excluding players, removed entities and babies (vanilla babies do not drop loot);",
+                        "掉落表缺失则跳过（偏保守），不统计已掉在地上的物品（已有独立扫描逻辑）。",
+                        "missing loot tables are skipped conservatively; dropped item entities remain covered by their separate inventory scan.")
+                .define("entityLootCensusEnabled", false);
         builder.pop();
 
         builder.comment(

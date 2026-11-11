@@ -13,7 +13,7 @@ import java.util.Set;
  * Phase 6 录制回放净平衡（统一用户定义的三扫描公式）。
  *
  * <p>三扫描语义：S1（预热结束）为基线、S2（评估结束、IO 已停）为终态；
- * 对每个物品/流体 key：{@code net = (S2 - S1) + IO输出 - IO输入}。
+ * 对每个物品/流体 key：{@code net = (S2 - S1) - V - L + IO输出 - IO输入}。
  * net &gt; 0 → 净产物；net &lt; 0 → 净原料；net = 0/噪声 → 双向移除。
  * S0 仅在无预热时作为回退基线（由调用方传入）。</p>
  */
@@ -30,15 +30,18 @@ final class EvaluationReplay {
     static ReplayResult build(EvaluationTrace trace, EvaluationAudit.InventorySnapshot s0,
                               EvaluationAudit.InventorySnapshot s1,
                               EvaluationAudit.InventorySnapshot baseline, int recordLength,
-                              Map<EvaluationTrace.FlowKey, Long> blockDeduction) {
+                              Map<EvaluationTrace.FlowKey, Long> blockDeduction,
+                              Map<EvaluationTrace.FlowKey, Long> entityLootDeduction) {
         Map<EvaluationTrace.FlowKey, Long> deduction =
                 blockDeduction == null ? Map.of() : blockDeduction;
+        Map<EvaluationTrace.FlowKey, Long> lootDeduction =
+                entityLootDeduction == null ? Map.of() : entityLootDeduction;
         // S0 全空 → 简化路径：只用 IO trace（输入/输出 pattern 原样保留）
         //
-        // ⚠️ 判据必须与 RATE 同口径（EvaluationAudit#hasBlockDeduction）：
-        // 方块点名是独立于快照的减法项，而简化路径跳过 S1/S2 净平衡
-        // ⇒ 只要有方块折算，就必须走完整三扫描，否则「预置方块 → 破坏 → 输出」直接逃逸。
-        if (s0 == null || (s0.isEmpty() && !EvaluationAudit.hasBlockDeduction(deduction))) {
+        // ⚠️ 判据必须与 RATE 同口径（EvaluationAudit#hasCensusDeduction）：
+        // 方块折算 V 与实体掉落折算 L 都是独立于快照的减法项，而简化路径跳过 S1/S2 净平衡
+        // ⇒ 任一折算存在就必须走完整三扫描，否则「预置方块/动物 → 破坏/屠宰 → 输出」直接逃逸。
+        if (s0 == null || (s0.isEmpty() && !EvaluationAudit.hasCensusDeduction(deduction, lootDeduction))) {
             Map<EvaluationTrace.FlowKey, int[]> in = new HashMap<>();
             Map<EvaluationTrace.FlowKey, int[]> out = new HashMap<>();
             trace.series().forEach((key, series) -> {
@@ -72,7 +75,7 @@ final class EvaluationReplay {
                 : (s0 != null ? s0 : EvaluationAudit.InventorySnapshot.empty());
         EvaluationAudit.InventorySnapshot end = s1 != null ? s1 : EvaluationAudit.InventorySnapshot.empty();
 
-        netBalance(trace, s0, base, end, in, out, recordLength, deduction);
+        netBalance(trace, s0, base, end, in, out, recordLength, deduction, lootDeduction);
         energyNetBalance(trace, base, end, energyIn, energyOut, recordLength);
         applyLossAndFilter(in, out, energyOut, recordLength);
 
@@ -107,7 +110,7 @@ final class EvaluationReplay {
     /**
      * 物品/流体净平衡（三扫描防刷规则）：
      * <ul>
-     *   <li>产物 = 输出方块实际 trace 收集到的种类（outputTotal&gt;0）且 {@code net=(S2-S1)+O-I > 0}。</li>
+     *   <li>产物 = 输出方块实际 trace 收集到的种类（outputTotal&gt;0）且 {@code net=(S2-S1)-V-L+O-I > 0}。</li>
      *   <li>中间产物（非输出种类、S0 无、S1 有）→ 完全忽略（即使被消耗）。</li>
      *   <li>消耗 = 非中间产物且 {@code net < 0}（含输出种类减少、初始库存消耗）。</li>
      * </ul>
@@ -119,7 +122,8 @@ final class EvaluationReplay {
                                    Map<EvaluationTrace.FlowKey, int[]> in,
                                    Map<EvaluationTrace.FlowKey, int[]> out,
                                    int recordLength,
-                                   Map<EvaluationTrace.FlowKey, Long> deduction) {
+                                   Map<EvaluationTrace.FlowKey, Long> deduction,
+                                   Map<EvaluationTrace.FlowKey, Long> lootDeduction) {
         Set<EvaluationTrace.FlowKey> outputTypes = new HashSet<>();
         trace.series().forEach((key, series) -> {
             if (series.outputTotal > 0) {
@@ -135,8 +139,9 @@ final class EvaluationReplay {
         end.items().keySet().forEach(sig ->
                 keys.add(EvaluationTrace.FlowKey.item(ItemIdentity.idOf(sig), sig)));
         end.fluids().keySet().forEach(id -> keys.add(EvaluationTrace.FlowKey.fluid(id)));
-        // 方块折算的键必须进入候选集：产物被直接送走时终态里没有它
+        // 方块/实体掉落折算的键必须进入候选集：产物被直接送走时终态里没有它
         keys.addAll(deduction.keySet());
+        keys.addAll(lootDeduction.keySet());
 
         for (EvaluationTrace.FlowKey key : keys) {
             EvaluationTrace.Series series = trace.series().get(key);
@@ -152,9 +157,10 @@ final class EvaluationReplay {
             long s0Count = s0 == null ? 0L : (item
                     ? s0.items().getOrDefault(key.signature(), 0L)
                     : s0.fluids().getOrDefault(key.id(), 0L));
-            // 方块点名（0.5.6）：房间总库存变化 = (S2 - S1) 再减去被破坏掉的方块折算量
+            // 点名折算：房间总库存变化 = (S2 - S1) 再减去消失方块 V 与消失活体 L
             long vanished = deduction.getOrDefault(key, 0L);
-            long net = (endCount - baseCount) + ioOut - ioIn - vanished;
+            long vanishedLoot = lootDeduction.getOrDefault(key, 0L);
+            long net = (endCount - baseCount) + ioOut - ioIn - vanished - vanishedLoot;
 
             boolean isOutputType = outputTypes.contains(key);
             // 中间产物：非输出种类、S0 无、S1 有、且无 IO 输入流量（从 IO 外部输入的原料不算中间产物）

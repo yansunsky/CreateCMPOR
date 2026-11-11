@@ -197,6 +197,7 @@ final class EvaluationAudit {
         // DELETE 策略下它们已在评估起点被删掉（这里有东西说明是评估中途产生的，同样纳入统计）；
         // COUNT 策略下由这里把内容物计入 —— 与其它容器段落同一次快照，口径不会漂移。
         CreatePackageEntities.countIntoSnapshot(level, bounds, items);
+        EntityStorageScan.countIntoSnapshot(level, bounds, items);
 
         if (items.isEmpty() && fluids.isEmpty() && energy == 0
                 && normalBurnTicks == 0 && superBurnTicks == 0) {
@@ -247,29 +248,31 @@ final class EvaluationAudit {
     /**
      * RATE 三扫描防刷净平衡（用户定义规则）：
      * <ul>
-     *   <li>S0 全空（物品+流体+能量）<b>且没有方块折算</b> → 简化路径：只用 IO trace 的输入/输出。</li>
-     *   <li>产物 = 输出方块实际 trace 收集到的种类（outputTotal&gt;0）且 {@code net=(S2-S1)-V+O-I > 0}。</li>
+     *   <li>S0 全空（物品+流体+能量）<b>且没有方块或实体掉落折算</b> → 简化路径：只用 IO trace 的输入/输出。</li>
+     *   <li>产物 = 输出方块实际 trace 收集到的种类（outputTotal&gt;0）且 {@code net=(S2-S1)-V-L+O-I > 0}。</li>
      *   <li>中间产物（非输出种类、S0 无、S1 有）→ 完全忽略（即使被消耗）。</li>
      *   <li>消耗 = 非中间产物且 {@code net < 0}（含输出种类减少、初始库存消耗、方块被破坏）。</li>
      * </ul>
      *
-     * @param blockDeduction 方块点名折算（{@code FlowKey → 消失方块的掉落物件数}）；
-     *                       为空时公式与 0.5.5 完全一致。判据见 {@link #hasBlockDeduction}。
+     * @param blockDeduction 方块点名折算 V（{@code FlowKey → 消失方块的掉落物件数}）。
+     * @param entityLootDeduction 实体掉落点名折算 L；关闭时恒为空。简化路径判据见 {@link #hasCensusDeduction}。
      */
     static RateAudit auditRates(InventorySnapshot s0, InventorySnapshot baseline, InventorySnapshot end,
                                 EvaluationTrace trace, int seconds,
-                                Map<EvaluationTrace.FlowKey, Long> blockDeduction) {
+                                Map<EvaluationTrace.FlowKey, Long> blockDeduction,
+                                Map<EvaluationTrace.FlowKey, Long> entityLootDeduction) {
         long elapsedTicks = Math.max(1, (long) seconds * 20);
         Map<EvaluationTrace.FlowKey, Double> inputs = new HashMap<>();
         Map<EvaluationTrace.FlowKey, Double> outputs = new HashMap<>();
         Map<EvaluationTrace.FlowKey, Long> deduction = blockDeduction == null ? Map.of() : blockDeduction;
+        Map<EvaluationTrace.FlowKey, Long> lootDeduction = entityLootDeduction == null ? Map.of() : entityLootDeduction;
 
         // S0 全空 → 简化路径：只用 IO trace（输入方块/输出方块自统计）
         //
-        // ⚠️ 必须同时要求"没有方块折算"：简化路径完全跳过 S1/S2 净平衡，
-        // 而方块折算正是独立于快照的减法项。S0 恰好全空（净化评估就是刻意做出的这种状态）
-        // 时若仍走简化路径，「预置方块 → 破坏 → 输出」的产物会被全额当成净产出。
-        if (s0 == null || (s0.isEmpty() && deduction.isEmpty())) {
+        // ⚠️ 必须同时要求"没有方块或实体掉落折算"：简化路径完全跳过 S1/S2 净平衡，
+        // 而 V 与 L 都是独立于快照的减法项。S0 恰好全空（净化评估就是刻意做出的这种状态）
+        // 时若仍走简化路径，「预置方块/动物 → 破坏/屠宰 → 输出」会被全额当成净产出。
+        if (s0 == null || (s0.isEmpty() && !hasCensusDeduction(deduction, lootDeduction))) {
             for (Map.Entry<EvaluationTrace.FlowKey, EvaluationTrace.Series> entry : trace.series().entrySet()) {
                 if (entry.getValue().inputTotal > 0) {
                     inputs.put(entry.getKey(), (double) entry.getValue().inputTotal / elapsedTicks);
@@ -297,9 +300,10 @@ final class EvaluationAudit {
         end.items().keySet().forEach(sig ->
                 keys.add(EvaluationTrace.FlowKey.item(ItemIdentity.idOf(sig), sig)));
         end.fluids().keySet().forEach(id -> keys.add(EvaluationTrace.FlowKey.fluid(id)));
-        // 方块折算的键同样必须进入候选集：产物被直接送走时终态里没有它，
+        // 方块/实体掉落折算的键同样必须进入候选集：产物被直接送走时终态里没有它，
         // 只有靠这里把它带进来才能算出 net = 0（否则这条通道整条消失、产物仍是全额产出）。
         keys.addAll(deduction.keySet());
+        keys.addAll(lootDeduction.keySet());
 
         for (EvaluationTrace.FlowKey key : keys) {
             boolean item = "item".equals(key.kind());
@@ -312,9 +316,10 @@ final class EvaluationAudit {
             EvaluationTrace.Series series = trace.series().get(key);
             long ioOut = series == null ? 0L : series.outputTotal;
             long ioIn = series == null ? 0L : series.inputTotal;
-            // 方块点名：房间总库存变化 = (S2 - S1) 再减去被破坏掉的方块折算量
+            // 点名折算：房间总库存变化 = (S2 - S1) 再减去消失方块 V 与消失活体 L
             long vanished = deduction.getOrDefault(key, 0L);
-            long net = (endCount - baseCount) + ioOut - ioIn - vanished;
+            long vanishedLoot = lootDeduction.getOrDefault(key, 0L);
+            long net = (endCount - baseCount) + ioOut - ioIn - vanished - vanishedLoot;
 
             boolean isOutputType = outputTypes.contains(key);
             // 中间产物：非输出种类、S0 无、S1 有、且无 IO 输入流量（从 IO 外部输入的原料不算中间产物）
@@ -359,14 +364,16 @@ final class EvaluationAudit {
     }
 
     /**
-     * 是否存在方块点名折算（RATE / REPLAY 决定"能否走 S0 全空简化路径"的<b>唯一判据</b>）。
+     * 是否存在方块或实体掉落点名折算（RATE / REPLAY 决定"能否走 S0 全空简化路径"的<b>唯一判据</b>）。
      *
      * <p>抽成方法是为了让两条判定路径用同一个判断：简化路径完全跳过 S1/S2 净平衡，
-     * 而方块折算是一个独立于快照的减法项，一旦存在就必须走完整三扫描。
+     * 而 V 与 L 都是独立于快照的减法项，任一存在就必须走完整三扫描。
      * 两条路径若各写一遍，口径迟早漂移 —— 而这里的漂移方向恰好是"放行复制漏洞"。</p>
      */
-    static boolean hasBlockDeduction(Map<EvaluationTrace.FlowKey, Long> blockDeduction) {
-        return blockDeduction != null && !blockDeduction.isEmpty();
+    static boolean hasCensusDeduction(Map<EvaluationTrace.FlowKey, Long> blockDeduction,
+                                      Map<EvaluationTrace.FlowKey, Long> entityLootDeduction) {
+        return (blockDeduction != null && !blockDeduction.isEmpty())
+                || (entityLootDeduction != null && !entityLootDeduction.isEmpty());
     }
 
     /**

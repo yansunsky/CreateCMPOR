@@ -71,7 +71,8 @@ public final class EvaluationVerdict {
                          EvaluationAudit.InventorySnapshot baseline,
                          StressProfile stressProfile,
                          List<String> triggerItems,
-                         Map<EvaluationTrace.FlowKey, Long> blockDeduction) {
+                         Map<EvaluationTrace.FlowKey, Long> blockDeduction,
+                         Map<EvaluationTrace.FlowKey, Long> entityLootDeduction) {
         String mode = Config.EVALUATION_MODE.get().isEmpty()
                 ? "AUTO" : Config.EVALUATION_MODE.get().getFirst();
         // 能量速率：trace 自统计（RATE 输入沿用；输出经 auditEnergyRate 用三扫描修正）
@@ -82,7 +83,8 @@ public final class EvaluationVerdict {
 
         if ("FORCE_RATE".equals(mode)) {
             return rateResult(trace, s0, s1, baseline,
-                    inputEnergyRate, outputEnergyRate, stressProfile, triggerItems, blockDeduction);
+                    inputEnergyRate, outputEnergyRate, stressProfile, triggerItems,
+                    blockDeduction, entityLootDeduction);
         }
 
         boolean replayNeeded = "FORCE_REPLAY".equals(mode);
@@ -105,11 +107,12 @@ public final class EvaluationVerdict {
 
         if (!replayNeeded) {
             return rateResult(trace, s0, s1, baseline,
-                    inputEnergyRate, outputEnergyRate, stressProfile, triggerItems, blockDeduction);
+                    inputEnergyRate, outputEnergyRate, stressProfile, triggerItems,
+                    blockDeduction, entityLootDeduction);
         }
 
         EvaluationReplay.ReplayResult replay = EvaluationReplay.build(
-                trace, s0, s1, baseline, trace.seconds(), blockDeduction);
+                trace, s0, s1, baseline, trace.seconds(), blockDeduction, entityLootDeduction);
         String detail = "REPLAY：净平衡+损耗+" + Config.LOSS_RATE.get();
         return new Result(VERDICT_REPLAY, null, Map.of(), Map.of(),
                 replay.replayIn(), replay.replayOut(),
@@ -128,11 +131,12 @@ public final class EvaluationVerdict {
                                      double inputEnergyRate, double outputEnergyRate,
                                      StressProfile stressProfile,
                                      List<String> triggerItems,
-                                     Map<EvaluationTrace.FlowKey, Long> blockDeduction) {
+                                     Map<EvaluationTrace.FlowKey, Long> blockDeduction,
+                                     Map<EvaluationTrace.FlowKey, Long> entityLootDeduction) {
         // 基线 = S1（预热结束）；无预热时回退 S0
         EvaluationAudit.InventorySnapshot base = baseline != null ? baseline : s0;
         EvaluationAudit.RateAudit audited = EvaluationAudit.auditRates(
-                s0, base, s1, trace, trace.seconds(), blockDeduction);
+                s0, base, s1, trace, trace.seconds(), blockDeduction, entityLootDeduction);
         double auditedEnergy = EvaluationAudit.auditEnergyRate(
                 base, s1, trace.energy(), outputEnergyRate, trace.seconds());
         return new Result(VERDICT_RATE, null, audited.inputs(), audited.outputs(),
