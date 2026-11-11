@@ -103,30 +103,33 @@ public class ModBlocks {
         // 保证「产物能从它出去、原料能从它进入」，且不会复制物品。
         event.registerBlockEntity(Capabilities.ItemHandler.BLOCK, ModBlockEntities.IO_EXTENSION.get(),
                 (be, side) -> {
-                    if (be.getLevel() == null || !be.isIoFace(side))
+                    var level = be.getLevel();
+                    if (level == null || !be.isIoFace(side))
                         return null;
                     for (BlockPos fp : be.getReachableFactories()) {
-                        if (be.getLevel().getBlockEntity(fp) instanceof FactoryBlockEntity fbe)
+                        if (level.isLoaded(fp) && level.getBlockEntity(fp) instanceof FactoryBlockEntity fbe)
                             return fbe.getItemHandler();
                     }
                     return null;
                 });
         event.registerBlockEntity(Capabilities.FluidHandler.BLOCK, ModBlockEntities.IO_EXTENSION.get(),
                 (be, side) -> {
-                    if (be.getLevel() == null || !be.isIoFace(side))
+                    var level = be.getLevel();
+                    if (level == null || !be.isIoFace(side))
                         return null;
                     for (BlockPos fp : be.getReachableFactories()) {
-                        if (be.getLevel().getBlockEntity(fp) instanceof FactoryBlockEntity fbe)
+                        if (level.isLoaded(fp) && level.getBlockEntity(fp) instanceof FactoryBlockEntity fbe)
                             return fbe.getFluidHandler();
                     }
                     return null;
                 });
         event.registerBlockEntity(Capabilities.EnergyStorage.BLOCK, ModBlockEntities.IO_EXTENSION.get(),
                 (be, side) -> {
-                    if (be.getLevel() == null || !be.isIoFace(side))
+                    var level = be.getLevel();
+                    if (level == null || !be.isIoFace(side))
                         return null;
                     for (BlockPos fp : be.getReachableFactories()) {
-                        if (be.getLevel().getBlockEntity(fp) instanceof FactoryBlockEntity fbe && fbe.hasEnergyIo())
+                        if (level.isLoaded(fp) && level.getBlockEntity(fp) instanceof FactoryBlockEntity fbe && fbe.hasEnergyIo())
                             return fbe.getEnergyHandler();
                     }
                     return null;

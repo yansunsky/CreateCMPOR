@@ -81,6 +81,8 @@ public class IOExtensionBlockEntity extends KineticBlockEntity {
         visited.add(worldPosition.asLong());
         while (!queue.isEmpty()) {
             BlockPos cur = queue.poll();
+            if (!level.isLoaded(cur))
+                continue;
             BlockState curState = level.getBlockState(cur);
             if (!isIoExtensionState(curState))
                 continue; // 防御：队列里只应有 IO 拓展方块
@@ -89,7 +91,7 @@ public class IOExtensionBlockEntity extends KineticBlockEntity {
                 if (d.getAxis() != curAxis)
                     continue; // 只沿轴向两端扩展
                 BlockPos np = cur.relative(d);
-                if (visited.contains(np.asLong()))
+                if (visited.contains(np.asLong()) || !level.isLoaded(np))
                     continue;
                 BlockState ns = level.getBlockState(np);
                 if (isIoExtensionState(ns)) {
@@ -150,6 +152,8 @@ public class IOExtensionBlockEntity extends KineticBlockEntity {
         visited.add(worldPosition.asLong());
 
         BlockPos first = worldPosition.relative(startDir);
+        if (!level.isLoaded(first))
+            return factories;
         BlockState fs = level.getBlockState(first);
         if (isIoExtensionState(fs) && fs.getValue(IOExtensionBlock.AXIS) == axis) {
             visited.add(first.asLong());
@@ -160,13 +164,15 @@ public class IOExtensionBlockEntity extends KineticBlockEntity {
 
         while (!queue.isEmpty()) {
             BlockPos cur = queue.poll();
+            if (!level.isLoaded(cur))
+                continue;
             BlockState curState = level.getBlockState(cur);
             Direction.Axis curAxis = curState.getValue(IOExtensionBlock.AXIS);
             for (Direction d : Direction.values()) {
                 if (d.getAxis() != curAxis)
                     continue;
                 BlockPos np = cur.relative(d);
-                if (visited.contains(np.asLong()))
+                if (visited.contains(np.asLong()) || !level.isLoaded(np))
                     continue;
                 BlockState ns = level.getBlockState(np);
                 if (isIoExtensionState(ns) && ns.getValue(IOExtensionBlock.AXIS) == curAxis) {
