@@ -29,11 +29,12 @@ public final class IOExtensionHandlerProxy {
     private static FactoryBlockEntity resolve(IOExtensionBlockEntity extension, Direction side,
                                               boolean energyOnly) {
         Level level = extension.getLevel();
-        if (level == null || extension.isRemoved() || !extension.isIoFace(side)) {
+        if (level == null || extension.isRemoved()) {
             return null;
         }
         BlockPos extensionPos = extension.getBlockPos();
-        if (!level.isLoaded(extensionPos) || level.getBlockEntity(extensionPos) != extension) {
+        if (!level.isLoaded(extensionPos) || level.getBlockEntity(extensionPos) != extension
+                || !extension.isIoFace(side)) {
             return null;
         }
         for (BlockPos targetPos : extension.getReachableFactories()) {
