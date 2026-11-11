@@ -2,7 +2,15 @@
 
 > Create × CompactMachines: Parallel Room Evaluation System
 > Minecraft 1.21.1 · NeoForge 21.1.x · Create 6.0.10-281 · CompactMachines 7.0.81
-> Current version: **0.5.9**
+> Current version: **0.5.12**
+
+## 0.5.12 Fixes
+
+- External teleports into evaluation copies are bound to one unique active session/lane; ambiguous or stale destinations fail closed to a safe return point.
+- Serial branch transitions, solidification, rollback and exception cleanup release observers by session footprint; cleanup also rejects new arrivals and removes unowned players that can actually hold target chunk tickets.
+- Nearby observers bound to another live session are preserved; they exit only when occupying the exact manifest chunk being cleaned and that chunk is not owned by their session.
+- Dependency-free rule checks cover unique session/lane resolution, fail-closed ambiguity, legacy/cross-session ownership, ticket distance and spectator gamerule behavior. Real player-ticket behavior still requires isolated-server validation.
+
 
 ## Introduction
 

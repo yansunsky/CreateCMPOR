@@ -107,6 +107,23 @@ tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
 }
 
+tasks.register('verifyObservationSessionBinding', JavaExec) {
+    group = 'verification'
+    description = 'Runs dependency-free checks for observer session/lane ownership.'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.yansunsky.createcmpor.evaluation.ObservationSessionBindingTest'
+    jvmArgs '-ea'
+}
+
+tasks.named('test', Test) {
+    failOnNoDiscoveredTests = false
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyObservationSessionBinding')
+}
+
 // 处理 templates 中的 neoforge.mods.toml 占位符
 var generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
     var replaceProperties = [

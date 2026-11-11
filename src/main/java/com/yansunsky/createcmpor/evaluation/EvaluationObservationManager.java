@@ -16,6 +16,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.GameRules;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
@@ -24,8 +25,12 @@ import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -34,31 +39,26 @@ import java.util.UUID;
  * <p><b>目的</b>：评估期间玩家只能看到"进行中"，若产线本身有问题则要等整场评估跑完才发现。
  * 允许玩家以观察者模式进入评估副本实时旁观产线，提前发现错误。
  *
- * <p><b>为什么不影响评估结果（vanilla 语义确证）</b>：
+ * <p><b>评估维度行为</b>：观察者不参与刷怪；目标区块由评估票据持续加载。原版允许 spectator 产生区块 ticket，
+ * 因此观察者可能影响邻近区块的加载，并且在会话清理前必须退出。</p>
  * <ul>
- * <li>{@code ChunkMap.skipPlayer}：观察者默认不产生区块票据（{@code spectatorsGenerateChunks=false}），
- * 不会额外加载/保持区块；</li>
  * <li>{@code ChunkMap.playerIsCloseEnoughForSpawning}：观察者被直接排除，不参与刷怪；</li>
- * <li>评估副本本来就靠 {@code setChunkForced} 常 tick，玩家进出不改变这一点。</li>
+ * <li>评估目标区块由 {@code setChunkForced} 常 tick；玩家视距仍可能额外影响周边区块。</li>
  * </ul>
  *
  * <p><b>进入方式</b>：手持 {@code compactmachines:personal_shrinking_device} 右键评估方块。
  * 已观察中再次右键 → 切换到下一个<b>已就绪</b>的并行分支；潜行右键 → 退出观察。
+ * 外部传送进入者只有在能唯一绑定活动 session/lane 时才接管，否则 fail-closed 送回。
  *
- * <p><b>进入来源统一</b>：被传送模组/指令直接送进评估维度的玩家，也会在下一 tick 被自动转为观察者，
- * 保证"任何人进入评估空间都是观察者"。
+ * <p><b>玩家处置</b>：观察功能开启时，进入评估维度的玩家由本管理器绑定到唯一活动 session/lane；
+ * 无法安全绑定或 session 已开始清理时 fail-closed 送出。观察功能关闭时，OP 仍可用于评估维度调试，
+ * 但正在清理的目标 ticket 范围会临时清场。</p>
  *
- * <p><b>退出时机</b>：飞出房间外边界（含 Y 轴）、会话结束、玩家重新登录（自愈）。
- * 退出时传回进入前位置并恢复原游戏模式。
- *
- * <p><b>OP 豁免的范围（0.4.5 修正）</b>：豁免只针对<b>没有观察记录</b>的 OP
- * （保留 {@code /ccmpor room enter eval} 调试自由、不强制转观察者）；
- * 玩家一旦自己用缩小设备进入观察，就必须和普通玩家一样受越界/会话监管——
- * 否则"飞出房间 → 倒计时 → 自动退出"整条对 OP 失效（0.3.49 起如此，0.4.4 实机报告）。
+ * <p><b>退出时机</b>：飞出房间外边界（含 Y 轴）、会话/分支不再可观察、清理目标 ticket 范围、玩家重新登录（自愈）。
+ * 退出时传回进入前位置并恢复原游戏模式。</p>
  *
  * <p><b>诊断探针（低频）</b>：进入/切换、退出（带原因与目的地）、越界倒计时开始、飞回取消
- * 各打一条 INFO；"OP 未被观察记录接管"与"拿不到房间信息致越界判定跳过"各打一条——
- * 全部只在<b>状态变化</b>时打，不刷屏。
+ * 各打一条 INFO；状态只在变化时记录，不按 tick 刷屏。</p>
  *
  * <p><b>离线/崩溃安全</b>：观察记录写在玩家 {@code PersistentData}（随玩家存档持久化），
  * 因此跨下线、跨服务器重启都能在下次登录时自愈（见 {@link #onPlayerLogin}）。
@@ -121,7 +121,7 @@ public final class EvaluationObservationManager {
 
         List<ResourceKey<Level>> readyLanes = readyLaneDimensions(server, session);
         ResourceKey<Level> targetKey = pickTargetDimension(session, readyLanes);
-        if (targetKey == null) {
+        if (targetKey == null || !isObservationLiveInDimension(session, targetKey)) {
             message(player, "message.createcmpor.observation.not_ready");
             return;
         }
@@ -132,11 +132,19 @@ public final class EvaluationObservationManager {
         }
 
         boolean switching = isObserving(player);
+        if (switching) {
+            CompoundTag current = player.getPersistentData().getCompound(OBSERVATION_KEY);
+            if (!current.hasUUID("session_id") || !session.id().equals(current.getUUID("session_id"))) {
+                // 切换会话必须先完成旧记录的返回流程，再建立新返回点。
+                INSTANCE.exit(player, null);
+                switching = false;
+            }
+        }
         if (!switching) {
             // 首次进入：记录进入前的位置与游戏模式（跨下线/崩溃持久化）
             writeRecord(player, session, roomCode, targetKey);
         } else {
-            updateObservedLane(player, targetKey);
+            updateObservedLane(player, session, targetKey);
         }
         // 记录最后安全位置（若当前不在评估维度，用于被 tp 进来的玩家回退）
         recordLastSafePosition(player);
@@ -159,26 +167,60 @@ public final class EvaluationObservationManager {
         }
     }
 
-    /** 副本是否已就绪（与 EvalWorldCommands.enterEval 同一判定口径）。 */
+    /** 副本是否已就绪，且会话还没有进入固化/清理阶段。 */
     private static boolean isCopyLive(EvaluationSession session) {
         EvaluationSession.State state = session.state();
         if (!session.parallelBranches().isEmpty()) {
             return state == EvaluationSession.State.PARALLEL_PUBLISHED
-                    || state == EvaluationSession.State.PARALLEL_EVALUATING
-                    || state == EvaluationSession.State.SOLIDIFYING;
+                    || state == EvaluationSession.State.PARALLEL_EVALUATING;
         }
         return session.manifest() != null
                 && (state == EvaluationSession.State.PUBLISHED
                 || state == EvaluationSession.State.EVALUATING
-                || state == EvaluationSession.State.EVALUATED
-                || state == EvaluationSession.State.SOLIDIFYING);
+                || state == EvaluationSession.State.EVALUATED);
+    }
+
+    private static boolean isObservationLiveInDimension(EvaluationSession session,
+                                                        ResourceKey<Level> dimension) {
+        EvaluationSession.State state = session.state();
+        if (state == EvaluationSession.State.PARALLEL_PUBLISHED
+                || state == EvaluationSession.State.PARALLEL_EVALUATING) {
+            return session.parallelBranches().stream().anyMatch(branch -> branch.targetReady()
+                    && branch.result() == null
+                    && branch.manifest().targetDimension().equals(dimension));
+        }
+        return (state == EvaluationSession.State.PUBLISHED
+                || state == EvaluationSession.State.EVALUATING
+                || state == EvaluationSession.State.EVALUATED)
+                && session.manifest() != null
+                && session.manifest().targetDimension().equals(dimension);
+    }
+
+    private static Optional<EvaluationSession> resolveObservationSession(EvaluationSavedData data,
+                                                                         ServerPlayer player,
+                                                                         ResourceKey<Level> dimension,
+                                                                         String roomCode) {
+        List<ObservationSessionBinding.Candidate> candidates = new ArrayList<>();
+        for (EvaluationSession session : data.sessions()) {
+            for (EvaluationManifest manifest : sessionManifests(session)) {
+                boolean live = isObservationLiveInDimension(session, manifest.targetDimension());
+                Set<Long> chunks = manifest.chunks().stream()
+                        .map(chunk -> chunk.chunkPos().toLong())
+                        .collect(java.util.stream.Collectors.toSet());
+                candidates.add(new ObservationSessionBinding.Candidate(session.id(), session.roomCode(),
+                        manifest.targetDimension().location().toString(), chunks, live));
+            }
+        }
+        long playerChunk = new ChunkPos(player.blockPosition()).toLong();
+        return ObservationSessionBinding.resolve(candidates, dimension.location().toString(),
+                roomCode, playerChunk).flatMap(data::session);
     }
 
     /** 已就绪（targetReady）的并行分支维度，按分支序号升序；串行时为空表。 */
     private static List<ResourceKey<Level>> readyLaneDimensions(MinecraftServer server, EvaluationSession session) {
         List<ResourceKey<Level>> lanes = new ArrayList<>();
         for (EvaluationBranch branch : session.parallelBranches()) {
-            if (!branch.targetReady()) {
+            if (!branch.targetReady() || branch.result() != null) {
                 continue;
             }
             ResourceKey<Level> dimension = branch.manifest().targetDimension();
@@ -261,17 +303,264 @@ public final class EvaluationObservationManager {
         }
     }
 
-    /** 会话结束时把仍在观察该会话副本的玩家全部送出（防遗留观察者）。 */
-    public static void exitObserversOf(MinecraftServer server, UUID sessionId, String reasonKey) {
+    /** 清理会话副本前退出该 session 的观察者并移走其 footprint 内无主玩家。 */
+    public static void exitPlayersFromSessionCopies(MinecraftServer server, EvaluationSession session,
+                                                   String reasonKey) {
+        List<EvaluationManifest> manifests = cleanupManifests(session);
+        Map<ResourceKey<Level>, Set<Long>> footprint = new HashMap<>();
+        for (EvaluationManifest manifest : manifests) {
+            Set<Long> chunks = footprint.computeIfAbsent(manifest.targetDimension(), ignored -> new HashSet<>());
+            for (EvaluationManifest.ChunkRecord chunk : manifest.chunks()) {
+                chunks.add(chunk.chunkPos().toLong());
+            }
+        }
+
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-            CompoundTag data = player.getPersistentData().getCompound(OBSERVATION_KEY);
-            if (data.isEmpty() || !data.hasUUID("session_id")) {
+            CompoundTag record = player.getPersistentData().getCompound(OBSERVATION_KEY);
+            boolean sessionRecord = record.hasUUID("session_id")
+                    && session.id().equals(record.getUUID("session_id"));
+            boolean legacySessionRecord = !record.isEmpty() && !record.hasUUID("session_id")
+                    && footprint.containsKey(player.level().dimension())
+                    && belongsToCleanupSession(record, player, session, footprint.keySet());
+            if (sessionRecord || legacySessionRecord) {
+                INSTANCE.exit(player, reasonKey);
                 continue;
             }
-            if (sessionId.equals(data.getUUID("session_id"))) {
+
+            boolean mayHoldPlayerTickets = mayHoldPlayerTickets(player);
+            Set<Long> chunks = footprint.get(player.level().dimension());
+            if (chunks == null) {
+                continue;
+            }
+            if (!record.hasUUID("session_id") && !mayHoldPlayerTickets) {
+                continue;
+            }
+            boolean insideTargetChunk = chunks.contains(new ChunkPos(player.blockPosition()).toLong());
+            boolean boundToOtherLiveSession = false;
+            if (record.hasUUID("session_id") && !session.id().equals(record.getUUID("session_id"))) {
+                EvaluationSession other = EvaluationSavedData.get(server)
+                        .session(record.getUUID("session_id")).orElse(null);
+                boundToOtherLiveSession = other != null
+                        && isObservationLiveInDimension(other, player.level().dimension());
+            }
+            boolean targetChunkOwnedByOtherSession = insideTargetChunk
+                    && isTargetChunkOwnedByOtherSession(EvaluationSavedData.get(server), session,
+                    player.level().dimension(), new ChunkPos(player.blockPosition()).toLong());
+            if (!ObservationSessionBinding.mayEvictCleanupOccupant(
+                    boundToOtherLiveSession, insideTargetChunk, targetChunkOwnedByOtherSession)) {
+                continue;
+            }
+            if (record.hasUUID("session_id")) {
+                if (!withinPlayerTicketRange(player, chunks)) {
+                    continue;
+                }
+                INSTANCE.exit(player, reasonKey);
+                continue;
+            }
+            if (!withinPlayerTicketRange(player, chunks)) {
+                continue;
+            }
+            String recordedRoom = record.getString("room_code");
+            if (!record.isEmpty() && !recordedRoom.isBlank()
+                    && !session.roomCode().equals(recordedRoom) && !insideTargetChunk) {
+                continue;
+            }
+            if (record.isEmpty()) {
+                ejectUntrackedPlayer(player, reasonKey);
+            } else {
+                // 无 session_id 的旧记录无法证明归属；只在目标 chunk 冲突或房间匹配时 fail-closed。
                 INSTANCE.exit(player, reasonKey);
             }
         }
+    }
+
+    /** 清理阶段兜底：不允许玩家继续占住即将清理的目标 chunk 或其票据视距。 */
+    public static boolean evictPlayerIfCopyCleaning(ServerPlayer player) {
+        boolean spectatorsGenerateChunks = player.serverLevel().getGameRules()
+                .getBoolean(GameRules.RULE_SPECTATORSGENERATECHUNKS);
+        if (!ObservationSessionBinding.mayHoldPlayerTickets(player.isSpectator(), spectatorsGenerateChunks)) {
+            return false;
+        }
+        ResourceKey<Level> dimension = player.level().dimension();
+        EvaluationSavedData data = EvaluationSavedData.get(player.server);
+        for (EvaluationSession session : data.sessions()) {
+            EvaluationSession.State state = session.state();
+            if (state != EvaluationSession.State.CLEANING
+                    && state != EvaluationSession.State.SOLIDIFYING) {
+                continue;
+            }
+            List<EvaluationManifest> manifests = cleanupManifests(session);
+            boolean ticketRange = withinPlayerTicketRange(player, dimension, manifests);
+            if (!ticketRange) {
+                continue;
+            }
+            ChunkPos playerChunk = new ChunkPos(player.blockPosition());
+            boolean insideTargetChunk = manifests.stream()
+                    .filter(manifest -> manifest.targetDimension().equals(dimension))
+                    .flatMap(manifest -> manifest.chunks().stream())
+                    .anyMatch(chunk -> chunk.chunkPos().equals(playerChunk));
+
+            CompoundTag record = player.getPersistentData().getCompound(OBSERVATION_KEY);
+            if (record.hasUUID("session_id")) {
+                UUID recordedSession = record.getUUID("session_id");
+                if (session.id().equals(recordedSession)) {
+                    INSTANCE.exit(player, "message.createcmpor.observation.finished");
+                    return true;
+                }
+                EvaluationSession other = data.session(recordedSession).orElse(null);
+                if (other != null && isObservationLiveInDimension(other, dimension) && !insideTargetChunk) {
+                    return false;
+                }
+            }
+            if (insideTargetChunk && isTargetChunkOwnedByOtherSession(
+                    data, session, dimension, playerChunk.toLong())) {
+                return false;
+            }
+            String recordedRoom = record.getString("room_code");
+            if (!record.hasUUID("session_id") && !record.isEmpty() && !recordedRoom.isBlank()
+                    && !session.roomCode().equals(recordedRoom) && !insideTargetChunk) {
+                continue;
+            }
+            if (record.isEmpty()) {
+                ejectUntrackedPlayer(player, "message.createcmpor.observation.finished");
+            } else {
+                INSTANCE.exit(player, "message.createcmpor.observation.finished");
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private static boolean mayHoldPlayerTickets(ServerPlayer player) {
+        return ObservationSessionBinding.mayHoldPlayerTickets(player.isSpectator(),
+                player.serverLevel().getGameRules().getBoolean(GameRules.RULE_SPECTATORSGENERATECHUNKS));
+    }
+
+    private static boolean withinPlayerTicketRange(ServerPlayer player, Set<Long> targetChunks) {
+        ChunkPos position = new ChunkPos(player.blockPosition());
+        int viewDistance = Math.max(2, Math.min(32, player.server.getPlayerList().getViewDistance()));
+        for (long packed : targetChunks) {
+            if (withinPlayerTicketRange(position, new ChunkPos(packed), viewDistance)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean withinPlayerTicketRange(ServerPlayer player, ResourceKey<Level> dimension,
+                                                   List<EvaluationManifest> manifests) {
+        ChunkPos position = new ChunkPos(player.blockPosition());
+        int viewDistance = Math.max(2, Math.min(32, player.server.getPlayerList().getViewDistance()));
+        for (EvaluationManifest manifest : manifests) {
+            if (!manifest.targetDimension().equals(dimension)) {
+                continue;
+            }
+            for (EvaluationManifest.ChunkRecord chunk : manifest.chunks()) {
+                if (withinPlayerTicketRange(position, chunk.chunkPos(), viewDistance)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean withinPlayerTicketRange(ChunkPos player, ChunkPos target, int viewDistance) {
+        return ObservationSessionBinding.withinPlayerTicketRange(
+                player.x, player.z, target.x, target.z, viewDistance);
+    }
+
+    private static List<EvaluationManifest> sessionManifests(EvaluationSession session) {
+        List<EvaluationManifest> manifests = new ArrayList<>();
+        if (session.manifest() != null) {
+            manifests.add(session.manifest());
+        }
+        manifests.addAll(session.parallelBranchManifests());
+        return manifests;
+    }
+
+    private static List<EvaluationManifest> cleanupManifests(EvaluationSession session) {
+        List<EvaluationManifest> manifests;
+        if (session.hasParallelBranches()) {
+            manifests = session.parallelBranchManifests();
+        } else if (session.branchCount() > 1 && session.parallelAllowed()) {
+            // 并行 lane 已被清空或尚未建立时，父级 manifest 仅是 staging 清单，不是已发布目标副本。
+            return List.of();
+        } else {
+            manifests = session.manifest() == null ? List.of() : List.of(session.manifest());
+        }
+        return manifests.stream()
+                .filter(manifest -> ObservationSessionBinding.mayHoldPlayerTickets(
+                        session.cleanTargetOnCancel(), manifest.ticketsAdded(), manifest.targetReady(),
+                        manifest.targetWriteIntent()))
+                .toList();
+    }
+
+    private static boolean isTargetChunkOwnedByOtherSession(EvaluationSavedData data,
+                                                             EvaluationSession cleanupSession,
+                                                             ResourceKey<Level> dimension,
+                                                             long targetChunk) {
+        for (EvaluationSession other : data.sessions()) {
+            if (other.id().equals(cleanupSession.id())) {
+                continue;
+            }
+            for (EvaluationManifest manifest : cleanupManifests(other)) {
+                if (manifest.targetDimension().equals(dimension)
+                        && manifest.chunks().stream().anyMatch(chunk ->
+                                chunk.chunkPos().toLong() == targetChunk)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean belongsToCleanupSession(CompoundTag record, ServerPlayer player,
+                                                   EvaluationSession session,
+                                                   Set<ResourceKey<Level>> dimensions) {
+        String observedDimension = record.getString("observed_dim");
+        if (observedDimension.isBlank()) {
+            observedDimension = player.level().dimension().location().toString();
+        }
+        Set<String> dimensionIds = dimensions.stream()
+                .map(dimension -> dimension.location().toString())
+                .collect(java.util.stream.Collectors.toSet());
+        return ObservationSessionBinding.belongsToCleanup(null, session.id(),
+                record.getString("room_code"), session.roomCode(), observedDimension, dimensionIds);
+    }
+
+    private static void ejectUntrackedPlayer(ServerPlayer player, String reasonKey) {
+        CompoundTag safe = player.getPersistentData().getCompound(LAST_SAFE_KEY);
+        ResourceKey<Level> dimension = Level.OVERWORLD;
+        boolean useSafePosition = false;
+        if (!safe.isEmpty() && !safe.getString("dim").isBlank()) {
+            try {
+                ResourceKey<Level> savedDimension = ResourceKey.create(
+                        net.minecraft.core.registries.Registries.DIMENSION,
+                        ResourceLocation.parse(safe.getString("dim")));
+                if (!ParallelEvaluationWorlds.isAnyEvaluationWorld(savedDimension)
+                        && player.server.getLevel(savedDimension) != null) {
+                    dimension = savedDimension;
+                    useSafePosition = true;
+                }
+            } catch (RuntimeException ignored) {
+                // Invalid saved return point: fall back to the overworld spawn.
+            }
+        }
+        ServerLevel target = player.server.getLevel(dimension);
+        if (target == null) {
+            target = player.server.overworld();
+            useSafePosition = false;
+        }
+        double x = useSafePosition ? safe.getDouble("x") : target.getSharedSpawnPos().getX() + 0.5;
+        double y = useSafePosition ? safe.getDouble("y") : target.getSharedSpawnPos().getY() + 1.0;
+        double z = useSafePosition ? safe.getDouble("z") : target.getSharedSpawnPos().getZ() + 0.5;
+        float yRot = useSafePosition ? safe.getFloat("yrot") : 0.0F;
+        float xRot = useSafePosition ? safe.getFloat("xrot") : 0.0F;
+        player.teleportTo(target, x, y, z, yRot, xRot);
+        clearRegulationState(player);
+        player.displayClientMessage(Component.translatable(reasonKey), false);
+        CreateCMPOR.LOGGER.info("观察清理：无主玩家 {} 已移出评估副本 {}", player.getName().getString(),
+                target.dimension().location());
     }
 
     // ===================== 每 tick 监管 =====================
@@ -290,25 +579,51 @@ public final class EvaluationObservationManager {
                 continue;
             }
             if (!INSTANCE.isObserving(player)) {
-                // 说明：0.3.49 起这里曾有一个"OP 豁免"（权限 >=2 时不纳入监管），导致 OP 账号
-                // "飞出 outerBounds 不退出、只有评估结束才回去"（0.4.4 实机发现）。0.4.5 先把豁免
-                // 收窄到"无观察记录"，0.4.6 按用户要求**彻底移除**——现在不再有豁免分支。
-                // 用户 2026-09-29 决定：**移除 OP 豁免**（该功能已收尾）——权限高低一律同待遇。
-                // 只要在评估维度里没有观察记录，就在下一 tick 转为观察者并纳入越界/会话监管，
-                // 即"飞出 outerBounds → 倒计时 → 自动退出"对所有人一致。
                 markRegulated(player);
-                // 被传送模组/指令送进来：下一 tick 转为观察者并纳入监管
-                adoptTeleportedPlayer(server, player);
+                // 被传送模组/指令送进来：仅能唯一绑定到活动 session/lane 时才接管。
+                adoptTeleportedPlayer(server, data, player);
                 continue;
             }
             markRegulated(player);
             CompoundTag record = player.getPersistentData().getCompound(OBSERVATION_KEY);
-            if (record.hasUUID("session_id") && data.session(record.getUUID("session_id")).isEmpty()) {
-                INSTANCE.exit(player, "message.createcmpor.observation.finished");
-                continue;
+            ResourceKey<Level> observedDimension = player.level().dimension();
+            EvaluationSession observedSession;
+            if (record.hasUUID("session_id")) {
+                observedSession = data.session(record.getUUID("session_id")).orElse(null);
+                String recordedDimension = record.getString("observed_dim");
+                if (observedSession == null
+                        || !isObservationLiveInDimension(observedSession, observedDimension)
+                        || (!recordedDimension.isBlank()
+                        && !recordedDimension.equals(observedDimension.location().toString()))
+                        || (!record.getString("room_code").isBlank()
+                        && !record.getString("room_code").equals(observedSession.roomCode()))) {
+                    INSTANCE.exit(player, "message.createcmpor.observation.finished");
+                    continue;
+                }
+                if (recordedDimension.isBlank()) {
+                    record.putString("observed_dim", observedDimension.location().toString());
+                    player.getPersistentData().put(OBSERVATION_KEY, record);
+                }
+            } else {
+                String recordedRoomCode = record.getString("room_code");
+                String currentRoomCode = recordRoomCodeAt(player);
+                if (!recordedRoomCode.isBlank() && !currentRoomCode.isBlank()
+                        && !recordedRoomCode.equals(currentRoomCode)) {
+                    INSTANCE.exit(player, "message.createcmpor.observation.finished");
+                    continue;
+                }
+                String roomCode = recordedRoomCode.isBlank() ? currentRoomCode : recordedRoomCode;
+                observedSession = resolveObservationSession(data, player, observedDimension, roomCode)
+                        .orElse(null);
+                if (observedSession == null) {
+                    INSTANCE.exit(player, "message.createcmpor.observation.finished");
+                    continue;
+                }
+                record.putUUID("session_id", observedSession.id());
+                record.putString("room_code", observedSession.roomCode());
+                record.putString("observed_dim", observedDimension.location().toString());
+                player.getPersistentData().put(OBSERVATION_KEY, record);
             }
-            // 越界不立即退出：给 OUT_OF_BOUNDS_GRACE_TICKS 的缓冲倒计时（屏幕中央大字提示），
-            // 飞回房间内立即取消并清除字样。超时才真正退出观察。
             Bounds bounds = boundsOf(player, record);
             if (bounds == Bounds.OUTSIDE) {
                 INSTANCE.tickOutOfBounds(player);
@@ -396,8 +711,9 @@ public final class EvaluationObservationManager {
         player.connection.send(new net.minecraft.network.protocol.game.ClientboundSetSubtitleTextPacket(Component.empty()));
     }
 
-    /** 把被传送进入评估维度的玩家转为观察者（记录其"最后安全位置"作为回退点）。 */
-    private static void adoptTeleportedPlayer(MinecraftServer server, ServerPlayer player) {
+    /** 把被传送进入评估维度的玩家转为观察者；无唯一活动 session 时 fail-closed 送回。 */
+    private static void adoptTeleportedPlayer(MinecraftServer server, EvaluationSavedData data,
+                                              ServerPlayer player) {
         if (!player.hasPermissions(Config.OBSERVATION_PERMISSION_LEVEL.get())) {
             // 无观察权限：按原逻辑送回主世界
             ServerLevel overworld = server.overworld();
@@ -407,12 +723,21 @@ public final class EvaluationObservationManager {
             message(player, "message.createcmpor.observation.no_permission");
             return;
         }
+
+        ResourceKey<Level> observedDimension = player.level().dimension();
+        String roomCode = recordRoomCodeAt(player);
+        EvaluationSession session = resolveObservationSession(
+                data, player, observedDimension, roomCode).orElse(null);
+        if (session == null) {
+            ejectUntrackedPlayer(player, "message.createcmpor.observation.not_ready");
+            return;
+        }
+
         CompoundTag safe = player.getPersistentData().getCompound(LAST_SAFE_KEY);
         CompoundTag record = new CompoundTag();
-        // 被 tp 进来时记录里没有房间号 → 用 chunk→room 反查补齐，使这类观察者同样受越界监管
-        String roomCode = recordRoomCodeAt(player);
-        record.putString("room_code", roomCode);
-        record.putString("observed_dim", player.level().dimension().location().toString());
+        record.putUUID("session_id", session.id());
+        record.putString("room_code", session.roomCode());
+        record.putString("observed_dim", observedDimension.location().toString());
         record.putString("return_gametype", player.gameMode.getGameModeForPlayer().getName());
         if (!safe.isEmpty()) {
             record.putString("return_dim", safe.getString("dim"));
@@ -434,8 +759,8 @@ public final class EvaluationObservationManager {
             player.setGameMode(GameType.SPECTATOR);
         }
         message(player, "message.createcmpor.observation.entered");
-        CreateCMPOR.LOGGER.info("玩家 {} 被传送进入评估维度 {}，已转为观察者",
-                player.getName().getString(), player.level().dimension().location());
+        CreateCMPOR.LOGGER.info("玩家 {} 被传送进入评估维度 {}，已绑定会话 {} 并转为观察者",
+                player.getName().getString(), observedDimension.location(), session.id());
     }
 
     /** 越界判定结果。 */
@@ -573,11 +898,14 @@ public final class EvaluationObservationManager {
         player.getPersistentData().put(OBSERVATION_KEY, record);
     }
 
-    private static void updateObservedLane(ServerPlayer player, ResourceKey<Level> observedDimension) {
+    private static void updateObservedLane(ServerPlayer player, EvaluationSession session,
+                                            ResourceKey<Level> observedDimension) {
         CompoundTag record = player.getPersistentData().getCompound(OBSERVATION_KEY);
         if (record.isEmpty()) {
             return;
         }
+        record.putUUID("session_id", session.id());
+        record.putString("room_code", session.roomCode());
         record.putString("observed_dim", observedDimension.location().toString());
         player.getPersistentData().put(OBSERVATION_KEY, record);
     }

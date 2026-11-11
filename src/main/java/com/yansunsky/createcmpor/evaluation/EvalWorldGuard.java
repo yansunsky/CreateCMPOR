@@ -17,7 +17,7 @@ import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import java.util.List;
 import java.util.Optional;
 
-/** 防止普通玩家进入 eval_world 或已冻结的 CompactMachines 房间。 */
+/** 防止玩家进入已冻结的 CompactMachines 房间，并在评估副本清理时清空受影响的玩家票据。 */
 public final class EvalWorldGuard {
     private static final int OP_PERMISSION_LEVEL = 2;
     private EvalWorldGuard() {
@@ -72,18 +72,18 @@ public final class EvalWorldGuard {
     /**
      * 评估维度的玩家处置。
      *
-     * <p>开启观察功能时，评估维度**不再直接踢人**：普通玩家（右键进入、或被传送模组送进来）
-     * 一律交给 {@link EvaluationObservationManager#onServerTick} 转为观察者并纳入边界/会话监管。
-     *
-     * <p><b>OP 豁免</b>：OP 保持原有的自由进出能力（含 {@code /ccmpor room enter eval} 调试路径），
-     * 不会被强制转为观察者，也不会被踢出——避免把管理员调试手段一并砍掉。
-     * 关闭观察功能时保持原行为（非 OP 一律送回主世界）。
+     * <p>无论观察功能是否开启，先移出正在清理的副本区块及其玩家 ticket 影响范围；
+     * 这避免 spectator/player ticket 阻塞 areChunksIdle。其余玩家按观察配置处理，
+     * 关闭观察时仍保留 OP 在非清理区域的调试入口。</p>
      */
     private static void ejectPlayersIfNeeded(ServerLevel level) {
-        if (Config.ENABLE_EVALUATION_OBSERVATION.get()) {
-            return; // 由 EvaluationObservationManager 每 tick 接管（普通玩家转观察者/越界退出/会话结束退出；OP 豁免）
-        }
         for (ServerPlayer player : List.copyOf(level.players())) {
+            if (EvaluationObservationManager.evictPlayerIfCopyCleaning(player)) {
+                continue;
+            }
+            if (Config.ENABLE_EVALUATION_OBSERVATION.get()) {
+                continue; // 正常评估期间由观察管理器接管；仅清理 footprint 在上面 fail-closed 退出
+            }
             if (!player.hasPermissions(OP_PERMISSION_LEVEL)) {
                 moveToOverworld(player, false);
             }

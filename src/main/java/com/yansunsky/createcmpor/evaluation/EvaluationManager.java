@@ -690,10 +690,10 @@ public final class EvaluationManager {
 
         // 0.5.9 耐久制：不再有「退还启动棒」这一步 —— 棒子从未离开玩家背包，
         // 因此下线 / 背包满 / 崩服 / 孤立方块恢复这些失败路径一并消失。
+        // 会话结束：把仍在其副本 footprint 内的观察者与无主占用者送出。
+        EvaluationObservationManager.exitPlayersFromSessionCopies(
+                server, session, "message.createcmpor.observation.finished");
         data.remove(session.id());
-        // 会话结束：把仍在观察该副本的玩家送出并恢复其游戏模式（自愈兜底，防遗留观察者）
-        EvaluationObservationManager.exitObserversOf(server, session.id(),
-                "message.createcmpor.observation.finished");
         flushTransactions(server);
         EvaluationCloneManager.INSTANCE.afterSessionRemoved(server, data);
         Component reason = rollbackReason(session);

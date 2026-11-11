@@ -55,6 +55,8 @@ public final class EvaluationCloneManager {
         data.reconcileCriticalSessions(snapshot.sessions(), snapshot.exists());
         for (EvaluationSession session : data.criticalSessions()) {
             session.setRollbackMessageKey("message.createcmpor.evaluation.recovered_after_restart");
+            EvaluationObservationManager.exitPlayersFromSessionCopies(
+                    server, session, "message.createcmpor.observation.finished");
             session.setState(EvaluationSession.State.CLEANING);
             data.changed();
         }
@@ -126,6 +128,8 @@ public final class EvaluationCloneManager {
             data.changed();
             return;
         }
+        EvaluationObservationManager.exitPlayersFromSessionCopies(
+                server, session, "message.createcmpor.observation.finished");
         closeRuntime(session.id());
         session.setState(EvaluationSession.State.CLEANING);
         data.changed();
@@ -669,6 +673,8 @@ public final class EvaluationCloneManager {
 
     private void tickSolidifying(MinecraftServer server, EvaluationSavedData data,
                                  EvaluationSession session) {
+        EvaluationObservationManager.exitPlayersFromSessionCopies(
+                server, session, "message.createcmpor.observation.finished");
         EvaluationVerdict.Result lastResult = session.evaluationResult();
         if (lastResult == null || lastResult.rejected()) {
             requestCleanup(server, data, session, "message.createcmpor.evaluation.clone_failed");
@@ -1053,15 +1059,13 @@ public final class EvaluationCloneManager {
             syncCriticalState(server, data);
         }
 
+        EvaluationObservationManager.exitPlayersFromSessionCopies(
+                server, session, "message.createcmpor.observation.finished");
         closeRuntime(session.id());
         EvaluationStorageBridge.deleteStaging(server, manifest);
         if (session.factoryInstalled()) {
             // 固化收尾：工厂保留（还原数据在工厂 BE 内），删除会话、释放房间锁
             data.remove(session.id());
-            // 成功路径（固化完成）同样必须把观察者送出：否则会滞留在评估副本里
-            // （此前只在 rollback 路径挂了踢出，导致"评估完成工厂固化后观察者不被踢出"）
-            EvaluationObservationManager.exitObserversOf(server, session.id(),
-                    "message.createcmpor.observation.finished");
             server.overworld().getDataStorage().save();
             EvaluationCloneManager.INSTANCE.afterSessionRemoved(server, data);
             var owner = server.getPlayerList().getPlayer(session.owner());

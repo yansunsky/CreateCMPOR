@@ -21,6 +21,13 @@ eclipse/
 # 本地依赖 jar（运行测试用，不纳入版本控制）
 libs/
 docs/
+!docs/
+docs/*
+!docs/71-0.5.12起缺陷修复与性能优化计划.md
+!docs/72-CHANGELOG-0.5.12-CN.md
+!docs/73-CHANGELOG-0.5.12-EN.md
+!docs/72-CHANGELOG-0.5.12-CN.md
+!docs/73-CHANGELOG-0.5.12-EN.md
 
 # Mesa3D 软件渲染库（本地客户端测试用，不纳入版本控制）
 mesa/

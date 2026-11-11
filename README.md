@@ -2,7 +2,15 @@
 
 > Create（机械动力）× CompactMachines 平行房间评估系统
 > Minecraft 1.21.1 · NeoForge 21.1.x · Create 6.0.10-281 · CompactMachines 7.0.81
-> 当前版本：**0.5.9**
+> 当前版本：**0.5.12**
+
+## 0.5.12 修复
+
+- 评估副本的外部传送观察者现在绑定到唯一活动 session/lane；无法安全绑定时送回安全位置。
+- 串行分支切换、固化、回滚和异常清理会按 session footprint 退出观察者；清理期间也会拦截新进入者和确实可能保载目标区块的无主玩家。
+- 固定维度内其他有效 session 的邻近观察者会保留；只有占入本次正在清理、且不由其他 session 所有的 manifest 目标 chunk 时才为释放票据退出。
+- 自动规则验证覆盖 session/lane 唯一解析、歧义 fail-closed、legacy/跨 session 归属、票据距离和 spectator gamerule。真实玩家票据仍需隔离专服回归。
+
 
 ## 简介
 
