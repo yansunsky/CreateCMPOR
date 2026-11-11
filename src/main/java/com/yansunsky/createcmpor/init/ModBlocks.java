@@ -98,17 +98,16 @@ public class ModBlocks {
     }
 
     public static void registerCapabilities(RegisterCapabilitiesEvent event) {
-        // IO 拓展方块：把链上触达的工厂方块的缓存（输入+输出）代理转发到自身 IO 面。
-        // 直接访问工厂 BE 的 handler（指向工厂自身缓存，无面过滤/应力档案门控），
-        // 保证「产物能从它出去、原料能从它进入」，且不会复制物品。
+        // IO 拓展方块：把链上触达工厂的物品/流体/能量 handler 转发到自身 IO 面。
+        // 返回的代理每次操作都会按当前已加载拓扑解析 Factory，避免缓存引用在卸载/替换后继续访问旧 BE。
         event.registerBlockEntity(Capabilities.ItemHandler.BLOCK, ModBlockEntities.IO_EXTENSION.get(),
                 (be, side) -> {
                     var level = be.getLevel();
                     if (level == null || !be.isIoFace(side))
                         return null;
                     for (BlockPos fp : be.getReachableFactories()) {
-                        if (level.isLoaded(fp) && level.getBlockEntity(fp) instanceof FactoryBlockEntity fbe)
-                            return fbe.getItemHandler();
+                        if (level.isLoaded(fp) && level.getBlockEntity(fp) instanceof FactoryBlockEntity)
+                            return IOExtensionHandlerProxy.item(be, side);
                     }
                     return null;
                 });
@@ -118,8 +117,8 @@ public class ModBlocks {
                     if (level == null || !be.isIoFace(side))
                         return null;
                     for (BlockPos fp : be.getReachableFactories()) {
-                        if (level.isLoaded(fp) && level.getBlockEntity(fp) instanceof FactoryBlockEntity fbe)
-                            return fbe.getFluidHandler();
+                        if (level.isLoaded(fp) && level.getBlockEntity(fp) instanceof FactoryBlockEntity)
+                            return IOExtensionHandlerProxy.fluid(be, side);
                     }
                     return null;
                 });
@@ -130,7 +129,7 @@ public class ModBlocks {
                         return null;
                     for (BlockPos fp : be.getReachableFactories()) {
                         if (level.isLoaded(fp) && level.getBlockEntity(fp) instanceof FactoryBlockEntity fbe && fbe.hasEnergyIo())
-                            return fbe.getEnergyHandler();
+                            return IOExtensionHandlerProxy.energy(be, side);
                     }
                     return null;
                 });
