@@ -25,6 +25,9 @@ docs/
 # Mesa3D 软件渲染库（本地客户端测试用，不纳入版本控制）
 mesa/
 
+# spark 性能归因分析产物（服主给的一次性采样报告，含大量原始数据，不入库）
+.spark_analysis/
+
 # 系统
 *.log
 curseforge.md
