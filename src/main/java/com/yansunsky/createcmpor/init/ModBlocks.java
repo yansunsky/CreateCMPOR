@@ -6,13 +6,13 @@ import com.yansunsky.createcmpor.block.FactoryBlock;
 import com.yansunsky.createcmpor.block.FactoryBlockEntity;
 import com.yansunsky.createcmpor.block.InputBlock;
 import com.yansunsky.createcmpor.block.IOExtensionBlock;
+import com.yansunsky.createcmpor.block.IOExtensionHandlerProxy;
 import com.yansunsky.createcmpor.block.OutputBlock;
 import com.yansunsky.createcmpor.block.ParallelInputBlock;
 import com.yansunsky.createcmpor.block.StressInputBlock;
 import com.yansunsky.createcmpor.block.StressInputBlockEntity;
 import com.yansunsky.createcmpor.block.StressOutputBlock;
 import com.simibubi.create.api.stress.BlockStressValues;
-import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.state.BlockBehaviour;
@@ -98,41 +98,18 @@ public class ModBlocks {
     }
 
     public static void registerCapabilities(RegisterCapabilitiesEvent event) {
-        // IO 拓展方块：把链上触达工厂的物品/流体/能量 handler 转发到自身 IO 面。
-        // 返回的代理每次操作都会按当前已加载拓扑解析 Factory，避免缓存引用在卸载/替换后继续访问旧 BE。
+        // IO 拓展方块：有效 IO 面始终返回动态代理，即使当前没有可达工厂。
+        // 不能按远端可用性返回 null：查询方可能缓存这个空结果，远端恢复不会使本坐标的缓存失效。
+        // 每次操作由代理按当前已加载拓扑解析 Factory；失效时拒绝操作，恢复后无需重取 capability。
         event.registerBlockEntity(Capabilities.ItemHandler.BLOCK, ModBlockEntities.IO_EXTENSION.get(),
-                (be, side) -> {
-                    var level = be.getLevel();
-                    if (level == null || !be.isIoFace(side))
-                        return null;
-                    for (BlockPos fp : be.getReachableFactories()) {
-                        if (level.isLoaded(fp) && level.getBlockEntity(fp) instanceof FactoryBlockEntity)
-                            return IOExtensionHandlerProxy.item(be, side);
-                    }
-                    return null;
-                });
+                (be, side) -> be.getLevel() != null && be.isIoFace(side)
+                        ? IOExtensionHandlerProxy.item(be, side) : null);
         event.registerBlockEntity(Capabilities.FluidHandler.BLOCK, ModBlockEntities.IO_EXTENSION.get(),
-                (be, side) -> {
-                    var level = be.getLevel();
-                    if (level == null || !be.isIoFace(side))
-                        return null;
-                    for (BlockPos fp : be.getReachableFactories()) {
-                        if (level.isLoaded(fp) && level.getBlockEntity(fp) instanceof FactoryBlockEntity)
-                            return IOExtensionHandlerProxy.fluid(be, side);
-                    }
-                    return null;
-                });
+                (be, side) -> be.getLevel() != null && be.isIoFace(side)
+                        ? IOExtensionHandlerProxy.fluid(be, side) : null);
         event.registerBlockEntity(Capabilities.EnergyStorage.BLOCK, ModBlockEntities.IO_EXTENSION.get(),
-                (be, side) -> {
-                    var level = be.getLevel();
-                    if (level == null || !be.isIoFace(side))
-                        return null;
-                    for (BlockPos fp : be.getReachableFactories()) {
-                        if (level.isLoaded(fp) && level.getBlockEntity(fp) instanceof FactoryBlockEntity fbe && fbe.hasEnergyIo())
-                            return IOExtensionHandlerProxy.energy(be, side);
-                    }
-                    return null;
-                });
+                (be, side) -> be.getLevel() != null && be.isIoFace(side)
+                        ? IOExtensionHandlerProxy.energy(be, side) : null);
 
         event.registerBlockEntity(Capabilities.ItemHandler.BLOCK, ModBlockEntities.INPUT.get(),
                 (be, side) -> be.getItemHandler());

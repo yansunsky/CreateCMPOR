@@ -116,12 +116,24 @@ tasks.register('verifyObservationSessionBinding', JavaExec) {
     jvmArgs '-ea'
 }
 
+tasks.register('verifyIoExtensionCapabilityWiring', JavaExec) {
+    group = 'verification'
+    description = 'Checks source wiring for target-independent IOExtension capability proxies (not an in-game test).'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.yansunsky.createcmpor.block.IOExtensionCapabilityWiringTest'
+    def providerSource = layout.projectDirectory.file('src/main/java/com/yansunsky/createcmpor/init/ModBlocks.java')
+    def proxySource = layout.projectDirectory.file('src/main/java/com/yansunsky/createcmpor/block/IOExtensionHandlerProxy.java')
+    inputs.files(providerSource, proxySource)
+    args providerSource.asFile.absolutePath, proxySource.asFile.absolutePath
+}
+
 tasks.named('test', Test) {
     failOnNoDiscoveredTests = false
 }
 
 tasks.named('check') {
-    dependsOn tasks.named('verifyObservationSessionBinding')
+    dependsOn tasks.named('verifyObservationSessionBinding'), tasks.named('verifyIoExtensionCapabilityWiring')
 }
 
 // 处理 templates 中的 neoforge.mods.toml 占位符
