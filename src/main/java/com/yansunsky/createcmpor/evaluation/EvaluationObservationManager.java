@@ -7,6 +7,7 @@ import dev.compactmods.machines.api.room.RoomInstance;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.Tag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
@@ -78,6 +79,161 @@ public final class EvaluationObservationManager {
     private static final int OP_PERMISSION_LEVEL = 2;
 
     private EvaluationObservationManager() {
+    }
+
+    private static final int CLEANUP_PLAYER_SAMPLES = 4;
+    private static final int CLEANUP_PLAYER_DETAILS_LIMIT = 1400;
+
+    /** Read saved bindings as-is; candidate distance does not identify an actual PLAYER ticket owner. */
+    static String cleanupPlayerSummary(ServerLevel level, EvaluationSession session, List<ChunkPos> chunks) {
+        if (!level.getServer().isSameThread()) {
+            return "players=unknown(not_server_thread) candidates=unknown";
+        }
+        StringBuilder summary = new StringBuilder(512);
+        try {
+            boolean spectatorsGenerateChunks = level.getGameRules().getBoolean(GameRules.RULE_SPECTATORSGENERATECHUNKS);
+            int viewDistance = Math.max(2, Math.min(32, level.getServer().getPlayerList().getViewDistance()));
+            List<ServerPlayer> players = level.players();
+            ServerPlayer[] candidates = new ServerPlayer[CLEANUP_PLAYER_SAMPLES];
+            ServerPlayer[] others = new ServerPlayer[CLEANUP_PLAYER_SAMPLES];
+            int candidateSamples = 0;
+            int otherSamples = 0;
+            int eligible = 0;
+            int inRange = 0;
+            int candidateCount = 0;
+            int unknown = 0;
+            for (ServerPlayer player : players) {
+                try {
+                    boolean mayHoldTickets = ObservationSessionBinding.mayHoldPlayerTickets(
+                            player.isSpectator(), spectatorsGenerateChunks);
+                    boolean near = cleanupPlayerInViewRange(player, chunks, viewDistance);
+                    if (mayHoldTickets) eligible++;
+                    if (near) inRange++;
+                    if (mayHoldTickets && near) {
+                        candidateCount++;
+                        if (candidateSamples < candidates.length) candidates[candidateSamples++] = player;
+                    } else if (otherSamples < others.length) {
+                        others[otherSamples++] = player;
+                    }
+                } catch (RuntimeException exception) {
+                    unknown++;
+                    if (otherSamples < others.length) others[otherSamples++] = player;
+                }
+            }
+            summary.append("players=").append(players.size()).append(" eligibleKnown=").append(eligible)
+                    .append(" inViewRangeKnown=").append(inRange).append(" candidatesKnown=").append(candidateCount)
+                    .append(" unknownPlayers=").append(unknown).append(" spectatorsGenerateChunks=")
+                    .append(spectatorsGenerateChunks).append(" viewDistance=").append(viewDistance)
+                    .append(" candidateOnly=true");
+            for (int i = 0; i < candidateSamples; i++) {
+                appendCleanupPlayer(summary, level, session, candidates[i], chunks, viewDistance,
+                        spectatorsGenerateChunks);
+            }
+            for (int i = 0; i < otherSamples && candidateSamples + i < CLEANUP_PLAYER_SAMPLES; i++) {
+                appendCleanupPlayer(summary, level, session, others[i], chunks, viewDistance,
+                        spectatorsGenerateChunks);
+            }
+        } catch (RuntimeException exception) {
+            summary.append(" playersOrCandidates=unknown(").append(exception.getClass().getSimpleName()).append(')');
+        }
+        return cleanupPlayerBounded(summary);
+    }
+
+    private static boolean cleanupPlayerInViewRange(ServerPlayer player, List<ChunkPos> chunks, int viewDistance) {
+        ChunkPos position = player.chunkPosition();
+        for (int i = 0; i < chunks.size(); i++) {
+            ChunkPos target = chunks.get(i);
+            if (ObservationSessionBinding.withinPlayerTicketRange(
+                    position.x, position.z, target.x, target.z, viewDistance)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void appendCleanupPlayer(StringBuilder summary, ServerLevel level, EvaluationSession session,
+                                            ServerPlayer player, List<ChunkPos> chunks, int viewDistance,
+                                            boolean spectatorsGenerateChunks) {
+        summary.append(" | player{");
+        try {
+            ChunkPos position = player.chunkPosition();
+            boolean near = cleanupPlayerInViewRange(player, chunks, viewDistance);
+            boolean candidate = near && ObservationSessionBinding.mayHoldPlayerTickets(
+                    player.isSpectator(), spectatorsGenerateChunks);
+            summary.append("uuid=").append(player.getUUID()).append(",chunk=(").append(position.x).append(',')
+                    .append(position.z).append("),spectator=").append(player.isSpectator())
+                    .append(",inViewRange=").append(near).append(",ticketCandidate=").append(candidate);
+            CompoundTag persistent = player.getPersistentData();
+            if (!persistent.contains(OBSERVATION_KEY)) {
+                summary.append(",binding=untracked,rawSession=<missing>,rawRoom=<missing>,rawDim=<missing>");
+                return;
+            }
+            if (!persistent.contains(OBSERVATION_KEY, Tag.TAG_COMPOUND)) {
+                summary.append(",binding=invalid,rawRecord=unknown(invalid_record_type)");
+                return;
+            }
+            CompoundTag record = persistent.getCompound(OBSERVATION_KEY);
+            UUID recordedSession = record.hasUUID("session_id") ? record.getUUID("session_id") : null;
+            boolean invalidSession = record.contains("session_id") && recordedSession == null;
+            boolean self = session.id().equals(recordedSession);
+            summary.append(",binding=").append(invalidSession ? "invalid" : recordedSession == null ? "legacy"
+                    : self ? "self" : "other_or_stale").append(",rawSession=");
+            if (recordedSession != null) {
+                summary.append(recordedSession);
+            } else {
+                summary.append(invalidSession ? "<invalid_uuid>" : "<missing>");
+            }
+            summary.append(",rawRoom=");
+            appendCleanupRecordedString(summary, record, "room_code");
+            summary.append(",rawDim=");
+            appendCleanupRecordedString(summary, record, "observed_dim");
+            boolean validRoom = record.contains("room_code", Tag.TAG_STRING) && !record.getString("room_code").isBlank();
+            boolean validDimension = record.contains("observed_dim", Tag.TAG_STRING)
+                    && !record.getString("observed_dim").isBlank();
+            boolean dimensionMatches = validDimension
+                    && record.getString("observed_dim").equals(level.dimension().location().toString());
+            boolean roomMatches = validRoom && record.getString("room_code").equals(session.roomCode());
+            summary.append(",recordedDimMatches=").append(validDimension ? Boolean.toString(dimensionMatches) : "unknown")
+                    .append(",recordedRoomMatches=").append(validRoom ? Boolean.toString(roomMatches) : "unknown");
+            if ((validDimension && !dimensionMatches) || (self && validRoom && !roomMatches)) {
+                summary.append(",recordConsistency=stale_record");
+            } else if (!validDimension || !validRoom) {
+                summary.append(",recordConsistency=unknown(missing_or_invalid_fields)");
+            }
+            summary.append(",boundSessionLiveness=unknown");
+        } catch (RuntimeException exception) {
+            summary.append(",recordOrPlayer=unknown(").append(exception.getClass().getSimpleName()).append(')');
+        } finally {
+            summary.append('}');
+        }
+    }
+
+    private static void appendCleanupRecordedString(StringBuilder summary, CompoundTag record, String key) {
+        if (!record.contains(key)) {
+            summary.append("<missing>");
+        } else if (!record.contains(key, Tag.TAG_STRING)) {
+            summary.append("<invalid_type>");
+        } else {
+            String value = record.getString(key);
+            int length = Math.min(value.length(), 64);
+            summary.append('"');
+            for (int i = 0; i < length; i++) {
+                char character = value.charAt(i);
+                summary.append(Character.isISOControl(character) ? ' ' : character);
+            }
+            if (value.length() > length) summary.append("...");
+            summary.append('"');
+        }
+    }
+
+    private static String cleanupPlayerBounded(StringBuilder summary) {
+        if (summary.length() > CLEANUP_PLAYER_DETAILS_LIMIT) {
+            int end = CLEANUP_PLAYER_DETAILS_LIMIT - 3;
+            if (Character.isHighSurrogate(summary.charAt(end - 1))) end--;
+            summary.setLength(end);
+            summary.append("...");
+        }
+        return summary.toString();
     }
 
     // ===================== 进入 / 切换 =====================

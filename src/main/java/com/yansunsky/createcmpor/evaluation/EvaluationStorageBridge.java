@@ -11,6 +11,8 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ChunkHolder;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.Ticket;
+import net.minecraft.server.level.TicketType;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
@@ -36,6 +38,224 @@ import java.util.concurrent.CompletableFuture;
 /** 复用维度现有 ChunkMap/entity/POI worker，并管理会话专属 staging。 */
 final class EvaluationStorageBridge {
     private EvaluationStorageBridge() {
+    }
+
+    private static final int CLEANUP_CHUNK_SAMPLES = 4;
+    private static final int CLEANUP_TICKET_SAMPLES = 6;
+    private static final int CLEANUP_DETAILS_LIMIT = 3600;
+
+    record CleanupSnapshot(int nonIdleChunks, long remainingFingerprint, String details) {
+    }
+
+    /** Diagnostic only: unknown reads count as not proven idle; never use this to authorize deletion. */
+    static CleanupSnapshot cleanupSnapshot(ServerLevel level, List<ChunkPos> chunks, UUID ticketOwner) {
+        boolean mainThread = level.getServer().isSameThread();
+        int nonIdle = 0;
+        int unknown = 0;
+        int sampled = 0;
+        long fingerprint = 0L;
+        ChunkPos[] samples = new ChunkPos[CLEANUP_CHUNK_SAMPLES];
+        for (ChunkPos pos : chunks) {
+            boolean idle = false;
+            if (mainThread) {
+                try {
+                    idle = isChunkIdle(level, pos);
+                } catch (RuntimeException exception) {
+                    unknown++;
+                }
+            } else {
+                unknown++;
+            }
+            if (!idle) {
+                nonIdle++;
+                fingerprint += cleanupCoordinateHash(pos.toLong());
+                if (sampled < samples.length) {
+                    samples[sampled++] = pos;
+                }
+            }
+        }
+        StringBuilder details = new StringBuilder(512);
+        details.append("chunks=").append(chunks.size()).append(" nonIdle=").append(nonIdle)
+                .append(" unknownIdle=").append(unknown);
+        if (!mainThread) {
+            details.append(" probe=unknown(not_server_thread)");
+        } else {
+            details.append(" samples=").append(sampled);
+            for (int i = 0; i < sampled; i++) {
+                appendCleanupChunk(details, level, samples[i], ticketOwner);
+            }
+        }
+        return new CleanupSnapshot(nonIdle, fingerprint, cleanupBounded(details, CLEANUP_DETAILS_LIMIT));
+    }
+
+    /** Commutative coordinate-only fingerprint: input order and sampled holder/future states cannot reset it. */
+    private static long cleanupCoordinateHash(long coordinate) {
+        long value = coordinate + 0x9E3779B97F4A7C15L;
+        value = (value ^ (value >>> 30)) * 0xBF58476D1CE4E5B9L;
+        value = (value ^ (value >>> 27)) * 0x94D049BB133111EBL;
+        return value ^ (value >>> 31);
+    }
+
+    private static void appendCleanupChunk(StringBuilder details, ServerLevel level, ChunkPos pos,
+                                           UUID ticketOwner) {
+        details.append(" | chunk=(").append(pos.x).append(',').append(pos.z).append("){");
+        try {
+            var source = level.getChunkSource();
+            var map = source.chunkMap;
+            ChunkHolder visible = map.getVisibleChunkIfPresent(pos.toLong());
+            ChunkHolder updating = map.getUpdatingChunkIfPresent(pos.toLong());
+            ChunkHolder pending = map.pendingUnloads.get(pos.toLong());
+            details.append("visible=").append(visible != null).append(",updating=").append(updating != null)
+                    .append(",pendingUnload=").append(pending != null);
+            try {
+                boolean chunkPresent = source.getChunkNow(pos.x, pos.z) != null;
+                details.append(",chunkNow=").append(chunkPresent);
+            } catch (RuntimeException exception) {
+                details.append(",chunkNow=unknown(").append(exception.getClass().getSimpleName()).append(')');
+            }
+            try {
+                boolean entitiesLoaded = level.areEntitiesLoaded(pos.toLong());
+                details.append(",entities=").append(entitiesLoaded);
+            } catch (RuntimeException exception) {
+                details.append(",entities=unknown(").append(exception.getClass().getSimpleName()).append(')');
+            }
+            ChunkHolder holder = pending != null ? pending : visible != null ? visible : updating;
+            details.append(",holderSource=").append(pending != null ? "pending" : visible != null ? "visible"
+                    : updating != null ? "updating" : "none");
+            if (holder != null) {
+                appendCleanupHolder(details, holder);
+            }
+        } catch (RuntimeException exception) {
+            details.append(" state=unknown(").append(exception.getClass().getSimpleName()).append(')');
+        }
+        details.append(' ').append(cleanupTickets(level, pos.toLong(), ticketOwner)).append('}');
+    }
+
+    private static void appendCleanupHolder(StringBuilder details, ChunkHolder holder) {
+        try {
+            details.append(",holder{ticketLevel=").append(holder.getTicketLevel())
+                    .append(",status=").append(holder.getFullStatus())
+                    .append(",generationRefCount=").append(holder.getGenerationRefCount())
+                    .append(",readyForSaving=").append(holder.isReadyForSaving());
+            CompletableFuture<?> future = holder.getSaveSyncFuture();
+            if (future == null) {
+                details.append(",saveSync=unknown(null_future)");
+            } else {
+                details.append(",saveSync{done=").append(future.isDone())
+                        .append(",exceptional=").append(future.isCompletedExceptionally())
+                        .append(",cancelled=").append(future.isCancelled()).append('}');
+            }
+            details.append('}');
+        } catch (RuntimeException exception) {
+            details.append(",holder=unknown(").append(exception.getClass().getSimpleName()).append(')');
+        }
+    }
+
+    /** Unlike ticketsAt, failed/partial probes never masquerade as an empty ticket collection. */
+    private static String cleanupTickets(ServerLevel level, long key, UUID ticketOwner) {
+        if (TICKETS_FIELD == null) {
+            return "tickets=unknown(reflection_unavailable)";
+        }
+        try {
+            Object value = TICKETS_FIELD.get(level.getChunkSource().chunkMap.getDistanceManager());
+            if (!(value instanceof java.util.Map<?, ?> map)) {
+                return "tickets=unknown(unexpected_map)";
+            }
+            Object tickets = map.get(key);
+            if (tickets == null) {
+                return "tickets=known_empty";
+            }
+            if (!(tickets instanceof Iterable<?> iterable)) {
+                return "tickets=unknown(unexpected_collection)";
+            }
+            var iterator = iterable.iterator();
+            StringBuilder result = new StringBuilder(256);
+            int sampled = 0;
+            while (sampled < CLEANUP_TICKET_SAMPLES && iterator.hasNext()) {
+                if (!(iterator.next() instanceof Ticket<?> ticket)) {
+                    return "tickets=unknown(unexpected_entry)";
+                }
+                if (sampled++ > 0) {
+                    result.append(',');
+                }
+                TicketType<?> type = ticket.getType();
+                if (type == TicketType.PLAYER) {
+                    result.append("PLAYER");
+                } else if (EvaluationTicketManager.isEvaluationTicket(type)) {
+                    result.append(cleanupEvaluationOwner(ticket, ticketOwner));
+                } else {
+                    result.append("other");
+                }
+                result.append("{type=");
+                appendCleanupValue(result, type.toString(), 64);
+                result.append(",level=").append(ticket.getTicketLevel())
+                        .append(",forceTick=").append(ticket.isForceTicks()).append('}');
+            }
+            if (sampled == 0) {
+                return "tickets=known_empty";
+            }
+            boolean truncated = iterator.hasNext();
+            return "tickets=known_present[sampled=" + sampled + ",truncated=" + truncated + ":" + result + ']';
+        } catch (IllegalAccessException | RuntimeException exception) {
+            return "tickets=unknown(" + exception.getClass().getSimpleName() + ')';
+        }
+    }
+
+    private static String cleanupEvaluationOwner(Ticket<?> ticket, UUID ticketOwner) {
+        if (CleanupTicketAccess.KEY == null || ticketOwner == null) {
+            return "evaluation(owner=unknown)";
+        }
+        try {
+            Object key = CleanupTicketAccess.KEY.get(ticket);
+            if (key instanceof UUID owner) {
+                return (owner.equals(ticketOwner) ? "own_evaluation" : "other_evaluation") + "(owner=" + owner + ')';
+            }
+        } catch (IllegalAccessException | RuntimeException ignored) {
+            // Retain the known evaluation type, but never guess its owner.
+        }
+        return "evaluation(owner=unknown)";
+    }
+
+    private static final class CleanupTicketAccess {
+        private static final java.lang.reflect.Field KEY = cleanupField(Ticket.class, "key");
+    }
+
+    private static java.lang.reflect.Field cleanupField(Class<?> owner, String name) {
+        try {
+            var field = owner.getDeclaredField(name);
+            field.setAccessible(true);
+            return field;
+        } catch (NoSuchFieldException | RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    private static void appendCleanupValue(StringBuilder target, String value, int limit) {
+        if (value == null) {
+            target.append("unknown");
+            return;
+        }
+        boolean truncated = value.length() > limit;
+        int length = truncated ? limit - 3 : value.length();
+        for (int i = 0; i < length; i++) {
+            char character = value.charAt(i);
+            target.append(Character.isISOControl(character) ? ' ' : character);
+        }
+        if (truncated) {
+            target.append("...");
+        }
+    }
+
+    private static String cleanupBounded(StringBuilder value, int limit) {
+        if (value.length() > limit) {
+            int end = limit - 3;
+            if (Character.isHighSurrogate(value.charAt(end - 1))) {
+                end--;
+            }
+            value.setLength(end);
+            value.append("...");
+        }
+        return value.toString();
     }
 
     static ChunkStorage chunkStorage(ServerLevel level) {

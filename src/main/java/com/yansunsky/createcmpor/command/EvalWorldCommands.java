@@ -44,6 +44,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 /** Phase 2 调试命令：检查原房间与 eval_world 同坐标副本。 */
 public final class EvalWorldCommands {
@@ -75,6 +76,10 @@ public final class EvalWorldCommands {
                 .then(Commands.literal("evaluation")
                         .then(Commands.literal("list")
                                 .executes(context -> listEvaluations(context.getSource())))
+                        .then(Commands.literal("cleanup")
+                                .then(Commands.argument("session", StringArgumentType.word())
+                                        .executes(context -> showCleanupDiagnostics(context.getSource(),
+                                                StringArgumentType.getString(context, "session")))))
                         .then(Commands.literal("max")
                                 .executes(context -> showMaxEvaluations(context.getSource()))
                                 .then(Commands.argument("value", IntegerArgumentType.integer(1, 16))
@@ -604,8 +609,32 @@ public final class EvalWorldCommands {
                 queuePosition++;
                 line.append(" | 排队第 ").append(queuePosition);
             }
+            if (session.state() == EvaluationSession.State.CLEANING) {
+                line.append(" | ").append(EvaluationCloneManager.INSTANCE.cleanupSummary(source.getServer(), session.id()));
+            }
+            line.append(" | session ").append(session.id());
             String text = line.toString();
             source.sendSuccess(() -> Component.literal(text), false);
+        }
+        return 1;
+    }
+
+    private static int showCleanupDiagnostics(CommandSourceStack source, String rawSessionId) {
+        UUID sessionId;
+        try {
+            sessionId = UUID.fromString(rawSessionId);
+        } catch (IllegalArgumentException exception) {
+            source.sendFailure(Component.literal("会话 UUID 无效；可先用 /ccmpor evaluation list 查看。"));
+            return 0;
+        }
+        var session = EvaluationSavedData.get(source.getServer()).sessions().stream()
+                .filter(candidate -> candidate.id().equals(sessionId)).findFirst();
+        if (session.isEmpty()) {
+            source.sendFailure(Component.literal("找不到会话：" + sessionId));
+            return 0;
+        }
+        for (String line : EvaluationCloneManager.INSTANCE.cleanupDiagnostics(source.getServer(), session.get())) {
+            source.sendSuccess(() -> Component.literal(line), false);
         }
         return 1;
     }

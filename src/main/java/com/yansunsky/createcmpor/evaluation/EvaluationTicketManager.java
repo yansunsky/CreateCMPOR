@@ -35,6 +35,10 @@ final class EvaluationTicketManager {
     private EvaluationTicketManager() {
     }
 
+    static boolean isEvaluationTicket(TicketType<?> type) {
+        return type == EVALUATION_TICKET;
+    }
+
     static void add(ServerLevel target, EvaluationManifest manifest) {
         addAtDistance(target, manifest, BLOCK_TICKING_DISTANCE);
     }
@@ -104,6 +108,11 @@ final class EvaluationTicketManager {
             if (unforceChunks) {
                 setChunksForced(target, manifest, false);
             }
+        }
+
+        /** Diagnostic high water only; includes the final unforce completion marker. */
+        long processedOperations(int chunkCount) {
+            return (long) distanceIndex * chunkCount + chunkIndex + (done ? 1 : 0);
         }
 
         /** 是否已全部撤完（供幂等短路）。 */

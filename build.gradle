@@ -128,12 +128,21 @@ tasks.register('verifyIoExtensionCapabilityWiring', JavaExec) {
     args providerSource.asFile.absolutePath, proxySource.asFile.absolutePath
 }
 
+tasks.register('verifyCleanupProgress', JavaExec) {
+    group = 'verification'
+    description = 'Runs cleanup diagnostic timing and progress rules (no Minecraft world).'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.yansunsky.createcmpor.evaluation.CleanupProgressTest'
+}
+
 tasks.named('test', Test) {
     failOnNoDiscoveredTests = false
 }
 
 tasks.named('check') {
-    dependsOn tasks.named('verifyObservationSessionBinding'), tasks.named('verifyIoExtensionCapabilityWiring')
+    dependsOn tasks.named('verifyObservationSessionBinding'), tasks.named('verifyIoExtensionCapabilityWiring'),
+            tasks.named('verifyCleanupProgress')
 }
 
 // 处理 templates 中的 neoforge.mods.toml 占位符
