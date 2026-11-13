@@ -9,6 +9,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.AABB;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -22,6 +23,8 @@ import java.util.UUID;
 /** Phase 4 的精确区块复制清单和逐区块进度。 */
 public final class EvaluationManifest {
     public static final int SCHEMA_VERSION = 1;
+    static final String ROOM_PROJECTION_KEY = "createcmpor_room_projection";
+    private static final int ROOM_PROJECTION_VERSION = 1;
 
     public enum SourceStatus {
         MISSING,
@@ -52,6 +55,8 @@ public final class EvaluationManifest {
     private final long sourceSnapshotTick;
     private final String stagingDirectory;
     private final List<ChunkRecord> chunks;
+    // Absent only in legacy manifests, which remain readable for cleanup-first recovery.
+    private final EvaluationRoomProjection.Bounds projectionBounds;
     private boolean targetWriteIntent;
     private boolean ticketsAdded;
     private boolean targetReady;
@@ -68,7 +73,8 @@ public final class EvaluationManifest {
                                ResourceKey<Level> sourceDimension, ResourceKey<Level> targetDimension,
                                String sourceLevelId, String targetLevelId, long createdGameTime,
                                long sourceSnapshotTick, String stagingDirectory, List<ChunkRecord> chunks,
-                               boolean targetWriteIntent, boolean ticketsAdded, boolean targetReady) {
+                               boolean targetWriteIntent, boolean ticketsAdded, boolean targetReady,
+                               EvaluationRoomProjection.Bounds projectionBounds) {
         this.sessionId = sessionId;
         this.roomCode = roomCode;
         this.sourceDimension = sourceDimension;
@@ -79,6 +85,7 @@ public final class EvaluationManifest {
         this.sourceSnapshotTick = sourceSnapshotTick;
         this.stagingDirectory = stagingDirectory;
         this.chunks = chunks;
+        this.projectionBounds = projectionBounds;
         this.targetWriteIntent = targetWriteIntent;
         this.ticketsAdded = ticketsAdded;
         this.targetReady = targetReady;
@@ -87,7 +94,7 @@ public final class EvaluationManifest {
     public static EvaluationManifest create(UUID sessionId, String roomCode,
                                              ResourceKey<Level> sourceDimension,
                                              ResourceKey<Level> targetDimension,
-                                             long gameTime, List<ChunkPos> positions) {
+                                             long gameTime, List<ChunkPos> positions, AABB roomBounds) {
         List<ChunkPos> sorted = positions.stream()
                 .distinct()
                 .sorted(Comparator.comparingInt((ChunkPos pos) -> pos.x).thenComparingInt(pos -> pos.z))
@@ -99,7 +106,7 @@ public final class EvaluationManifest {
         return new EvaluationManifest(sessionId, roomCode, sourceDimension, targetDimension,
                 sourceDimension.location().toString(), targetDimension.location().toString(), gameTime,
                 gameTime, "data/createcmpor/evaluation-staging/" + sessionId, records,
-                false, false, false);
+                false, false, false, EvaluationRoomProjection.Bounds.from(roomBounds));
     }
 
     /**
@@ -125,7 +132,55 @@ public final class EvaluationManifest {
         }
         return new EvaluationManifest(sessionId, roomCode, sourceDimension, targetDimension,
                 sourceLevelId, targetLevelId, createdGameTime, sourceSnapshotTick,
-                stagingDirectory, copies, false, false, false);
+                stagingDirectory, copies, false, false, false, roomProjectionBounds());
+    }
+
+    EvaluationRoomProjection.Bounds roomProjectionBounds() {
+        if (projectionBounds == null) {
+            throw new IllegalStateException("旧复制清单缺少房间裁剪边界，必须清理后重新评估");
+        }
+        return projectionBounds;
+    }
+
+    AABB roomBounds() {
+        EvaluationRoomProjection.Bounds b = roomProjectionBounds();
+        return new AABB(b.minX(), b.minY(), b.minZ(),
+                (double) b.maxX() + 1, (double) b.maxY() + 1, (double) b.maxZ() + 1);
+    }
+
+    static void stampRoomProjection(CompoundTag tag, EvaluationRoomProjection.Bounds bounds) {
+        CompoundTag projection = new CompoundTag();
+        projection.putInt("version", ROOM_PROJECTION_VERSION);
+        projection.putIntArray("bounds", new int[] {bounds.minX(), bounds.minY(), bounds.minZ(),
+                bounds.maxX(), bounds.maxY(), bounds.maxZ()});
+        tag.put(ROOM_PROJECTION_KEY, projection);
+    }
+
+    void requireRoomProjection(CompoundTag tag) {
+        EvaluationRoomProjection.Bounds actual = loadProjectionBounds(tag);
+        if (!roomProjectionBounds().equals(actual)) {
+            throw new IllegalStateException("副本缺少本次房间裁剪标记或边界不一致");
+        }
+    }
+
+    private static EvaluationRoomProjection.Bounds loadProjectionBounds(CompoundTag tag) {
+        if (!tag.contains(ROOM_PROJECTION_KEY)) {
+            return null;
+        }
+        if (!tag.contains(ROOM_PROJECTION_KEY, Tag.TAG_COMPOUND)) {
+            throw new IllegalArgumentException("房间裁剪元数据格式无效");
+        }
+        CompoundTag projection = tag.getCompound(ROOM_PROJECTION_KEY);
+        if (!projection.contains("version", Tag.TAG_INT)
+                || projection.getInt("version") != ROOM_PROJECTION_VERSION
+                || !projection.contains("bounds", Tag.TAG_INT_ARRAY)) {
+            throw new IllegalArgumentException("不支持的房间裁剪版本");
+        }
+        int[] b = projection.getIntArray("bounds");
+        if (b.length != 6) {
+            throw new IllegalArgumentException("房间裁剪边界格式无效");
+        }
+        return new EvaluationRoomProjection.Bounds(b[0], b[1], b[2], b[3], b[4], b[5]);
     }
 
     public UUID sessionId() {
@@ -255,6 +310,9 @@ public final class EvaluationManifest {
         tag.putLong("created_game_time", createdGameTime);
         tag.putLong("source_snapshot_tick", sourceSnapshotTick);
         tag.putString("staging_directory", stagingDirectory);
+        if (projectionBounds != null) {
+            stampRoomProjection(tag, projectionBounds);
+        }
         tag.putBoolean("target_write_intent", targetWriteIntent);
         tag.putBoolean("tickets_added", ticketsAdded);
         tag.putBoolean("target_ready", targetReady);
@@ -296,7 +354,7 @@ public final class EvaluationManifest {
                 tag.getLong("created_game_time"), tag.getLong("source_snapshot_tick"),
                 tag.getString("staging_directory"), chunks,
                 tag.getBoolean("target_write_intent"), tag.getBoolean("tickets_added"),
-                tag.getBoolean("target_ready"));
+                tag.getBoolean("target_ready"), loadProjectionBounds(tag));
         manifest.entityCount = tag.getInt("entity_count");
         ListTag railwayTags = tag.getList("railway_records", Tag.TAG_COMPOUND);
         for (int index = 0; index < railwayTags.size(); index++) {

@@ -263,7 +263,7 @@ final class EvaluationScheduler {
             return;
         }
         RoomInstance room = requireRoom(server, session);
-        AABB bounds = room.boundaries().outerBounds();
+        AABB bounds = session.manifest().roomBounds();
         // 净化启动棒：S0 扫描前清空副本容器残余物（必须在 scan 之前，否则 S0 仍带残留物）
         state.purificationStats = applyPurification(session, target, bounds);
         // 实体态包裹：同样必须在 S0 之前处理（DELETE 策略删掉；COUNT 策略交给下面的 scan 计入）
@@ -334,8 +334,8 @@ final class EvaluationScheduler {
             return;
         }
         RoomInstance room = requireRoom(server, session);
-        state.warmup = EvaluationAudit.scan(target, room.boundaries().outerBounds());
-        state.livingLootBaseline = EntityLootCensus.livingLootSnapshot(target, room.boundaries().outerBounds());
+        state.warmup = EvaluationAudit.scan(target, session.manifest().roomBounds());
+        state.livingLootBaseline = EntityLootCensus.livingLootSnapshot(target, session.manifest().roomBounds());
         EvaluationAudit.logInventory("S_warmup", state.warmup);
         beginParallelSampling(server, target, session, branch, state);
     }
@@ -362,7 +362,7 @@ final class EvaluationScheduler {
                                               EvaluationSession session, EvaluationBranch branch,
                                               ServerLevel target, State state) {
         RoomInstance room = requireRoom(server, session);
-        AABB bounds = room.boundaries().outerBounds();
+        AABB bounds = session.manifest().roomBounds();
         deactivateIoBlocks(target, bounds);
         state.s1 = finishScan(target, bounds, state);
         EvaluationAudit.logInventory("S1", state.s1);
@@ -411,7 +411,7 @@ final class EvaluationScheduler {
             return;
         }
         RoomInstance room = requireRoom(server, session);
-        AABB bounds = room.boundaries().outerBounds();
+        AABB bounds = session.manifest().roomBounds();
         // 净化启动棒：S0 扫描前清空副本容器残余物（必须在 scan 之前，否则 S0 仍带残留物）
         state.purificationStats = applyPurification(session, target, bounds);
         // 实体态包裹：同样必须在 S0 之前处理（DELETE 策略删掉；COUNT 策略交给下面的 scan 计入）
@@ -477,8 +477,8 @@ final class EvaluationScheduler {
             return;
         }
         RoomInstance room = requireRoom(server, session);
-        state.warmup = EvaluationAudit.scan(target, room.boundaries().outerBounds());
-        state.livingLootBaseline = EntityLootCensus.livingLootSnapshot(target, room.boundaries().outerBounds());
+        state.warmup = EvaluationAudit.scan(target, session.manifest().roomBounds());
+        state.livingLootBaseline = EntityLootCensus.livingLootSnapshot(target, session.manifest().roomBounds());
         EvaluationAudit.logInventory("S_warmup", state.warmup);
         beginSampling(server, target, session, state);
         notifyOwner(server, session, Component.translatable("message.createcmpor.evaluation.warmup_done"));
@@ -508,7 +508,7 @@ final class EvaluationScheduler {
     private static void tickFinishing(MinecraftServer server, EvaluationSavedData data,
                                       EvaluationSession session, ServerLevel target, State state) {
         RoomInstance room = requireRoom(server, session);
-        AABB bounds = room.boundaries().outerBounds();
+        AABB bounds = session.manifest().roomBounds();
         deactivateIoBlocks(target, bounds);
         state.s1 = finishScan(target, bounds, state);
         EvaluationAudit.logInventory("S1", state.s1);

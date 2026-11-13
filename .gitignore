@@ -29,6 +29,8 @@ docs/*
 !docs/72-CHANGELOG-0.5.12-CN.md
 !docs/73-CHANGELOG-0.5.12-EN.md
 
+!docs/74-0.5.13-房间边界修复与验证.md
+
 # Mesa3D 软件渲染库（本地客户端测试用，不纳入版本控制）
 mesa/
 

@@ -739,23 +739,25 @@ final class EvaluationStorageBridge {
     }
 
     static SourceChunk inspectSource(ServerLevel source, SourceRecords records,
-                                     java.util.Map<UUID, UUID> backpackUuids) {
+                                     java.util.Map<UUID, UUID> backpackUuids,
+                                     EvaluationRoomProjection.Bounds bounds) {
         CompoundTag chunk = records.chunk().orElseThrow(() ->
                 new IllegalStateException("源区块记录缺失：" + records.pos()));
         validateChunkTag(source, records.pos(), chunk);
-        inspectLegacyEntities(records.pos(), chunk);
-        ListTag entities = inspectEntityRecord(records.pos(), records.entities());
-        Optional<CompoundTag> poi = inspectPoiRecord(records.pos(), records.poi());
-        inspectBlockPalette(source, records.pos(), chunk);
-        CompoundTag copy = chunk.copy();
-        // 副本初始化：精妙背包 storage_uuid 换成新 UUID——防副本与源房间共用全局
-        // SavedData（否则副本侧写入直接落到源房间背包，表现为"凭空多出产物"）。
-        // 纯 NBT 改写，可在本异步线程执行；内容深拷贝/清理由 CloneManager 在服务端线程完成。
-        // 无背包时为空操作。源 hash 用原始 chunk（源侧），staging 校验读回的是改写后内容。
+        String sourceHash = CanonicalNbtHasher.sha256(chunk);
+        EvaluationRoomProjection.Projection projection = EvaluationRoomProjection.project(
+                records.pos(), chunk, inspectEntityRecord(records.pos(), records.entities()),
+                records.poi(), bounds);
+        // Filter before checking supported contents: exterior blocks/entities do not belong to the room.
+        CompoundTag copy = projection.chunk();
+        inspectLegacyEntities(records.pos(), copy);
+        Optional<CompoundTag> poi = inspectPoiRecord(records.pos(), projection.poi());
+        inspectBlockPalette(source, records.pos(), copy);
         com.yansunsky.createcmpor.compat.inventory.SophisticatedBackpackIsolation
                 .rewriteUuids(copy, backpackUuids);
-        return new SourceChunk(records.pos(), copy, CanonicalNbtHasher.sha256(chunk),
-                chunk.getInt("DataVersion"), entities.copy(), poi);
+        EvaluationManifest.stampRoomProjection(copy, bounds);
+        return new SourceChunk(records.pos(), copy, sourceHash,
+                chunk.getInt("DataVersion"), projection.entities(), poi);
     }
 
     static CompletableFuture<Void> deleteRecords(ServerLevel level, List<ChunkPos> chunks) {
@@ -823,7 +825,11 @@ final class EvaluationStorageBridge {
                 || !tag.contains("Entities", Tag.TAG_LIST)) {
             throw new IllegalStateException("源实体记录格式无效：" + pos);
         }
-        return tag.getList("Entities", Tag.TAG_COMPOUND).copy();
+        ListTag entities = (ListTag) tag.get("Entities");
+        if (!entities.isEmpty() && entities.getElementType() != Tag.TAG_COMPOUND) {
+            throw new IllegalStateException("源实体列表包含非 compound 记录：" + pos);
+        }
+        return entities.copy();
     }
 
     /**

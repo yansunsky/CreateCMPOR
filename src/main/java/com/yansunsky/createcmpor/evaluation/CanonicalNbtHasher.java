@@ -108,12 +108,11 @@ final class CanonicalNbtHasher {
 
     private static void writeCompound(CompoundTag compound, DataOutputStream output,
                                       Set<String> ignoredTopLevelKeys, boolean topLevel) throws IOException {
-        var keys = compound.getAllKeys().stream().sorted().toList();
+        var keys = compound.getAllKeys().stream()
+                .filter(key -> !topLevel || !ignoredTopLevelKeys.contains(key))
+                .sorted().toList();
         output.writeInt(keys.size());
         for (String key : keys) {
-            if (topLevel && ignoredTopLevelKeys.contains(key)) {
-                continue;
-            }
             writeString(key, output);
             write(compound.get(key), output, ignoredTopLevelKeys, false);
         }

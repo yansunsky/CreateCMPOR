@@ -182,7 +182,8 @@ public final class EvaluationCloneManager {
                     EvaluationStorageBridge.describeUnloadBlocker(room.level(), chunks));
         }
         EvaluationManifest manifest = EvaluationManifest.create(session.id(), session.roomCode(),
-                room.levelKey(), target.dimension(), room.level().getGameTime(), chunks);
+                room.levelKey(), target.dimension(), room.level().getGameTime(), chunks,
+                room.boundaries().outerBounds());
         manifest.validate();
         session.setManifest(manifest);
         session.setState(EvaluationSession.State.QUEUED);
@@ -302,7 +303,7 @@ public final class EvaluationCloneManager {
             runtime.chunk = pending.chunkPos();
             runtime.sourceFuture = EvaluationStorageBridge.readSourceRecords(room.level(), pending.chunkPos())
                     .thenApply(records -> EvaluationStorageBridge.inspectSource(
-                            room.level(), records, runtime.backpackUuids))
+                            room.level(), records, runtime.backpackUuids, manifest.roomProjectionBounds()))
                     .thenCompose(sourceChunk -> runtime.staging.write(sourceChunk.pos(), sourceChunk.tag().copy())
                             .thenApply(ignored -> sourceChunk));
             runtime.operation = Operation.STAGING_WRITE;
@@ -316,6 +317,8 @@ public final class EvaluationCloneManager {
         record.setHadSourceRecord(true);
         record.setDataVersion(sourceChunk.dataVersion());
         record.setSourceHash(sourceChunk.hash());
+        // Expected staging content is the projection plus UUID isolation, not the raw source.
+        record.setStagingHash(CanonicalNbtHasher.sha256(sourceChunk.tag()));
         record.setSourceStatus(EvaluationManifest.SourceStatus.HASHED);
         record.setStagingStatus(EvaluationManifest.StagingStatus.WRITTEN);
         runtime.sourceEntities.put(sourceChunk.pos(), sourceChunk.entities().copy());
@@ -353,38 +356,12 @@ public final class EvaluationCloneManager {
         CompoundTag tag = stored.orElseThrow(() ->
                 new IllegalStateException("staging 区块缺失：" + runtime.chunk));
         validateStoredChunk(runtime.chunk, tag);
+        manifest.requireRoomProjection(tag);
         String hash = CanonicalNbtHasher.sha256(tag);
         EvaluationManifest.ChunkRecord record = requireChunk(manifest, runtime.chunk);
-        if (!hash.equals(record.sourceHash())) {
-            // 探针：diff staging 读出 NBT 与源的顶层 key 差异（定位具体字段）
-            CompoundTag sourceTag = runtime.sourceTags.get(runtime.chunk);
-            if (sourceTag != null) {
-                java.util.Set<String> sourceKeys = sourceTag.getAllKeys();
-                java.util.Set<String> stagingKeys = tag.getAllKeys();
-                java.util.Set<String> onlySource = new java.util.TreeSet<>(sourceKeys);
-                onlySource.removeAll(stagingKeys);
-                java.util.Set<String> onlyStaging = new java.util.TreeSet<>(stagingKeys);
-                onlyStaging.removeAll(sourceKeys);
-                java.util.Set<String> common = new java.util.TreeSet<>(sourceKeys);
-                common.retainAll(stagingKeys);
-                java.util.List<String> changedCommon = new java.util.ArrayList<>();
-                for (String key : common) {
-                    if (!tag.get(key).equals(sourceTag.get(key))) {
-                        changedCommon.add(key);
-                    }
-                }
-                CreateCMPOR.LOGGER.warn("[staging 摘要不一致] @{}: 仅源有={} 仅staging有={} 共同但不同={}（已忽略附加字段降级继续）",
-                        runtime.chunk, onlySource, onlyStaging, changedCommon);
-            }
-            CreateCMPOR.LOGGER.warn("[staging 摘要不一致] @{}: staging={} source={} | stagingDV={} sourceDV={} | stagingStatus={}"
-                            + "（以 staging 内容为权威，继续评估；若反复出现请检查第三方模组附加字段）",
-                    runtime.chunk,
-                    hash.length() > 16 ? hash.substring(0, 16) : hash,
-                    record.sourceHash().length() > 16 ? record.sourceHash().substring(0, 16) : record.sourceHash(),
-                    tag.getInt("DataVersion"), record.dataVersion(),
-                    tag.getString("Status"));
-            // 兜底：不以摘要不一致拒绝评估（第三方模组可能在写盘路径给 NBT 附加字段，
-            // 如 Railways_DataVersion）。staging 内容已是完整可用数据，以它为权威继续。
+        if (record.stagingHash() == null || record.stagingHash().isBlank()
+                || !hash.equals(record.stagingHash())) {
+            throw new IllegalStateException("staging 与预期房间投影摘要不一致：" + runtime.chunk);
         }
         record.setStagingHash(hash);
         record.setStagingStatus(EvaluationManifest.StagingStatus.VERIFIED);
@@ -396,6 +373,7 @@ public final class EvaluationCloneManager {
     private void tickStagingVerified(MinecraftServer server, EvaluationSavedData data,
                                      EvaluationSession session) {
         EvaluationManifest manifest = requireManifest(session);
+        manifest.roomProjectionBounds();
         ServerLevel target = requireTarget(server, manifest);
         RuntimeState runtime = runtime(server, session);
         if (shouldUseParallel(session)) {
@@ -533,6 +511,7 @@ public final class EvaluationCloneManager {
     private void tickParallelPublishBranch(MinecraftServer server, EvaluationSavedData data,
                                            EvaluationSession session, EvaluationBranch branch) {
         EvaluationManifest manifest = branch.manifest();
+        manifest.roomProjectionBounds();
         ServerLevel target = requireTarget(server, manifest);
         RuntimeState runtime = runtime(server, branch.branchId(), manifest);
         if (!manifest.targetWriteIntent()) {
@@ -797,6 +776,7 @@ public final class EvaluationCloneManager {
     private void tickPublishing(MinecraftServer server, EvaluationSavedData data,
                                 EvaluationSession session) {
         EvaluationManifest manifest = requireManifest(session);
+        manifest.roomProjectionBounds();
         ServerLevel target = requireTarget(server, manifest);
         RuntimeState runtime = runtime(server, session);
 
@@ -869,6 +849,7 @@ public final class EvaluationCloneManager {
             CompoundTag tag = runtime.tagFuture.join().orElseThrow(() ->
                     new IllegalStateException("发布时 staging 区块缺失：" + runtime.chunk));
             validateStoredChunk(runtime.chunk, tag);
+            manifest.requireRoomProjection(tag);
             // 发布阶段不再做哈希比较：staging 是本会话私有目录，校验阶段（tickStagingWritten）
             // 已确认其内容完整；第三方模组可能在区块写盘/读盘路径给 NBT 附加字段，
             // 反复比较 sourceHash 会因附加字段误判。直接以 staging 内容写入目标。
@@ -954,6 +935,7 @@ public final class EvaluationCloneManager {
             throw new IllegalStateException("目标区块实体记录回读缺失：" + runtime.chunk);
         }
         validateStoredChunk(runtime.chunk, tag);
+        manifest.requireRoomProjection(tag);
         String hash = CanonicalNbtHasher.sha256(tag);
         // 目标读回比较：用校验阶段记录的 stagingHash（同一内容、忽略第三方附加字段），
         // 不再与 sourceHash 比（源快照不含写盘路径附加的字段，必然不同）。
@@ -971,6 +953,8 @@ public final class EvaluationCloneManager {
     private void tickPublished(MinecraftServer server, EvaluationSavedData data,
                                EvaluationSession session) {
         EvaluationManifest manifest = requireManifest(session);
+        // Legacy manifests must never reach chunk tickets or evaluation.
+        manifest.roomProjectionBounds();
         if (manifest.targetReady()) {
             return;
         }

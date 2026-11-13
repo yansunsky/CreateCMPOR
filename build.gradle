@@ -84,6 +84,9 @@ neoForge {
     }
 }
 
+// Cold-NBT/accounting regressions compile against the same Minecraft/NeoForge API as main.
+neoForge.addModdingDependenciesTo(sourceSets.test)
+
 // localRuntime：运行测试时存在，但不作为本模组对外暴露的依赖
 configurations {
     runtimeClasspath.extendsFrom localRuntime
@@ -136,13 +139,38 @@ tasks.register('verifyCleanupProgress', JavaExec) {
     mainClass = 'com.yansunsky.createcmpor.evaluation.CleanupProgressTest'
 }
 
+tasks.register('verifyRoomProjection', JavaExec) {
+    group = 'verification'
+    description = 'Checks cold NBT room projection and boundary preservation without loading a world.'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.yansunsky.createcmpor.evaluation.EvaluationRoomProjectionTest'
+    workingDir = layout.buildDirectory.get().asFile
+    if (providers.gradleProperty('roomProjectionControl').isPresent()) {
+        args '--unprojected-control'
+    }
+}
+
+tasks.register('verifyBoundaryAudit', JavaExec) {
+    group = 'verification'
+    description = 'Checks actual RATE/REPLAY accounting with projected NBT fixtures (no game world).'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.yansunsky.createcmpor.evaluation.EvaluationBoundaryAuditTest'
+    workingDir = layout.buildDirectory.get().asFile
+    if (providers.gradleProperty('roomProjectionControl').isPresent()) {
+        args '--unprojected-control'
+    }
+}
+
 tasks.named('test', Test) {
     failOnNoDiscoveredTests = false
 }
 
 tasks.named('check') {
     dependsOn tasks.named('verifyObservationSessionBinding'), tasks.named('verifyIoExtensionCapabilityWiring'),
-            tasks.named('verifyCleanupProgress')
+            tasks.named('verifyCleanupProgress'), tasks.named('verifyRoomProjection'),
+            tasks.named('verifyBoundaryAudit')
 }
 
 // 处理 templates 中的 neoforge.mods.toml 占位符
