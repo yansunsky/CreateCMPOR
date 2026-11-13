@@ -1,5 +1,7 @@
 package com.yansunsky.createcmpor.preview;
 
+import com.yansunsky.createcmpor.util.VirtualMachineErrors;
+
 import com.yansunsky.createcmpor.Config;
 import com.yansunsky.createcmpor.CreateCMPOR;
 import com.simibubi.create.content.contraptions.AbstractContraptionEntity;
@@ -337,6 +339,7 @@ public final class PreviewCapture {
                 plain.add(entity);
             }
         } catch (Throwable error) {
+            VirtualMachineErrors.rethrowIfPresent(error);
             // 实体采集失败只丢实体段：方块网格照常出预览（纯装饰，绝不影响固化）
             CreateCMPOR.LOGGER.warn("[预览] 实体枚举失败，本次快照不含实体", error);
             return List.of();
@@ -550,6 +553,7 @@ public final class PreviewCapture {
             float degPerTick = rpm * 0.3F;
             return Math.abs(degPerTick) < 1.0E-4F ? 0.0F : degPerTick;
         } catch (Throwable error) {
+            VirtualMachineErrors.rethrowIfPresent(error);
             CreateCMPOR.LOGGER.debug("[预览] 装置角速度读取失败：{}", entity.getType(), error);
             return 0.0F;
         }
@@ -568,6 +572,7 @@ public final class PreviewCapture {
         try {
             entities = level.getEntitiesOfClass(Entity.class, bounds);
         } catch (Throwable error) {
+            VirtualMachineErrors.rethrowIfPresent(error);
             lines.add("实体枚举失败：" + error);
             return lines;
         }
@@ -603,6 +608,7 @@ public final class PreviewCapture {
                 }
                 lines.add(sb.toString());
             } catch (Throwable error) {
+                VirtualMachineErrors.rethrowIfPresent(error);
                 lines.add(entity.getType() + " 读取失败：" + error);
             }
         }
@@ -632,6 +638,7 @@ public final class PreviewCapture {
                     x, y, z, entity.getYRot(), entity.getXRot(), data,
                     readContraptionAngularSpeed(entity, data));
         } catch (Throwable error) {
+            VirtualMachineErrors.rethrowIfPresent(error);
             // 单只实体失败不影响其余实体
             CreateCMPOR.LOGGER.debug("[预览] 实体采集失败：{}", entity.getType(), error);
             return null;
@@ -655,6 +662,7 @@ public final class PreviewCapture {
             float speed = kinetic.getTheoreticalSpeed();
             return Float.isFinite(speed) ? speed : 0.0F;
         } catch (Throwable error) {
+            VirtualMachineErrors.rethrowIfPresent(error);
             CreateCMPOR.LOGGER.debug("[预览] 读取转速失败：{}", pos, error);
             return 0.0F;
         }

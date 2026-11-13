@@ -1,5 +1,7 @@
 package com.yansunsky.createcmpor.evaluation;
 
+import com.yansunsky.createcmpor.util.VirtualMachineErrors;
+
 import com.yansunsky.createcmpor.Config;
 import com.yansunsky.createcmpor.CreateCMPOR;
 import dev.compactmods.machines.api.CompactMachines;
@@ -116,6 +118,7 @@ public final class EvaluationObservationManager {
                         others[otherSamples++] = player;
                     }
                 } catch (RuntimeException exception) {
+                    VirtualMachineErrors.rethrowIfPresent(exception);
                     unknown++;
                     if (otherSamples < others.length) others[otherSamples++] = player;
                 }
@@ -134,6 +137,7 @@ public final class EvaluationObservationManager {
                         spectatorsGenerateChunks);
             }
         } catch (RuntimeException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
             summary.append(" playersOrCandidates=unknown(").append(exception.getClass().getSimpleName()).append(')');
         }
         return cleanupPlayerBounded(summary);
@@ -202,6 +206,7 @@ public final class EvaluationObservationManager {
             }
             summary.append(",boundSessionLiveness=unknown");
         } catch (RuntimeException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
             summary.append(",recordOrPlayer=unknown(").append(exception.getClass().getSimpleName()).append(')');
         } finally {
             summary.append('}');
@@ -699,6 +704,7 @@ public final class EvaluationObservationManager {
                     useSafePosition = true;
                 }
             } catch (RuntimeException ignored) {
+                VirtualMachineErrors.rethrowIfPresent(ignored);
                 // Invalid saved return point: fall back to the overworld spawn.
             }
         }

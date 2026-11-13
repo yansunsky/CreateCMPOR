@@ -1,5 +1,7 @@
 package com.yansunsky.createcmpor.evaluation;
 
+import com.yansunsky.createcmpor.util.VirtualMachineErrors;
+
 import com.yansunsky.createcmpor.Config;
 import com.yansunsky.createcmpor.CreateCMPOR;
 import com.yansunsky.createcmpor.block.EvaluatorBlockEntity;
@@ -102,6 +104,7 @@ public final class EvaluationManager {
         try {
             purificationEnabled = Config.ENABLE_PURIFICATION.get();
         } catch (RuntimeException ignored) {
+            VirtualMachineErrors.rethrowIfPresent(ignored);
             purificationEnabled = true;
         }
         if (purificationEnabled && launcher.is(ModItems.PURIFICATION_STICK.get())) {
@@ -121,6 +124,7 @@ public final class EvaluationManager {
             });
             return StartResult.success(session);
         } catch (RuntimeException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
             CreateCMPOR.LOGGER.error("无法建立评估会话 {}", session.id(), exception);
             rollback(server, data, session,
                     "message.createcmpor.evaluation.start_failed");
@@ -228,6 +232,7 @@ public final class EvaluationManager {
             try {
                 tickSession(server, data, session);
             } catch (RuntimeException exception) {
+                VirtualMachineErrors.rethrowIfPresent(exception);
                 CreateCMPOR.LOGGER.error("评估会话 {} 执行失败，开始回滚", session.id(), exception);
                 failSession(server, data, session,
                         "message.createcmpor.evaluation.runtime_failed");
@@ -254,6 +259,7 @@ public final class EvaluationManager {
                 rollback(server, data, session,
                         "message.createcmpor.evaluation.recovered_after_restart");
             } catch (RuntimeException exception) {
+                VirtualMachineErrors.rethrowIfPresent(exception);
                 CreateCMPOR.LOGGER.error("启动恢复会话 {} 失败，将在服务端 tick 中重试", session.id(), exception);
             }
         }
@@ -483,6 +489,7 @@ public final class EvaluationManager {
         try {
             report = probe.join();
         } catch (CompletionException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
             // 探测本身出错（IO 异常等）不应成为新的失败源：退回到原有行为放行，
             // 只记日志。真正的缺块仍会在克隆阶段以原有签名暴露。
             persistProbes.remove(session.id());
@@ -574,7 +581,8 @@ public final class EvaluationManager {
 
         playersBeingEvicted.put(player.getUUID(), new EvictionAttempt(session.id(), currentTick));
         RoomHelper.teleportPlayerOutOfRoom(player).whenComplete((result, error) ->
-                player.server.execute(() -> {
+                player.server.tell(new net.minecraft.server.TickTask(player.server.getTickCount(), () -> {
+                    VirtualMachineErrors.rethrowIfPresent(error);
                     playersBeingEvicted.remove(player.getUUID(), new EvictionAttempt(session.id(), currentTick));
                     boolean sessionStillActive = EvaluationSavedData.get(player.server)
                             .sessionByRoom(session.roomCode())
@@ -587,7 +595,7 @@ public final class EvaluationManager {
                         player.displayClientMessage(
                                 Component.translatable("message.createcmpor.evaluation.room_exiled"), false);
                     }
-                }));
+                })));
     }
 
     private static boolean restoreOrphanEvaluator(ServerLevel level, EvaluatorBlockEntity evaluator) {
@@ -609,6 +617,7 @@ public final class EvaluationManager {
             restored.setChanged();
             return true;
         } catch (RuntimeException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
             CreateCMPOR.LOGGER.error("无法从孤立 Evaluator 镜像恢复原机器", exception);
             return false;
         }
@@ -665,6 +674,7 @@ public final class EvaluationManager {
                         machineLevel, new ChunkPos(session.machinePos().pos()));
                 rollbackWrites.put(session.id(), restoreWrite);
             } catch (RuntimeException exception) {
+                VirtualMachineErrors.rethrowIfPresent(exception);
                 CreateCMPOR.LOGGER.error("恢复会话 {} 的原机器失败，将在下一 tick 重试", session.id(), exception);
                 session.tickState();
                 data.changed();
@@ -680,6 +690,7 @@ public final class EvaluationManager {
         try {
             restoreWrite.join();
         } catch (CompletionException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
             rollbackWrites.remove(session.id());
             CreateCMPOR.LOGGER.error("保存会话 {} 的还原结果失败，将重试", session.id(), exception.getCause());
             session.tickState();

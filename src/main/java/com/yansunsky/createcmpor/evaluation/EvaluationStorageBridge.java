@@ -1,5 +1,7 @@
 package com.yansunsky.createcmpor.evaluation;
 
+import com.yansunsky.createcmpor.util.VirtualMachineErrors;
+
 import com.yansunsky.createcmpor.CreateCMPOR;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
@@ -61,6 +63,7 @@ final class EvaluationStorageBridge {
                 try {
                     idle = isChunkIdle(level, pos);
                 } catch (RuntimeException exception) {
+                    VirtualMachineErrors.rethrowIfPresent(exception);
                     unknown++;
                 }
             } else {
@@ -111,12 +114,14 @@ final class EvaluationStorageBridge {
                 boolean chunkPresent = source.getChunkNow(pos.x, pos.z) != null;
                 details.append(",chunkNow=").append(chunkPresent);
             } catch (RuntimeException exception) {
+                VirtualMachineErrors.rethrowIfPresent(exception);
                 details.append(",chunkNow=unknown(").append(exception.getClass().getSimpleName()).append(')');
             }
             try {
                 boolean entitiesLoaded = level.areEntitiesLoaded(pos.toLong());
                 details.append(",entities=").append(entitiesLoaded);
             } catch (RuntimeException exception) {
+                VirtualMachineErrors.rethrowIfPresent(exception);
                 details.append(",entities=unknown(").append(exception.getClass().getSimpleName()).append(')');
             }
             ChunkHolder holder = pending != null ? pending : visible != null ? visible : updating;
@@ -126,6 +131,7 @@ final class EvaluationStorageBridge {
                 appendCleanupHolder(details, holder);
             }
         } catch (RuntimeException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
             details.append(" state=unknown(").append(exception.getClass().getSimpleName()).append(')');
         }
         details.append(' ').append(cleanupTickets(level, pos.toLong(), ticketOwner)).append('}');
@@ -147,6 +153,7 @@ final class EvaluationStorageBridge {
             }
             details.append('}');
         } catch (RuntimeException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
             details.append(",holder=unknown(").append(exception.getClass().getSimpleName()).append(')');
         }
     }
@@ -197,6 +204,7 @@ final class EvaluationStorageBridge {
             boolean truncated = iterator.hasNext();
             return "tickets=known_present[sampled=" + sampled + ",truncated=" + truncated + ":" + result + ']';
         } catch (IllegalAccessException | RuntimeException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
             return "tickets=unknown(" + exception.getClass().getSimpleName() + ')';
         }
     }
@@ -211,6 +219,7 @@ final class EvaluationStorageBridge {
                 return (owner.equals(ticketOwner) ? "own_evaluation" : "other_evaluation") + "(owner=" + owner + ')';
             }
         } catch (IllegalAccessException | RuntimeException ignored) {
+            VirtualMachineErrors.rethrowIfPresent(ignored);
             // Retain the known evaluation type, but never guess its owner.
         }
         return "evaluation(owner=unknown)";
@@ -226,6 +235,7 @@ final class EvaluationStorageBridge {
             field.setAccessible(true);
             return field;
         } catch (NoSuchFieldException | RuntimeException ignored) {
+            VirtualMachineErrors.rethrowIfPresent(ignored);
             return null;
         }
     }
@@ -390,6 +400,7 @@ final class EvaluationStorageBridge {
         try {
             saveSyncDone = holder.getSaveSyncFuture().isDone();
         } catch (RuntimeException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
             return "holder=<读取失败:" + exception.getClass().getSimpleName() + ">";
         }
         return "holder{readyForSaving=" + holder.isReadyForSaving()
@@ -551,6 +562,7 @@ final class EvaluationStorageBridge {
             field.setAccessible(true);
             return field;
         } catch (NoSuchFieldException | RuntimeException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
             CreateCMPOR.LOGGER.warn("无法反射 DistanceManager.tickets，探针将不显示区块票据类型", exception);
             return null;
         }
@@ -576,6 +588,7 @@ final class EvaluationStorageBridge {
                 }
             }
         } catch (IllegalAccessException | RuntimeException ignored) {
+            VirtualMachineErrors.rethrowIfPresent(ignored);
             // 探针尽力而为：反射失败仅导致票据列缺失，不影响主流程
         }
         return result;
@@ -619,6 +632,7 @@ final class EvaluationStorageBridge {
         try {
             Files.createDirectories(root.resolve("region"));
         } catch (IOException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
             throw new IllegalStateException("无法创建评估 staging 目录", exception);
         }
         return new ChunkStorage(
@@ -637,6 +651,7 @@ final class EvaluationStorageBridge {
                 Files.deleteIfExists(path);
             }
         } catch (IOException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
             throw new IllegalStateException("无法删除评估 staging 目录", exception);
         }
     }
@@ -652,7 +667,7 @@ final class EvaluationStorageBridge {
         CompletableFuture<Optional<CompoundTag>> chunk = chunkStorage(level).read(pos);
         CompletableFuture<Optional<CompoundTag>> entities = entityStorage(level).read(pos);
         CompletableFuture<Optional<CompoundTag>> poi = poiStorage(level).read(pos);
-        return CompletableFuture.allOf(chunk, entities, poi)
+        return VirtualMachineErrors.allOf(chunk, entities, poi)
                 .thenApply(ignored -> new SourceRecords(pos, chunk.join(), entities.join(), poi.join()));
     }
 
@@ -704,7 +719,7 @@ final class EvaluationStorageBridge {
         CompletableFuture<?>[] futures = chunks.stream()
                 .map(pos -> probePersisted(level, pos))
                 .toArray(CompletableFuture[]::new);
-        return CompletableFuture.allOf(futures).thenApply(ignored -> {
+        return VirtualMachineErrors.allOf(futures).thenApply(ignored -> {
             List<ChunkPersistProbe> probes = java.util.Arrays.stream(futures)
                     .map(future -> ((CompletableFuture<ChunkPersistProbe>) future).join())
                     .toList();
@@ -734,7 +749,7 @@ final class EvaluationStorageBridge {
         CompletableFuture<Optional<CompoundTag>> chunk = chunkStorage(level).read(pos);
         CompletableFuture<Optional<CompoundTag>> entities = entityStorage(level).read(pos);
         CompletableFuture<Optional<CompoundTag>> poi = poiStorage(level).read(pos);
-        return CompletableFuture.allOf(chunk, entities, poi)
+        return VirtualMachineErrors.allOf(chunk, entities, poi)
                 .thenApply(ignored -> new StoredRecords(pos, chunk.join(), entities.join(), poi.join()));
     }
 
@@ -766,7 +781,7 @@ final class EvaluationStorageBridge {
                         entityStorage(level).write(pos, null),
                         poiStorage(level).write(pos, null)))
                 .toArray(CompletableFuture[]::new);
-        return CompletableFuture.allOf(futures);
+        return VirtualMachineErrors.allOf(futures);
     }
 
     private static Path stagingRoot(MinecraftServer server, EvaluationManifest manifest) {

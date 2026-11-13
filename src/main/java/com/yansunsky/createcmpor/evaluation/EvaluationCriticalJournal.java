@@ -1,5 +1,7 @@
 package com.yansunsky.createcmpor.evaluation;
 
+import com.yansunsky.createcmpor.util.VirtualMachineErrors;
+
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtAccounter;
@@ -41,6 +43,7 @@ final class EvaluationCriticalJournal {
             Files.createDirectories(path.getParent());
             IOUtilities.writeNbtCompressed(root, path);
         } catch (IOException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
             throw new IllegalStateException("无法持久化 Phase 4 关键 journal", exception);
         }
     }
@@ -56,6 +59,7 @@ final class EvaluationCriticalJournal {
                 throw new IOException("删除后文件仍存在");
             }
         } catch (IOException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
             throw new IllegalStateException("无法删除空 Phase 4 关键 journal", exception);
         }
     }
@@ -82,6 +86,7 @@ final class EvaluationCriticalJournal {
             }
             return new Snapshot(true, sessions);
         } catch (IOException | RuntimeException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
             throw new IllegalStateException("无法读取 Phase 4 关键 journal：" + path, exception);
         }
     }

@@ -84,12 +84,38 @@ neoForge {
     }
 }
 
+// Opt-in headless acceptance. Never reuse the client/server run directory or player worlds.
+if (providers.gradleProperty('riskValidation').isPresent()) {
+    sourceSets {
+        gameTest {
+            compileClasspath += sourceSets.main.output
+            runtimeClasspath += sourceSets.main.output
+        }
+    }
+    configurations.gameTestImplementation.extendsFrom configurations.implementation
+    configurations.gameTestRuntimeOnly.extendsFrom configurations.runtimeOnly
+    neoForge.addModdingDependenciesTo(sourceSets.gameTest)
+    neoForge.mods.getByName(project.mod_id).sourceSet(sourceSets.gameTest)
+    neoForge.runs {
+        riskGameTest {
+            type = 'gameTestServer'
+            sourceSet = sourceSets.gameTest
+            gameDirectory = layout.buildDirectory.dir('acceptance-0514/server').get().asFile
+            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+        }
+    }
+}
+
 // Cold-NBT/accounting regressions compile against the same Minecraft/NeoForge API as main.
 neoForge.addModdingDependenciesTo(sourceSets.test)
 
 // localRuntime：运行测试时存在，但不作为本模组对外暴露的依赖
 configurations {
     runtimeClasspath.extendsFrom localRuntime
+}
+
+if (providers.gradleProperty('riskValidation').isPresent()) {
+    configurations.gameTestRuntimeOnly.extendsFrom configurations.localRuntime
 }
 
 dependencies {
@@ -163,6 +189,46 @@ tasks.register('verifyBoundaryAudit', JavaExec) {
     }
 }
 
+tasks.register('verifyVirtualMachineErrors', JavaExec) {
+    group = 'verification'
+    description = 'Checks fatal cause propagation and mixed CompletableFuture failures without a world.'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.yansunsky.createcmpor.util.VirtualMachineErrorsTest'
+    workingDir = layout.buildDirectory.get().asFile
+    if (providers.gradleProperty('virtualMachineErrorControl').isPresent()) {
+        args '--negative-control'
+    }
+}
+
+tasks.register('verifyFatalCallback', JavaExec) {
+    group = 'verification'
+    description = 'Checks fatal completion propagation using the real Minecraft event loop (no world).'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.yansunsky.createcmpor.evaluation.EvaluationFatalCallbackTest'
+    workingDir = layout.buildDirectory.get().asFile
+    if (providers.gradleProperty('fatalCallbackControl').isPresent()) {
+        args providers.gradleProperty('fatalCallbackControl').get() == 'inline'
+                ? '--inline-callback-control' : '--unguarded-callback-control'
+    }
+}
+
+tasks.register('verifyFatalErrorWiring', JavaExec) {
+    group = 'verification'
+    description = 'Checks fatal guards precede recovery, preview, and diagnostic side effects.'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.yansunsky.createcmpor.evaluation.EvaluationFatalErrorWiringTest'
+    systemProperty 'createcmpor.projectRoot', projectDir.absolutePath
+    workingDir = layout.buildDirectory.get().asFile
+    if (providers.gradleProperty('fatalErrorControl').isPresent()) {
+        def control = providers.gradleProperty('fatalErrorControl').get()
+        args control == 'inline' ? '--inline-callback-control'
+                : control == 'callback' ? '--unguarded-callback-control' : '--unguarded-control'
+    }
+}
+
 tasks.named('test', Test) {
     failOnNoDiscoveredTests = false
 }
@@ -170,7 +236,8 @@ tasks.named('test', Test) {
 tasks.named('check') {
     dependsOn tasks.named('verifyObservationSessionBinding'), tasks.named('verifyIoExtensionCapabilityWiring'),
             tasks.named('verifyCleanupProgress'), tasks.named('verifyRoomProjection'),
-            tasks.named('verifyBoundaryAudit')
+            tasks.named('verifyBoundaryAudit'), tasks.named('verifyVirtualMachineErrors'),
+            tasks.named('verifyFatalErrorWiring'), tasks.named('verifyFatalCallback')
 }
 
 // 处理 templates 中的 neoforge.mods.toml 占位符

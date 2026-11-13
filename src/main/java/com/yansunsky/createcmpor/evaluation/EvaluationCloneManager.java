@@ -1,5 +1,7 @@
 package com.yansunsky.createcmpor.evaluation;
 
+import com.yansunsky.createcmpor.util.VirtualMachineErrors;
+
 import com.yansunsky.createcmpor.Config;
 import com.yansunsky.createcmpor.CreateCMPOR;
 import com.yansunsky.createcmpor.preview.PreviewCapture;
@@ -89,6 +91,7 @@ public final class EvaluationCloneManager {
                     try {
                         tickCleaning(server, data, session);
                     } catch (RuntimeException exception) {
+                        VirtualMachineErrors.rethrowIfPresent(exception);
                         reportCleanup(server, session);
                         throw exception;
                     }
@@ -97,13 +100,16 @@ public final class EvaluationCloneManager {
                 default -> throw new IllegalStateException("非 Phase 4 状态进入克隆管理器：" + session.state());
             }
         } catch (EvaluationStorageBridge.UnsupportedContentException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
             requestCleanup(server, data, session, exception.messageKey());
         } catch (TargetConflictException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
             CreateCMPOR.LOGGER.warn("评估会话 {} 目标冲突：{}", session.id(), exception.getMessage());
             // 目标冲突取消：标记强制清理目标区域（eval_world 无法进入，残留必是评估残留）
             session.markCleanTargetOnCancel();
             requestCleanup(server, data, session, "message.createcmpor.evaluation.target_conflict");
         } catch (CompletionException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
             Throwable cause = exception.getCause() == null ? exception : exception.getCause();
             if (cause instanceof EvaluationStorageBridge.UnsupportedContentException unsupported) {
                 requestCleanup(server, data, session, unsupported.messageKey());
@@ -119,6 +125,7 @@ public final class EvaluationCloneManager {
             CreateCMPOR.LOGGER.error("评估会话 {} 的区块 IO 失败", session.id(), cause);
             requestCleanup(server, data, session, "message.createcmpor.evaluation.clone_failed");
         } catch (RuntimeException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
             CreateCMPOR.LOGGER.error("评估会话 {} 的 Phase 4 状态机失败", session.id(), exception);
             requestCleanup(server, data, session, "message.createcmpor.evaluation.clone_failed");
         }
@@ -657,6 +664,7 @@ public final class EvaluationCloneManager {
             AABB inner = room.get().boundaries().innerBounds();
             return PreviewCapture.capture(copyLevel, inner, Config.PREVIEW_MAX_VOLUME.get());
         } catch (Throwable error) {
+            VirtualMachineErrors.rethrowIfPresent(error);
             CreateCMPOR.LOGGER.warn("[预览] 采集异常，跳过预览", error);
             return null;
         }
@@ -876,7 +884,7 @@ public final class EvaluationCloneManager {
             if (poi != null) {
                 auxiliaryWrites.add(EvaluationStorageBridge.writePoi(target, runtime.chunk, poi));
             }
-            runtime.auxiliaryWriteFuture = CompletableFuture.allOf(
+            runtime.auxiliaryWriteFuture = VirtualMachineErrors.allOf(
                     auxiliaryWrites.toArray(CompletableFuture[]::new));
             return;
         }
@@ -1244,6 +1252,7 @@ public final class EvaluationCloneManager {
                 CreateCMPOR.LOGGER.info("清理目标完成 session={} target={} dim={} {}", session.id(),
                         targetId, manifest.targetDimension().location(), progress.summary(now));
             } catch (RuntimeException ignored) {
+                VirtualMachineErrors.rethrowIfPresent(ignored);
                 // A diagnostic logger failure must not replace cleanup's result.
             }
         }
@@ -1262,6 +1271,7 @@ public final class EvaluationCloneManager {
                 reportCleanupTarget(server, session, session.id(), session.manifest(), null);
             }
         } catch (RuntimeException ignored) {
+            VirtualMachineErrors.rethrowIfPresent(ignored);
             // Best-effort diagnostics never drive cleanup, retries or persistence.
         }
     }
@@ -1316,6 +1326,7 @@ public final class EvaluationCloneManager {
                     + ", remainingFingerprint=" + Long.toHexString(snapshot.remainingFingerprint())
                     + " | " + snapshot.details() + " | " + players);
         } catch (RuntimeException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
             return new CleanupSample(-1, "probe=unknown(" + exception.getClass().getSimpleName() + ")");
         }
     }
@@ -1580,6 +1591,7 @@ public final class EvaluationCloneManager {
         try {
             runtime.staging.close();
         } catch (IOException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
             throw new IllegalStateException("无法关闭评估 staging", exception);
         }
     }
