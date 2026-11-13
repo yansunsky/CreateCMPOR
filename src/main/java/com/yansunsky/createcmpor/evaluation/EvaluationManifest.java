@@ -17,6 +17,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
@@ -60,6 +61,7 @@ public final class EvaluationManifest {
     private boolean targetWriteIntent;
     private boolean ticketsAdded;
     private boolean targetReady;
+    private CleanupRecovery cleanupRecovery = new CleanupRecovery();
     private int entityCount;
     private final List<RailwayRecord> railwayRecords = new ArrayList<>();
     /**
@@ -247,11 +249,20 @@ public final class EvaluationManifest {
         this.targetReady = targetReady;
     }
 
+    public CleanupRecovery cleanupRecovery() {
+        return cleanupRecovery;
+    }
+
+    public void cleanupRecovery(CleanupRecovery recovery) {
+        cleanupRecovery = Objects.requireNonNull(recovery, "cleanupRecovery");
+    }
+
     /**
      * 多分支评估：清理副本完成后重置本清单的克隆/发布状态，供下一分支重新克隆。
      * （房间保持冻结，源 chunk 数据不变，直接从源重新走 STAGING_SOURCE → … → PUBLISHED。）
      */
     public void resetForBranch() {
+        this.cleanupRecovery = new CleanupRecovery();
         this.targetWriteIntent = false;
         this.ticketsAdded = false;
         this.targetReady = false;
@@ -316,6 +327,7 @@ public final class EvaluationManifest {
         tag.putBoolean("target_write_intent", targetWriteIntent);
         tag.putBoolean("tickets_added", ticketsAdded);
         tag.putBoolean("target_ready", targetReady);
+        cleanupRecovery.saveInto(tag);
         tag.putInt("entity_count", entityCount);
 
         ListTag railwayTags = new ListTag();
@@ -355,6 +367,7 @@ public final class EvaluationManifest {
                 tag.getString("staging_directory"), chunks,
                 tag.getBoolean("target_write_intent"), tag.getBoolean("tickets_added"),
                 tag.getBoolean("target_ready"), loadProjectionBounds(tag));
+        manifest.cleanupRecovery = CleanupRecovery.load(tag);
         manifest.entityCount = tag.getInt("entity_count");
         ListTag railwayTags = tag.getList("railway_records", Tag.TAG_COMPOUND);
         for (int index = 0; index < railwayTags.size(); index++) {

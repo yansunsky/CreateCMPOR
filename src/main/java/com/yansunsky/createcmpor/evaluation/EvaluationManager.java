@@ -55,17 +55,37 @@ public final class EvaluationManager {
     private static final int PERSIST_PROBE_TIMEOUT_TICKS = 400;
     private static final int PLAYER_EXIT_TIMEOUT_TICKS = 100;
     private static final int PLAYER_EXIT_FALLBACK_TICKS = 40;
+    private static final int JOURNAL_RETRY_TICKS = 100;
 
     private final Map<UUID, EvictionAttempt> playersBeingEvicted = new HashMap<>();
     private final Map<UUID, CompletableFuture<Void>> rollbackWrites = new HashMap<>();
     /** 落盘探测的在途 future（按会话）；探测只读，不会被取消，完成后由 tick 消费。 */
     private final Map<UUID, CompletableFuture<EvaluationStorageBridge.PersistProbeReport>> persistProbes =
             new HashMap<>();
+    private MinecraftServer persistenceServer;
+    private boolean journalFenced;
+    private boolean readRecoveryPending;
+    private int journalRetryTicks;
 
     private EvaluationManager() {
     }
 
     public StartResult start(ServerPlayer player, GlobalPos machinePos, String roomCode, ItemStack launcher) {
+        MinecraftServer server = player.server;
+        observePendingFatalErrors();
+        if (isJournalFenced(server)) {
+            return StartResult.failure(journalUnavailableMessage());
+        }
+        try {
+            return startUnfenced(player, machinePos, roomCode, launcher);
+        } catch (EvaluationCriticalJournal.PersistenceException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
+            fenceCriticalJournal(server, exception);
+            return StartResult.failure(journalUnavailableMessage());
+        }
+    }
+
+    private StartResult startUnfenced(ServerPlayer player, GlobalPos machinePos, String roomCode, ItemStack launcher) {
         MinecraftServer server = player.server;
         EvaluationSavedData data = EvaluationSavedData.get(server);
         if (data.sessionByRoom(roomCode).isPresent() || data.sessionByMachine(machinePos).isPresent()) {
@@ -105,6 +125,7 @@ public final class EvaluationManager {
             purificationEnabled = Config.ENABLE_PURIFICATION.get();
         } catch (RuntimeException ignored) {
             VirtualMachineErrors.rethrowIfPresent(ignored);
+            EvaluationCriticalJournal.rethrowIfPersistenceFailure(ignored);
             purificationEnabled = true;
         }
         if (purificationEnabled && launcher.is(ModItems.PURIFICATION_STICK.get())) {
@@ -125,6 +146,7 @@ public final class EvaluationManager {
             return StartResult.success(session);
         } catch (RuntimeException exception) {
             VirtualMachineErrors.rethrowIfPresent(exception);
+            EvaluationCriticalJournal.rethrowIfPersistenceFailure(exception);
             CreateCMPOR.LOGGER.error("无法建立评估会话 {}", session.id(), exception);
             rollback(server, data, session,
                     "message.createcmpor.evaluation.start_failed");
@@ -227,12 +249,31 @@ public final class EvaluationManager {
 
     public void onServerTick(ServerTickEvent.Post event) {
         MinecraftServer server = event.getServer();
-        EvaluationSavedData data = EvaluationSavedData.get(server);
+        observePendingFatalErrors();
+        if (isJournalFenced(server)) {
+            if (journalRetryTicks > 0) {
+                journalRetryTicks--;
+            }
+            if (journalRetryTicks == 0) {
+                retryCriticalJournal(server);
+            }
+            return;
+        }
+        try {
+            tickSessions(server, EvaluationSavedData.get(server));
+        } catch (EvaluationCriticalJournal.PersistenceException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
+            fenceCriticalJournal(server, exception);
+        }
+    }
+
+    private void tickSessions(MinecraftServer server, EvaluationSavedData data) {
         for (EvaluationSession session : data.sessions()) {
             try {
                 tickSession(server, data, session);
             } catch (RuntimeException exception) {
                 VirtualMachineErrors.rethrowIfPresent(exception);
+                EvaluationCriticalJournal.rethrowIfPersistenceFailure(exception);
                 CreateCMPOR.LOGGER.error("评估会话 {} 执行失败，开始回滚", session.id(), exception);
                 failSession(server, data, session,
                         "message.createcmpor.evaluation.runtime_failed");
@@ -241,12 +282,16 @@ public final class EvaluationManager {
     }
 
     public void onServerStarted(ServerStartedEvent event) {
-        playersBeingEvicted.clear();
-        rollbackWrites.clear();
-        persistProbes.clear();
         MinecraftServer server = event.getServer();
-        EvaluationSavedData data = EvaluationSavedData.get(server);
-        EvaluationCloneManager.INSTANCE.onServerStarted(server, data);
+        persistenceServer = server;
+        journalFenced = true;
+        readRecoveryPending = true;
+        journalRetryTicks = 0;
+        observePendingFatalErrors();
+        retryCriticalJournal(server);
+    }
+
+    private void recoverNonCriticalSessions(MinecraftServer server, EvaluationSavedData data) {
         List<EvaluationSession> sessions = new ArrayList<>(data.sessions());
         if (!sessions.isEmpty()) {
             CreateCMPOR.LOGGER.warn("检测到 {} 个未完成评估会话，开始恢复", sessions.size());
@@ -255,13 +300,10 @@ public final class EvaluationManager {
             if (session.hasPhase4Manifest()) {
                 continue;
             }
-            try {
-                rollback(server, data, session,
-                        "message.createcmpor.evaluation.recovered_after_restart");
-            } catch (RuntimeException exception) {
-                VirtualMachineErrors.rethrowIfPresent(exception);
-                CreateCMPOR.LOGGER.error("启动恢复会话 {} 失败，将在服务端 tick 中重试", session.id(), exception);
-            }
+            // Recovery commits no new IO in the fence-release tick. The next normal tick owns rollback.
+            session.setRollbackMessageKey("message.createcmpor.evaluation.recovered_after_restart");
+            session.setState(EvaluationSession.State.ROLLING_BACK);
+            data.changed();
         }
     }
 
@@ -278,6 +320,28 @@ public final class EvaluationManager {
      * </ul>
      */
     public void onBlockBreak(BlockEvent.BreakEvent event) {
+        if (!event.getState().is(ModBlocks.EVALUATOR.get())) {
+            return;
+        }
+        event.setCanceled(true);
+        if (!(event.getPlayer() instanceof ServerPlayer player)) {
+            return;
+        }
+        observePendingFatalErrors();
+        if (isJournalFenced(player.server)) {
+            player.displayClientMessage(journalUnavailableMessage(), false);
+            return;
+        }
+        try {
+            onBlockBreakUnfenced(event);
+        } catch (EvaluationCriticalJournal.PersistenceException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
+            fenceCriticalJournal(player.server, exception);
+            player.displayClientMessage(journalUnavailableMessage(), false);
+        }
+    }
+
+    private void onBlockBreakUnfenced(BlockEvent.BreakEvent event) {
         if (!event.getState().is(ModBlocks.EVALUATOR.get())) {
             return;
         }
@@ -332,6 +396,7 @@ public final class EvaluationManager {
         if (!session.factoryInstalled()
                 && session.state() != EvaluationSession.State.PREPARED
                 && session.state() != EvaluationSession.State.ROLLING_BACK
+                && session.state() != EvaluationSession.State.CLEANING
                 && evaluatorMissing(server, session)) {
             failSession(server, data, session,
                     "message.createcmpor.evaluation.evaluator_missing");
@@ -490,6 +555,7 @@ public final class EvaluationManager {
             report = probe.join();
         } catch (CompletionException exception) {
             VirtualMachineErrors.rethrowIfPresent(exception);
+            EvaluationCriticalJournal.rethrowIfPersistenceFailure(exception);
             // 探测本身出错（IO 异常等）不应成为新的失败源：退回到原有行为放行，
             // 只记日志。真正的缺块仍会在克隆阶段以原有签名暴露。
             persistProbes.remove(session.id());
@@ -618,6 +684,7 @@ public final class EvaluationManager {
             return true;
         } catch (RuntimeException exception) {
             VirtualMachineErrors.rethrowIfPresent(exception);
+            EvaluationCriticalJournal.rethrowIfPersistenceFailure(exception);
             CreateCMPOR.LOGGER.error("无法从孤立 Evaluator 镜像恢复原机器", exception);
             return false;
         }
@@ -675,6 +742,7 @@ public final class EvaluationManager {
                 rollbackWrites.put(session.id(), restoreWrite);
             } catch (RuntimeException exception) {
                 VirtualMachineErrors.rethrowIfPresent(exception);
+                EvaluationCriticalJournal.rethrowIfPersistenceFailure(exception);
                 CreateCMPOR.LOGGER.error("恢复会话 {} 的原机器失败，将在下一 tick 重试", session.id(), exception);
                 session.tickState();
                 data.changed();
@@ -691,22 +759,22 @@ public final class EvaluationManager {
             restoreWrite.join();
         } catch (CompletionException exception) {
             VirtualMachineErrors.rethrowIfPresent(exception);
+            EvaluationCriticalJournal.rethrowIfPersistenceFailure(exception);
             rollbackWrites.remove(session.id());
             CreateCMPOR.LOGGER.error("保存会话 {} 的还原结果失败，将重试", session.id(), exception.getCause());
             session.tickState();
             data.changed();
             return;
         }
-        rollbackWrites.remove(session.id());
 
         // 0.5.9 耐久制：不再有「退还启动棒」这一步 —— 棒子从未离开玩家背包，
         // 因此下线 / 背包满 / 崩服 / 孤立方块恢复这些失败路径一并消失。
         // 会话结束：把仍在其副本 footprint 内的观察者与无主占用者送出。
         EvaluationObservationManager.exitPlayersFromSessionCopies(
                 server, session, "message.createcmpor.observation.finished");
-        data.remove(session.id());
-        flushTransactions(server);
-        EvaluationCloneManager.INSTANCE.afterSessionRemoved(server, data);
+        removeAfterCriticalCommit(server, data, session);
+        rollbackWrites.remove(session.id());
+        persistProbes.remove(session.id());
         Component reason = rollbackReason(session);
         notifyOwner(server, session, reason);
         CreateCMPOR.LOGGER.warn("评估会话 {} 已回滚：{}", session.id(), reason.getString());
@@ -785,8 +853,196 @@ public final class EvaluationManager {
     }
 
     private static void flushTransactions(MinecraftServer server) {
-        // SavedData 文件很小，保留同步写；禁止在 ServerTick 上等待全局 IOWorker。
+        // NeoForge 异步保存 SavedData；责任放行使用 critical journal，不等待全局 IOWorker。
         server.overworld().getDataStorage().save();
+    }
+
+    boolean isJournalFenced(MinecraftServer server) {
+        return persistenceServer == server && journalFenced;
+    }
+
+    private static Component journalUnavailableMessage() {
+        return Component.literal("评估关键记录暂不可用，已保留会话并暂停评估，请等待持久化恢复");
+    }
+
+    private void fenceCriticalJournal(MinecraftServer server,
+                                      EvaluationCriticalJournal.PersistenceException exception) {
+        VirtualMachineErrors.rethrowIfPresent(exception);
+        if (persistenceServer != server) {
+            readRecoveryPending = false;
+        }
+        persistenceServer = server;
+        journalFenced = true;
+        readRecoveryPending |= exception.requiresReadRecovery();
+        journalRetryTicks = JOURNAL_RETRY_TICKS;
+        CreateCMPOR.LOGGER.error("评估关键 journal 不可用，暂停推进和责任释放，{} tick 后重试（readRecovery={}）",
+                JOURNAL_RETRY_TICKS, readRecoveryPending, exception);
+    }
+
+    private void retryCriticalJournal(MinecraftServer server) {
+        try {
+            EvaluationSavedData data = EvaluationSavedData.get(server);
+            if (readRecoveryPending) {
+                if (hasPendingManagerIo() || data.sessions().stream()
+                        .anyMatch(EvaluationCloneManager.INSTANCE::hasPendingCleanupIo)) {
+                    journalRetryTicks = JOURNAL_RETRY_TICKS;
+                    return;
+                }
+                // Clone startup reads/reconciles before any critical write. A failed read keeps its file untouched.
+                EvaluationCloneManager.INSTANCE.onServerStarted(server, data);
+                readRecoveryPending = false;
+                playersBeingEvicted.clear();
+                rollbackWrites.clear();
+                persistProbes.clear();
+                recoverNonCriticalSessions(server, data);
+            } else {
+                EvaluationCloneManager.syncCritical(server, data);
+            }
+            journalFenced = false;
+            journalRetryTicks = 0;
+            CreateCMPOR.LOGGER.info("评估关键 journal 已恢复，下一服务端 tick 继续评估");
+        } catch (RuntimeException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
+            EvaluationCriticalJournal.PersistenceException persistence =
+                    EvaluationCriticalJournal.persistenceFailure(exception);
+            if (persistence == null) {
+                persistence = readRecoveryPending
+                        ? EvaluationCriticalJournal.readFailure(server, "关键 journal 启动恢复失败", exception)
+                        : EvaluationCriticalJournal.writeFailure("关键 journal 重试失败", exception);
+            }
+            fenceCriticalJournal(server, persistence);
+        }
+    }
+
+    private void observePendingFatalErrors() {
+        EvaluationCloneManager.INSTANCE.observePendingFatalErrors();
+        // Do not return at a pending field: a later, settled sibling can already contain a fatal error.
+        rollbackWrites.values().forEach(EvaluationManager::observeSettledFatal);
+        persistProbes.values().forEach(EvaluationManager::observeSettledFatal);
+    }
+
+    private static void observeSettledFatal(CompletableFuture<?> future) {
+        if (future == null || !future.isDone()) {
+            return;
+        }
+        try {
+            future.join();
+        } catch (RuntimeException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
+            // An ordinary result is still owned by its normal state-machine consumer.
+        }
+    }
+
+    private boolean hasPendingManagerIo() {
+        return rollbackWrites.values().stream().anyMatch(future -> !future.isDone() || future.isCancelled())
+                || persistProbes.values().stream().anyMatch(future -> !future.isDone() || future.isCancelled());
+    }
+
+    public static CleanupResumeResult resumeCleanup(MinecraftServer server, UUID sessionId) {
+        EvaluationManager manager = INSTANCE;
+        manager.observePendingFatalErrors();
+        if (manager.isJournalFenced(server)) {
+            return new CleanupResumeResult(0, "journal_unavailable");
+        }
+        EvaluationSavedData data = EvaluationSavedData.get(server);
+        EvaluationSession session = data.session(sessionId).orElse(null);
+        if (session == null) {
+            return new CleanupResumeResult(0, "not_found");
+        }
+        if (session.state() != EvaluationSession.State.CLEANING) {
+            return new CleanupResumeResult(0, "not_cleaning");
+        }
+        if (session.manifest() == null) {
+            return new CleanupResumeResult(0, "invalid_state");
+        }
+        List<EvaluationManifest> targets = new ArrayList<>();
+        if (session.hasParallelBranches()) {
+            // A blocked shared staging dependency remains addressable while its branches still exist.
+            if (session.manifest().cleanupRecovery().blocked()) {
+                targets.add(session.manifest());
+            }
+            for (EvaluationBranch branch : session.parallelBranches()) {
+                if (branch.targetCleaned()) {
+                    continue;
+                }
+                if (branch.manifest() == null) {
+                    return new CleanupResumeResult(0, "invalid_state");
+                }
+                targets.add(branch.manifest());
+            }
+        } else {
+            targets.add(session.manifest());
+        }
+        List<CleanupResumeChange> changes = new ArrayList<>();
+        for (EvaluationManifest target : targets) {
+            CleanupRecovery original = target.cleanupRecovery();
+            if (!original.blocked()) {
+                continue;
+            }
+            if (!original.canResume()) {
+                return new CleanupResumeResult(0, "invalid_state");
+            }
+            CleanupRecovery proposal = original.copy();
+            if (!proposal.resume()) {
+                return new CleanupResumeResult(0, "invalid_state");
+            }
+            changes.add(new CleanupResumeChange(target, original, proposal));
+        }
+        if (changes.isEmpty()) {
+            return new CleanupResumeResult(0, "no_blocked_targets");
+        }
+        if (EvaluationCloneManager.INSTANCE.hasPendingCleanupIo(session)
+                || pendingOrCancelled(manager.rollbackWrites.get(session.id()))
+                || pendingOrCancelled(manager.persistProbes.get(session.id()))) {
+            return new CleanupResumeResult(0, "pending_io");
+        }
+        for (CleanupResumeChange change : changes) {
+            change.manifest().cleanupRecovery(change.proposal());
+        }
+        data.changed();
+        try {
+            // One critical snapshot for the entire proposal, with no cleanup IO between proposal and commit.
+            EvaluationCloneManager.syncCritical(server, data);
+            return new CleanupResumeResult(changes.size(), "resumed");
+        } catch (RuntimeException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
+            for (CleanupResumeChange change : changes) {
+                change.manifest().cleanupRecovery(change.original());
+            }
+            data.changed();
+            EvaluationCriticalJournal.PersistenceException persistence =
+                    EvaluationCriticalJournal.persistenceFailure(exception);
+            if (persistence == null) {
+                persistence = EvaluationCriticalJournal.writeFailure("无法提交清理预算恢复", exception);
+            }
+            manager.fenceCriticalJournal(server, persistence);
+            return new CleanupResumeResult(0, "persistence_failed");
+        }
+    }
+
+    private static boolean pendingOrCancelled(CompletableFuture<?> future) {
+        return future != null && (!future.isDone() || future.isCancelled());
+    }
+
+    /** The journal commits first; until then the original session continuously holds the room lock. */
+    static void removeAfterCriticalCommit(MinecraftServer server, EvaluationSavedData data,
+                                          EvaluationSession session) {
+        EvaluationCriticalJournal.commitExcludingSession(server, data, session.id());
+        try {
+            data.remove(session.id());
+            flushTransactions(server);
+        } catch (RuntimeException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
+            data.put(session);
+            throw EvaluationCriticalJournal.writeFailure("无法完成会话责任移除", exception);
+        }
+    }
+
+    public record CleanupResumeResult(int resumed, String reason) {
+    }
+
+    private record CleanupResumeChange(EvaluationManifest manifest, CleanupRecovery original,
+                                       CleanupRecovery proposal) {
     }
 
     public record StartResult(boolean successful, EvaluationSession session, Component message) {

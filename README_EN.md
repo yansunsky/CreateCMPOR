@@ -2,7 +2,15 @@
 
 > Create × CompactMachines: Parallel Room Evaluation System
 > Minecraft 1.21.1 · NeoForge 21.1.x · Create 6.0.10-281 · CompactMachines 7.0.81
-> Current version: **0.5.12**
+> Current version: **0.5.15**
+
+## 0.5.15 Cleanup Recovery
+
+- Each cleanup target has a shared limit of three retryable failures, with 20/40-tick backoff before a persistent block. Room responsibility is retained; active chunks are never force-deleted after a timeout.
+- Waiting for idle chunks or pending IO consumes no failure budget. A failing lane does not stop healthy lanes.
+- After fixing the cause, a permission-level-2 administrator can run `/ccmpor evaluation resume <session UUID>`. The entire batch commits together; persistence failure retains the original budgets.
+- Two separate isolated GameTest processes each passed all 15 required tests, including blocked-state recovery after restart and the real resume command. Full CM cloning, real player tickets, and logistics across ticks still require further validation.
+- [Fix and validation record (Chinese)](docs/76-0.5.15-清理有界恢复与重启验证.md); includes the earlier [0.5.13 room-boundary fix](docs/74-0.5.13-房间边界修复与验证.md) and [0.5.14 fatal-error propagation](docs/75-0.5.14-致命异常传播与隔离验证.md).
 
 ## 0.5.12 Fixes
 

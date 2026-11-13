@@ -80,6 +80,10 @@ public final class EvalWorldCommands {
                                 .then(Commands.argument("session", StringArgumentType.word())
                                         .executes(context -> showCleanupDiagnostics(context.getSource(),
                                                 StringArgumentType.getString(context, "session")))))
+                        .then(Commands.literal("resume")
+                                .then(Commands.argument("session", StringArgumentType.word())
+                                        .executes(context -> resumeCleanup(context.getSource(),
+                                                StringArgumentType.getString(context, "session")))))
                         .then(Commands.literal("max")
                                 .executes(context -> showMaxEvaluations(context.getSource()))
                                 .then(Commands.argument("value", IntegerArgumentType.integer(1, 16))
@@ -637,6 +641,34 @@ public final class EvalWorldCommands {
             source.sendSuccess(() -> Component.literal(line), false);
         }
         return 1;
+    }
+
+    private static int resumeCleanup(CommandSourceStack source, String rawSessionId) {
+        UUID sessionId;
+        try {
+            sessionId = UUID.fromString(rawSessionId);
+        } catch (IllegalArgumentException exception) {
+            source.sendFailure(Component.literal("会话 UUID 无效；可先用 /ccmpor evaluation list 查看。"));
+            return 0;
+        }
+        var result = EvaluationManager.resumeCleanup(source.getServer(), sessionId);
+        if (result.resumed() > 0) {
+            source.sendSuccess(() -> Component.literal("已持久恢复 " + result.resumed()
+                    + " 个清理目标（会话 " + sessionId + "）；后续将重新检查区块空闲与 IO 完成状态。"), true);
+            return result.resumed();
+        }
+        String reason = switch (result.reason()) {
+            case "not_found" -> "找不到该会话。";
+            case "not_cleaning" -> "该会话当前不在清理阶段。";
+            case "no_blocked_targets" -> "该会话没有可恢复的阻塞目标；正常等待与退避会按原计划推进。";
+            case "invalid_state" -> "目标恢复数据损坏或版本未知，请保留现场并检查日志。";
+            case "pending_io" -> "该会话仍有未完成 IO，请待其完成后重试。";
+            case "persistence_failed" -> "恢复状态写入失败，目标保持原阻塞状态，请检查关键 journal。";
+            case "journal_unavailable" -> "关键 journal 尚不可用，评估推进已暂停，请先检查服务端日志。";
+            default -> "清理恢复未获确认，请检查服务端日志与 cleanup 诊断。";
+        };
+        source.sendFailure(Component.literal(reason));
+        return 0;
     }
 
     private static int showMaxEvaluations(CommandSourceStack source) {

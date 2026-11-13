@@ -49,6 +49,8 @@ public final class IOExtensionGameTests {
 
     @GameTest(template = TEMPLATE, timeoutTicks = 100)
     public static void headless_smoke(GameTestHelper helper) {
+        helper.assertTrue(!Boolean.getBoolean("createcmpor.riskTestControl"),
+                "Intentional GameTest negative control");
         helper.assertTrue(!helper.getLevel().isClientSide(), "Fixture must run in a ServerLevel");
         FactoryBlockEntity factory = placeFactory(helper, 0);
         IOExtensionBlockEntity extension = placeExtension(helper, EXTENSION, Direction.Axis.X);

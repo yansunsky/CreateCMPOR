@@ -55,8 +55,7 @@ public final class EvaluationCloneManager {
         closeAllRuntimes();
         publishingSession = null;
         maxConcurrentEvaluations = Config.MAX_CONCURRENT_EVALUATIONS.get();
-        EvaluationCriticalJournal.Snapshot snapshot = EvaluationCriticalJournal.read(server);
-        data.reconcileCriticalSessions(snapshot.sessions(), snapshot.exists());
+        EvaluationCriticalJournal.recover(server, data);
         for (EvaluationSession session : data.criticalSessions()) {
             session.setRollbackMessageKey("message.createcmpor.evaluation.recovered_after_restart");
             EvaluationObservationManager.exitPlayersFromSessionCopies(
@@ -68,6 +67,7 @@ public final class EvaluationCloneManager {
     }
 
     void tick(MinecraftServer server, EvaluationSavedData data, EvaluationSession session) {
+        observePendingFatalErrors();
         try {
             switch (session.state()) {
                 case FROZEN -> tickFrozen(server, data, session);
@@ -92,6 +92,7 @@ public final class EvaluationCloneManager {
                         tickCleaning(server, data, session);
                     } catch (RuntimeException exception) {
                         VirtualMachineErrors.rethrowIfPresent(exception);
+                        EvaluationCriticalJournal.rethrowIfPersistenceFailure(exception);
                         reportCleanup(server, session);
                         throw exception;
                     }
@@ -101,15 +102,18 @@ public final class EvaluationCloneManager {
             }
         } catch (EvaluationStorageBridge.UnsupportedContentException exception) {
             VirtualMachineErrors.rethrowIfPresent(exception);
+            EvaluationCriticalJournal.rethrowIfPersistenceFailure(exception);
             requestCleanup(server, data, session, exception.messageKey());
         } catch (TargetConflictException exception) {
             VirtualMachineErrors.rethrowIfPresent(exception);
+            EvaluationCriticalJournal.rethrowIfPersistenceFailure(exception);
             CreateCMPOR.LOGGER.warn("评估会话 {} 目标冲突：{}", session.id(), exception.getMessage());
             // 目标冲突取消：标记强制清理目标区域（eval_world 无法进入，残留必是评估残留）
             session.markCleanTargetOnCancel();
             requestCleanup(server, data, session, "message.createcmpor.evaluation.target_conflict");
         } catch (CompletionException exception) {
             VirtualMachineErrors.rethrowIfPresent(exception);
+            EvaluationCriticalJournal.rethrowIfPersistenceFailure(exception);
             Throwable cause = exception.getCause() == null ? exception : exception.getCause();
             if (cause instanceof EvaluationStorageBridge.UnsupportedContentException unsupported) {
                 requestCleanup(server, data, session, unsupported.messageKey());
@@ -126,6 +130,7 @@ public final class EvaluationCloneManager {
             requestCleanup(server, data, session, "message.createcmpor.evaluation.clone_failed");
         } catch (RuntimeException exception) {
             VirtualMachineErrors.rethrowIfPresent(exception);
+            EvaluationCriticalJournal.rethrowIfPersistenceFailure(exception);
             CreateCMPOR.LOGGER.error("评估会话 {} 的 Phase 4 状态机失败", session.id(), exception);
             requestCleanup(server, data, session, "message.createcmpor.evaluation.clone_failed");
         }
@@ -133,12 +138,17 @@ public final class EvaluationCloneManager {
 
     void requestCleanup(MinecraftServer server, EvaluationSavedData data, EvaluationSession session,
                         String messageKey) {
+        if (EvaluationManager.INSTANCE.isJournalFenced(server)
+                || session.state() == EvaluationSession.State.CLEANING) {
+            return;
+        }
         sourceReloadForcedWarned.remove(session.id());
         session.setRollbackMessageKey(messageKey);
-        // 失败清理：不再是正常分支间过渡，清除标记防止 CLEANING 完成后误入下一分支
+        // Failure cleanup is not a normal branch transition. Retain every in-flight owner/token.
         session.clearBranchTransitionPending();
-        if (session.id().equals(publishingSession)) {
-            publishingSession = null;
+        markCleanupDrain(session.id());
+        for (EvaluationBranch branch : session.parallelBranches()) {
+            markCleanupDrain(branch.branchId());
         }
         if (!session.hasPhase4Manifest()) {
             session.setState(EvaluationSession.State.ROLLING_BACK);
@@ -147,7 +157,6 @@ public final class EvaluationCloneManager {
         }
         EvaluationObservationManager.exitPlayersFromSessionCopies(
                 server, session, "message.createcmpor.observation.finished");
-        closeRuntime(session.id());
         session.setState(EvaluationSession.State.CLEANING);
         data.changed();
         syncCriticalState(server, data);
@@ -156,7 +165,6 @@ public final class EvaluationCloneManager {
     void afterSessionRemoved(MinecraftServer server, EvaluationSavedData data) {
         cleanupProgress.values().removeIf(progress -> data.sessions().stream()
                 .noneMatch(session -> session.id().equals(progress.sessionId())));
-        syncCriticalState(server, data);
     }
 
     private void tickFrozen(MinecraftServer server, EvaluationSavedData data, EvaluationSession session) {
@@ -665,6 +673,7 @@ public final class EvaluationCloneManager {
             return PreviewCapture.capture(copyLevel, inner, Config.PREVIEW_MAX_VOLUME.get());
         } catch (Throwable error) {
             VirtualMachineErrors.rethrowIfPresent(error);
+            EvaluationCriticalJournal.rethrowIfPersistenceFailure(error);
             CreateCMPOR.LOGGER.warn("[预览] 采集异常，跳过预览", error);
             return null;
         }
@@ -994,242 +1003,354 @@ public final class EvaluationCloneManager {
             return;
         }
         EvaluationManifest manifest = requireManifest(session);
+        RuntimeState existing = runtimes.get(session.id());
         long now = cleanupTick(server);
         CleanupProgress progress = cleanupProgress(session, session.id(), now);
-        ServerLevel target = requireTarget(server, manifest);
-        RuntimeState runtime = runtime(server, session);
-        if (!runtime.ticketsRemoved) {
-            progress.phase(CleanupProgress.Phase.REMOVE_TICKETS, now);
-            // 分批撤票（0.5.5）：每 tick 只撤一批，未撤完就 return 等下一 tick。
-            if (runtime.ticketRemoveCursor == null) {
-                runtime.ticketRemoveCursor = new EvaluationTicketManager.RemoveCursor();
-            }
-            boolean removed = runtime.ticketRemoveCursor.advance(target, manifest, true);
-            progress.advance(CleanupProgress.Phase.REMOVE_TICKETS,
-                    runtime.ticketRemoveCursor.processedOperations(manifest.chunks().size()), now);
-            if (!removed) {
+        if (!prepareCleanupAttempt(server, data, manifest, existing, now)) return;
+        try {
+            ServerLevel target = server.getLevel(manifest.targetDimension());
+            if (target == null) {
+                recordCleanupFailure(server, data, manifest, existing, now, CleanupRecovery.STAGE_PREPARE,
+                        null, CleanupRecovery.REASON_MISSING_DIMENSION);
                 return;
             }
-            manifest.setTicketsAdded(false);
-            manifest.setTargetReady(false);
-            runtime.ticketsRemoved = true;
-            syncCriticalState(server, data);
-            return;
-        }
-        if (!runtime.evaluationCleaned) {
-            progress.phase(CleanupProgress.Phase.RELEASE_REFERENCES, now);
-            EvaluationScheduler.cleanup(session.id(), session.roomCode());
-            runtime.evaluationCleaned = true;
-            progress.advance(CleanupProgress.Phase.RELEASE_REFERENCES, 1, now);
-        }
-        if (!runtime.railwayCleaned) {
-            progress.phase(CleanupProgress.Phase.RELEASE_REFERENCES, now);
-            EvaluationRailwayTransfer.cleanup(target, session, manifest);
-            runtime.railwayCleaned = true;
-            progress.advance(CleanupProgress.Phase.RELEASE_REFERENCES, 2, now);
-            syncCriticalState(server, data);
-        }
-        if (!runtime.backpackCleaned) {
-            progress.phase(CleanupProgress.Phase.RELEASE_REFERENCES, now);
-            // 精妙背包副本内容清理（服务端线程）：删除本次评估分配的新 UUID，
-            // 避免全局 SavedData 堆积孤儿条目。幂等，失败仅告警不影响后续清理。
-            if (!com.yansunsky.createcmpor.compat.inventory.SophisticatedBackpackIsolation
-                    .deleteContents(manifest.backpackUuids().values())) {
-                CreateCMPOR.LOGGER.warn("评估会话 {} 精妙背包副本内容清理失败（BackpackStorage 不可访问），"
-                        + "残留 {} 个孤儿 UUID（不可达，不影响玩家）",
-                        session.id(), manifest.backpackUuids().size());
-            }
-            runtime.backpackCleaned = true;
-        }
-        if (manifest.targetWriteIntent() || session.cleanTargetOnCancel()) {
-            List<ChunkPos> chunks = chunkPositions(manifest);
-            if (!EvaluationStorageBridge.areChunksIdle(target, chunks)) {
-                progress.phase(CleanupProgress.Phase.WAIT_IDLE, now);
-                session.tickState();
-                data.changed();
-                return;
-            }
-            if (runtime.operation == Operation.NONE) {
-                progress.phase(CleanupProgress.Phase.DELETE_RECORDS, now);
-                runtime.writeFuture = EvaluationStorageBridge.deleteRecords(target, chunks);
-                runtime.operation = Operation.CLEANUP_DELETE;
-                return;
-            }
-            if (runtime.operation == Operation.CLEANUP_DELETE) {
-                progress.phase(CleanupProgress.Phase.DELETE_RECORDS, now);
-                if (!runtime.writeFuture.isDone()) {
-                    return;
+            RuntimeState runtime = runtime(server, session);
+            runtime.cleanupStage = CleanupRecovery.STAGE_REMOVE_TICKETS;
+            if (!runtime.ticketsRemoved) {
+                progress.phase(CleanupProgress.Phase.REMOVE_TICKETS, now);
+                if (runtime.ticketRemoveCursor == null) {
+                    runtime.ticketRemoveCursor = new EvaluationTicketManager.RemoveCursor();
                 }
-                runtime.writeFuture.join();
-                progress.advance(CleanupProgress.Phase.DELETE_RECORDS, 1, now);
-                runtime.operation = Operation.CLEANUP_VERIFY;
-                runtime.footprintIndex = 0;
+                boolean removed = runtime.ticketRemoveCursor.advance(target, manifest, true);
+                progress.advance(CleanupProgress.Phase.REMOVE_TICKETS,
+                        runtime.ticketRemoveCursor.processedOperations(manifest.chunks().size()), now);
+                if (!removed) return;
+                manifest.setTicketsAdded(false);
+                manifest.setTargetReady(false);
+                runtime.ticketsRemoved = true;
+                syncCriticalState(server, data);
                 return;
             }
-            if (runtime.footprintIndex < chunks.size()) {
-                progress.phase(CleanupProgress.Phase.VERIFY_EMPTY, now);
-                tickCleanupVerify(target, runtime, chunks.get(runtime.footprintIndex), progress, now);
-                return;
+            runtime.cleanupStage = CleanupRecovery.STAGE_RELEASE_REFERENCES;
+            if (!runtime.evaluationCleaned) {
+                progress.phase(CleanupProgress.Phase.RELEASE_REFERENCES, now);
+                EvaluationScheduler.cleanup(session.id(), session.roomCode());
+                runtime.evaluationCleaned = true;
+                progress.advance(CleanupProgress.Phase.RELEASE_REFERENCES, 1, now);
             }
-            manifest.setTargetWriteIntent(false);
-            session.clearCleanTargetOnCancel();
-            for (EvaluationManifest.ChunkRecord chunk : manifest.chunks()) {
-                chunk.setPublishStatus(EvaluationManifest.PublishStatus.CLEANED);
+            if (!runtime.railwayCleaned) {
+                progress.phase(CleanupProgress.Phase.RELEASE_REFERENCES, now);
+                EvaluationRailwayTransfer.cleanup(target, session, manifest);
+                runtime.railwayCleaned = true;
+                progress.advance(CleanupProgress.Phase.RELEASE_REFERENCES, 2, now);
+                syncCriticalState(server, data);
             }
-            syncCriticalState(server, data);
-        }
+            if (!runtime.backpackCleaned) {
+                if (!com.yansunsky.createcmpor.compat.inventory.SophisticatedBackpackIsolation
+                        .deleteContents(manifest.backpackUuids().values())) {
+                    CreateCMPOR.LOGGER.warn("评估会话 {} 精妙背包副本内容清理失败，残留 {} 个不可达 UUID",
+                            session.id(), manifest.backpackUuids().size());
+                }
+                runtime.backpackCleaned = true;
+            }
+            if (manifest.targetWriteIntent() || session.cleanTargetOnCancel()) {
+                if (!advanceCleanupRecords(target, manifest, runtime, progress, now)) return;
+                manifest.setTargetWriteIntent(false);
+                session.clearCleanTargetOnCancel();
+                for (EvaluationManifest.ChunkRecord chunk : manifest.chunks()) {
+                    chunk.setPublishStatus(EvaluationManifest.PublishStatus.CLEANED);
+                }
+                // Old target completion is durable before resetting the next branch's budget.
+                syncCriticalState(server, data);
+            }
 
-        progress.phase(CleanupProgress.Phase.FINALIZE, now);
-        EvaluationObservationManager.exitPlayersFromSessionCopies(
-                server, session, "message.createcmpor.observation.finished");
-        closeRuntime(session.id());
-        EvaluationStorageBridge.deleteStaging(server, manifest);
-        if (session.factoryInstalled()) {
-            // 固化收尾：工厂保留（还原数据在工厂 BE 内），删除会话、释放房间锁
-            data.remove(session.id());
-            server.overworld().getDataStorage().save();
-            finishCleanupTarget(session, session.id(), manifest, now);
-            removeCleanupProgress(session.id());
-            EvaluationCloneManager.INSTANCE.afterSessionRemoved(server, data);
-            var owner = server.getPlayerList().getPlayer(session.owner());
-            if (owner != null) {
-                owner.displayClientMessage(
-                        Component.translatable("message.createcmpor.factory.ready"), false);
-                // 一次性聊天提醒：启动棒可还原工厂（空手右键提示已移除）
-                owner.displayClientMessage(
-                        Component.translatable("message.createcmpor.factory.revert_hint"), false);
+            runtime.cleanupStage = CleanupRecovery.STAGE_FINALIZE;
+            progress.phase(CleanupProgress.Phase.FINALIZE, now);
+            EvaluationObservationManager.exitPlayersFromSessionCopies(
+                    server, session, "message.createcmpor.observation.finished");
+            if (!prepareRuntimeClose(session.id())) return;
+            EvaluationStorageBridge.deleteStaging(server, manifest);
+            if (session.factoryInstalled()) {
+                EvaluationManager.removeAfterCriticalCommit(server, data, session);
+                closeRuntime(session.id());
+                finishCleanupTarget(session, session.id(), manifest, now);
+                removeCleanupProgress(session.id());
+                var owner = server.getPlayerList().getPlayer(session.owner());
+                if (owner != null) {
+                    owner.displayClientMessage(Component.translatable("message.createcmpor.factory.ready"), false);
+                    owner.displayClientMessage(Component.translatable("message.createcmpor.factory.revert_hint"), false);
+                }
+                CreateCMPOR.LOGGER.info("评估会话 {} 固化收尾完成：副本已清理，工厂就绪", session.id());
+                return;
             }
-            CreateCMPOR.LOGGER.info("评估会话 {} 固化收尾完成：副本已清理，工厂就绪", session.id());
-            return;
-        }
-        // 多分支评估：正常分支间清理（advanceBranch 后进入 CLEANING）且还有分支 → 重新克隆下一分支
-        if (session.branchTransitionPending() && session.branchIndex() < session.branchCount()) {
-            session.clearBranchTransitionPending();
-            manifest.resetForBranch();
-            session.setState(EvaluationSession.State.STAGING_SOURCE);
+            if (session.branchTransitionPending() && session.branchIndex() < session.branchCount()) {
+                // Commit the completed old target while its owner and room lock are still retained.
+                syncCriticalState(server, data);
+                closeRuntime(session.id());
+                session.clearBranchTransitionPending();
+                manifest.resetForBranch();
+                session.setState(EvaluationSession.State.STAGING_SOURCE);
+                data.changed();
+                syncCriticalState(server, data);
+                finishCleanupTarget(session, session.id(), manifest, now);
+                removeCleanupProgress(session.id());
+                CreateCMPOR.LOGGER.info("评估会话 {} 分支 {}/{} 副本已清理，开始下一分支克隆",
+                        session.id(), session.branchIndex(), session.branchCount());
+                return;
+            }
+            session.setState(EvaluationSession.State.ROLLING_BACK);
             data.changed();
-            syncCriticalState(server, data);
+            try {
+                syncCriticalState(server, data);
+            } catch (RuntimeException exception) {
+                VirtualMachineErrors.rethrowIfPresent(exception);
+                session.setState(EvaluationSession.State.CLEANING);
+                data.changed();
+                EvaluationCriticalJournal.rethrowIfPersistenceFailure(exception);
+                throw exception;
+            }
+            closeRuntime(session.id());
             finishCleanupTarget(session, session.id(), manifest, now);
             removeCleanupProgress(session.id());
-            CreateCMPOR.LOGGER.info("评估会话 {} 分支 {}/{} 副本已清理，开始下一分支克隆",
-                    session.id(), session.branchIndex(), session.branchCount());
-            return;
+        } catch (RuntimeException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
+            EvaluationCriticalJournal.rethrowIfPersistenceFailure(exception);
+            RuntimeState runtime = runtimes.get(session.id());
+            recordCleanupFailure(server, data, manifest, runtime, now,
+                    runtime == null ? CleanupRecovery.STAGE_PREPARE : runtime.cleanupStage, exception, null);
         }
-        session.setState(EvaluationSession.State.ROLLING_BACK);
-        data.changed();
-        syncCriticalState(server, data);
-        finishCleanupTarget(session, session.id(), manifest, now);
-        removeCleanupProgress(session.id());
+    }
+
+    /** One strict idle/delete/verify attempt. Neither successful substeps nor WAIT_IDLE reset its budget. */
+    private boolean advanceCleanupRecords(ServerLevel target, EvaluationManifest manifest, RuntimeState runtime,
+                                          CleanupProgress progress, long now) {
+        List<ChunkPos> chunks = chunkPositions(manifest);
+        runtime.cleanupStage = CleanupRecovery.STAGE_WAIT_IDLE;
+        if (!EvaluationStorageBridge.areChunksIdle(target, chunks)) {
+            progress.phase(CleanupProgress.Phase.WAIT_IDLE, now);
+            return false;
+        }
+        if (runtime.operation == Operation.NONE) {
+            runtime.cleanupStage = CleanupRecovery.STAGE_DELETE_RECORDS;
+            progress.phase(CleanupProgress.Phase.DELETE_RECORDS, now);
+            runtime.operation = Operation.CLEANUP_DELETE;
+            runtime.writeFuture = EvaluationStorageBridge.deleteRecords(target, chunks);
+            return false;
+        }
+        if (runtime.operation == Operation.CLEANUP_DELETE) {
+            runtime.cleanupStage = CleanupRecovery.STAGE_DELETE_RECORDS;
+            progress.phase(CleanupProgress.Phase.DELETE_RECORDS, now);
+            runtime.writeFuture.join(); // prepareCleanupAttempt already checked every owned future is settled.
+            progress.advance(CleanupProgress.Phase.DELETE_RECORDS, 1, now);
+            runtime.operation = Operation.CLEANUP_VERIFY;
+            runtime.footprintIndex = 0;
+            return false;
+        }
+        runtime.cleanupStage = CleanupRecovery.STAGE_VERIFY_EMPTY;
+        if (runtime.footprintIndex < chunks.size()) {
+            progress.phase(CleanupProgress.Phase.VERIFY_EMPTY, now);
+            tickCleanupVerify(target, runtime, chunks.get(runtime.footprintIndex), progress, now);
+            return false;
+        }
+        return true;
     }
 
     private void tickParallelCleaning(MinecraftServer server, EvaluationSavedData data,
                                       EvaluationSession session) {
         long now = cleanupTick(server);
-        // Start all target clocks even if an earlier lane throws before later lanes run.
-        for (EvaluationBranch branch : session.parallelBranches()) {
-            cleanupProgress(session, branch.branchId(), now);
-            if (branch.targetCleaned()) {
-                finishCleanupTarget(session, branch.branchId(), branch.manifest(), now);
-            }
-        }
         boolean allBranchesCleaned = true;
         for (EvaluationBranch branch : session.parallelBranches()) {
             EvaluationManifest manifest = branch.manifest();
             CleanupProgress progress = cleanupProgress(session, branch.branchId(), now);
-            RuntimeState branchRuntime = runtime(server, branch.branchId(), manifest);
-            ServerLevel target = requireTarget(server, manifest);
-            if (!branch.ticketsRemoved()) {
-                progress.phase(CleanupProgress.Phase.REMOVE_TICKETS, now);
-                // 分批撤票（0.5.5）：每个分支各有一个游标，未撤完本 tick 先不往下走。
-                if (branchRuntime.ticketRemoveCursor == null) {
-                    branchRuntime.ticketRemoveCursor = new EvaluationTicketManager.RemoveCursor();
-                }
-                boolean removed = branchRuntime.ticketRemoveCursor.advance(target, manifest, true);
-                progress.advance(CleanupProgress.Phase.REMOVE_TICKETS,
-                        branchRuntime.ticketRemoveCursor.processedOperations(manifest.chunks().size()), now);
-                if (!removed) {
-                    allBranchesCleaned = false;
-                    continue;
-                }
-                manifest.setTicketsAdded(false);
-                manifest.setTargetReady(false);
-                branch.setTicketsRemoved(true);
-                syncCriticalState(server, data);
-                allBranchesCleaned = false;
+            RuntimeState existing = runtimes.get(branch.branchId());
+            if (branch.targetCleaned()) {
+                // Completion was committed before this owner can be forgotten (also after a journal fence).
+                if (!closeRuntime(branch.branchId())) allBranchesCleaned = false;
+                finishCleanupTarget(session, branch.branchId(), manifest, now);
                 continue;
             }
-            if (!branchRuntime.evaluationCleaned) {
-                progress.phase(CleanupProgress.Phase.RELEASE_REFERENCES, now);
-                EvaluationScheduler.cleanup(branch.branchId(), "branch:" + branch.branchId());
-                branchRuntime.evaluationCleaned = true;
-                progress.advance(CleanupProgress.Phase.RELEASE_REFERENCES, 1, now);
-            }
-            if (manifest.targetWriteIntent() || session.cleanTargetOnCancel()) {
-                if (!branch.targetCleaned()) {
-                    List<ChunkPos> chunks = chunkPositions(manifest);
-                    if (!EvaluationStorageBridge.areChunksIdle(target, chunks)) {
-                        progress.phase(CleanupProgress.Phase.WAIT_IDLE, now);
-                        allBranchesCleaned = false;
-                        continue;
-                    }
-                    if (branchRuntime.operation != Operation.NONE
-                            && branchRuntime.operation != Operation.CLEANUP_DELETE
-                            && branchRuntime.operation != Operation.CLEANUP_VERIFY) {
-                        branchRuntime.clearOperation();
-                        branchRuntime.footprintIndex = 0;
-                    }
-                    if (branchRuntime.operation == Operation.NONE) {
-                        progress.phase(CleanupProgress.Phase.DELETE_RECORDS, now);
-                        branchRuntime.writeFuture = EvaluationStorageBridge.deleteRecords(target, chunks);
-                        branchRuntime.operation = Operation.CLEANUP_DELETE;
-                        allBranchesCleaned = false;
-                        continue;
-                    }
-                    if (branchRuntime.operation == Operation.CLEANUP_DELETE) {
-                        progress.phase(CleanupProgress.Phase.DELETE_RECORDS, now);
-                        if (!branchRuntime.writeFuture.isDone()) {
-                            allBranchesCleaned = false;
-                            continue;
-                        }
-                        branchRuntime.writeFuture.join();
-                        progress.advance(CleanupProgress.Phase.DELETE_RECORDS, 1, now);
-                        branchRuntime.operation = Operation.CLEANUP_VERIFY;
-                        branchRuntime.footprintIndex = 0;
-                        allBranchesCleaned = false;
-                        continue;
-                    }
-                    if (branchRuntime.footprintIndex < chunks.size()) {
-                        progress.phase(CleanupProgress.Phase.VERIFY_EMPTY, now);
-                        tickCleanupVerify(target, branchRuntime, chunks.get(branchRuntime.footprintIndex), progress, now);
-                        allBranchesCleaned = false;
-                        continue;
-                    }
-                    manifest.setTargetWriteIntent(false);
-                    for (EvaluationManifest.ChunkRecord chunk : manifest.chunks()) {
-                        chunk.setPublishStatus(EvaluationManifest.PublishStatus.CLEANED);
-                    }
-                    progress.phase(CleanupProgress.Phase.FINALIZE, now);
-                    branch.setTargetCleaned(true);
-                    branch.setPhase(EvaluationBranch.Phase.CLEANED);
-                    syncCriticalState(server, data);
-                    finishCleanupTarget(session, branch.branchId(), manifest, now);
+            allBranchesCleaned = false;
+            if (!prepareCleanupAttempt(server, data, manifest, existing, now)) continue;
+            try {
+                ServerLevel target = server.getLevel(manifest.targetDimension());
+                if (target == null) {
+                    recordCleanupFailure(server, data, manifest, existing, now, CleanupRecovery.STAGE_PREPARE,
+                            null, CleanupRecovery.REASON_MISSING_DIMENSION);
+                    continue;
                 }
+                RuntimeState runtime = runtime(server, branch.branchId(), manifest);
+                runtime.cleanupStage = CleanupRecovery.STAGE_REMOVE_TICKETS;
+                if (!branch.ticketsRemoved()) {
+                    progress.phase(CleanupProgress.Phase.REMOVE_TICKETS, now);
+                    if (runtime.ticketRemoveCursor == null) {
+                        runtime.ticketRemoveCursor = new EvaluationTicketManager.RemoveCursor();
+                    }
+                    boolean removed = runtime.ticketRemoveCursor.advance(target, manifest, true);
+                    progress.advance(CleanupProgress.Phase.REMOVE_TICKETS,
+                            runtime.ticketRemoveCursor.processedOperations(manifest.chunks().size()), now);
+                    if (!removed) continue;
+                    manifest.setTicketsAdded(false);
+                    manifest.setTargetReady(false);
+                    branch.setTicketsRemoved(true);
+                    syncCriticalState(server, data);
+                    continue;
+                }
+                runtime.cleanupStage = CleanupRecovery.STAGE_RELEASE_REFERENCES;
+                if (!runtime.evaluationCleaned) {
+                    progress.phase(CleanupProgress.Phase.RELEASE_REFERENCES, now);
+                    EvaluationScheduler.cleanup(branch.branchId(), "branch:" + branch.branchId());
+                    runtime.evaluationCleaned = true;
+                    progress.advance(CleanupProgress.Phase.RELEASE_REFERENCES, 1, now);
+                }
+                if (manifest.targetWriteIntent() || session.cleanTargetOnCancel()) {
+                    if (!advanceCleanupRecords(target, manifest, runtime, progress, now)) continue;
+                }
+                runtime.cleanupStage = CleanupRecovery.STAGE_FINALIZE;
+                progress.phase(CleanupProgress.Phase.FINALIZE, now);
+                if (!prepareRuntimeClose(branch.branchId())) continue;
+                manifest.setTargetWriteIntent(false);
+                for (EvaluationManifest.ChunkRecord chunk : manifest.chunks()) {
+                    chunk.setPublishStatus(EvaluationManifest.PublishStatus.CLEANED);
+                }
+                branch.setTargetCleaned(true);
+                branch.setPhase(EvaluationBranch.Phase.CLEANED);
+                syncCriticalState(server, data);
+                closeRuntime(branch.branchId());
+                finishCleanupTarget(session, branch.branchId(), manifest, now);
+            } catch (RuntimeException exception) {
+                VirtualMachineErrors.rethrowIfPresent(exception);
+                EvaluationCriticalJournal.rethrowIfPersistenceFailure(exception);
+                RuntimeState runtime = runtimes.get(branch.branchId());
+                recordCleanupFailure(server, data, manifest, runtime, now,
+                        runtime == null ? CleanupRecovery.STAGE_PREPARE : runtime.cleanupStage, exception, null);
+                // Ordinary lane failures are contained here; later lanes still get their turn.
             }
         }
-        if (!allBranchesCleaned) {
-            return;
-        }
-        for (EvaluationBranch branch : session.parallelBranches()) {
-            closeRuntime(branch.branchId());
-            finishCleanupTarget(session, branch.branchId(), branch.manifest(), now);
+        if (!allBranchesCleaned) return;
+        RuntimeState parent = runtimes.get(session.id());
+        if (parent != null) {
+            CleanupFutures.Observation shared = parent.observeIo();
+            for (RuntimeException failure : shared.failures()) {
+                EvaluationCriticalJournal.rethrowIfPersistenceFailure(failure);
+            }
+            // Parent only owns staging IO; branches can finish independently, but keep their structure
+            // until shared staging has no pending/cancelled producer. A settled failure drains serially.
+            if (!shared.settled()) return;
         }
         session.clearCleanTargetOnCancel();
         session.setParallelBranches(List.of());
-        // 分支清理完成：立即持久化“无分支 + 主 eval 副本未写”的状态，
-        // 避免父 manifest 清理与 journal 重启恢复读到残留分支。
         data.changed();
         syncCriticalState(server, data);
+        // Parent runtime/staging remains owned until the following serial cleanup drains it as well.
         removeCleanupProgress(session.id());
+    }
+
+    private void markCleanupDrain(UUID id) {
+        RuntimeState runtime = runtimes.get(id);
+        if (runtime != null) runtime.drainingCleanup = true;
+    }
+
+    /** Read-only, done-only observation, including blocked/backoff targets and all five owned operations. */
+    void observePendingFatalErrors() {
+        for (RuntimeState runtime : runtimes.values()) runtime.observeIo();
+    }
+
+    boolean hasPendingCleanupIo(EvaluationSession session) {
+        observePendingFatalErrors();
+        RuntimeState parent = runtimes.get(session.id());
+        if (parent != null && !parent.observeIo().settled()) return true;
+        for (EvaluationBranch branch : session.parallelBranches()) {
+            RuntimeState runtime = runtimes.get(branch.branchId());
+            if (runtime != null && !runtime.observeIo().settled()) return true;
+        }
+        return false;
+    }
+
+    private boolean prepareCleanupAttempt(MinecraftServer server, EvaluationSavedData data,
+                                          EvaluationManifest manifest, @Nullable RuntimeState runtime, long now) {
+        CleanupRecovery recovery = manifest.cleanupRecovery();
+        if (runtime != null) {
+            CleanupFutures.Observation observation = runtime.observeIo();
+            for (RuntimeException failure : observation.failures()) {
+                EvaluationCriticalJournal.rethrowIfPersistenceFailure(failure);
+            }
+            if (observation.cancelled()) {
+                if (!runtime.cleanupFailureAccounted && !recovery.blocked()) {
+                    recordCleanupFailure(server, data, manifest, runtime, now, CleanupRecovery.STAGE_DRAIN_IO,
+                            null, CleanupRecovery.REASON_CANCELLED);
+                }
+                return false;
+            }
+            if (observation.pending()) return false;
+            if (runtime.cleanupFailureAccounted) {
+                // A successful write or Manager's fence preceded this normal tick. Acknowledge once.
+                runtime.clearOperation();
+                runtime.footprintIndex = 0;
+                runtime.cleanupFailureAccounted = false;
+                runtime.drainingCleanup = false;
+            } else {
+                RuntimeException failure = observation.failure();
+                if (failure != null) {
+                    if (recovery.canAttempt(now)) {
+                        recordCleanupFailure(server, data, manifest, runtime, now,
+                                runtime.drainingCleanup ? CleanupRecovery.STAGE_DRAIN_IO
+                                        : cleanupOperationStage(runtime), failure, null);
+                    }
+                    return false;
+                }
+                if (runtime.drainingCleanup || (runtime.operation != Operation.NONE
+                        && runtime.operation != Operation.CLEANUP_DELETE
+                        && runtime.operation != Operation.CLEANUP_VERIFY)) {
+                    runtime.clearOperation();
+                    runtime.footprintIndex = 0;
+                    runtime.drainingCleanup = false;
+                }
+            }
+        }
+        if (now < 0 && !recovery.blocked()) {
+            recordCleanupFailure(server, data, manifest, runtime, now, CleanupRecovery.STAGE_PREPARE,
+                    null, CleanupRecovery.REASON_INVALID_CLOCK);
+            return false;
+        }
+        return manifest.cleanupRecovery().canAttempt(now);
+    }
+
+    private static String cleanupOperationStage(RuntimeState runtime) {
+        return switch (runtime.operation) {
+            case CLEANUP_DELETE -> CleanupRecovery.STAGE_DELETE_RECORDS;
+            case CLEANUP_VERIFY -> CleanupRecovery.STAGE_VERIFY_EMPTY;
+            default -> CleanupRecovery.STAGE_DRAIN_IO;
+        };
+    }
+
+    private void recordCleanupFailure(MinecraftServer server, EvaluationSavedData data, EvaluationManifest manifest,
+                                      @Nullable RuntimeState runtime, long now, String stage,
+                                      @Nullable RuntimeException failure, @Nullable String blockReason) {
+        if (runtime != null && runtime.cleanupFailureAccounted) return;
+        if (failure != null) {
+            VirtualMachineErrors.rethrowIfPresent(failure);
+            EvaluationCriticalJournal.rethrowIfPersistenceFailure(failure);
+        }
+        CleanupRecovery proposal = manifest.cleanupRecovery().copy();
+        boolean changed;
+        if (blockReason != null) {
+            changed = proposal.blockUnexpected(stage, blockReason);
+        } else if (failure instanceof CleanupVerificationFailure) {
+            changed = proposal.recordVerificationFailure(now);
+        } else if (failure != null && CleanupFutures.isIoFailure(failure)) {
+            // The three canonical IO stages share this target's single attempt budget.
+            String ioStage = CleanupRecovery.STAGE_VERIFY_EMPTY.equals(stage)
+                    || CleanupRecovery.STAGE_DELETE_RECORDS.equals(stage) ? stage : CleanupRecovery.STAGE_DRAIN_IO;
+            changed = proposal.recordIoFailure(now, ioStage);
+        } else {
+            changed = proposal.blockUnexpected(stage, CleanupRecovery.REASON_UNEXPECTED_FAILURE);
+        }
+        if (!changed) return;
+        if (runtime != null) runtime.cleanupFailureAccounted = true;
+        manifest.cleanupRecovery(proposal);
+        data.changed();
+        // Never clear the result or owner before this succeeds. The next normal tick performs the ack.
+        syncCriticalState(server, data);
     }
 
     private static long cleanupTick(MinecraftServer server) {
@@ -1253,6 +1374,7 @@ public final class EvaluationCloneManager {
                         targetId, manifest.targetDimension().location(), progress.summary(now));
             } catch (RuntimeException ignored) {
                 VirtualMachineErrors.rethrowIfPresent(ignored);
+                EvaluationCriticalJournal.rethrowIfPersistenceFailure(ignored);
                 // A diagnostic logger failure must not replace cleanup's result.
             }
         }
@@ -1272,6 +1394,7 @@ public final class EvaluationCloneManager {
             }
         } catch (RuntimeException ignored) {
             VirtualMachineErrors.rethrowIfPresent(ignored);
+                EvaluationCriticalJournal.rethrowIfPersistenceFailure(ignored);
             // Best-effort diagnostics never drive cleanup, retries or persistence.
         }
     }
@@ -1313,7 +1436,8 @@ public final class EvaluationCloneManager {
             String flags = ", ticketsRemoved=" + (branch != null ? branch.ticketsRemoved()
                     : runtime != null ? runtime.ticketsRemoved : "unknown(runtime_missing)")
                     + ", targetWriteIntent=" + manifest.targetWriteIntent()
-                    + ", cleanTargetOnCancel=" + session.cleanTargetOnCancel();
+                    + ", cleanTargetOnCancel=" + session.cleanTargetOnCancel()
+                    + ", " + cleanupBudgetSummary(manifest);
             ServerLevel target = server.getLevel(manifest.targetDimension());
             if (target == null) {
                 return new CleanupSample(-1, runtimeState + flags + ", probe=unknown(dimension_unavailable)");
@@ -1327,8 +1451,16 @@ public final class EvaluationCloneManager {
                     + " | " + snapshot.details() + " | " + players);
         } catch (RuntimeException exception) {
             VirtualMachineErrors.rethrowIfPresent(exception);
+            EvaluationCriticalJournal.rethrowIfPersistenceFailure(exception);
             return new CleanupSample(-1, "probe=unknown(" + exception.getClass().getSimpleName() + ")");
         }
+    }
+
+    private static String cleanupBudgetSummary(EvaluationManifest manifest) {
+        CleanupRecovery recovery = manifest.cleanupRecovery();
+        return "failures=" + recovery.failures() + "/3, blocked=" + recovery.blocked()
+                + ", retryNotBefore=" + recovery.retryNotBefore() + ", failureStage=" + recovery.stage()
+                + ", failureReason=" + recovery.reason();
     }
 
     private static String cleanupFutureState(@Nullable CompletableFuture<?> future) {
@@ -1365,6 +1497,7 @@ public final class EvaluationCloneManager {
             for (EvaluationBranch branch : session.parallelBranches()) {
                 appendCleanupDiagnostics(lines, server, session, branch.branchId(), branch.manifest(), branch, now);
             }
+            appendSharedStagingDiagnostics(lines, session);
         } else if (session.manifest() != null) {
             appendCleanupDiagnostics(lines, server, session, session.id(), session.manifest(), null, now);
         } else {
@@ -1373,12 +1506,36 @@ public final class EvaluationCloneManager {
         return List.copyOf(lines);
     }
 
+    /** Shared-owner status only: no joins, runtime creation, target lookup, or chunk/ticket probes. */
+    private void appendSharedStagingDiagnostics(List<String> lines, EvaluationSession session) {
+        RuntimeState parent = runtimes.get(session.id());
+        EvaluationManifest manifest = session.manifest();
+        boolean recoveryNeedsAttention = manifest != null && (manifest.cleanupRecovery().blocked()
+                || manifest.cleanupRecovery().failures() != 0);
+        boolean ioNeedsAttention = parent != null && (cleanupFutureNeedsAttention(parent.sourceFuture)
+                || cleanupFutureNeedsAttention(parent.tagFuture) || cleanupFutureNeedsAttention(parent.storedFuture)
+                || cleanupFutureNeedsAttention(parent.writeFuture) || cleanupFutureNeedsAttention(parent.auxiliaryWriteFuture));
+        if (!recoveryNeedsAttention && !ioNeedsAttention) return;
+        lines.add("sharedStagingOwner=" + session.id() + ", runtime=" + (parent == null ? "missing" : "present")
+                + ", sourceFuture=" + cleanupFutureState(parent == null ? null : parent.sourceFuture)
+                + ", tagFuture=" + cleanupFutureState(parent == null ? null : parent.tagFuture)
+                + ", storedFuture=" + cleanupFutureState(parent == null ? null : parent.storedFuture)
+                + ", writeFuture=" + cleanupFutureState(parent == null ? null : parent.writeFuture)
+                + ", auxiliaryWriteFuture=" + cleanupFutureState(parent == null ? null : parent.auxiliaryWriteFuture)
+                + " | " + (manifest == null ? "budget=unknown(manifest_missing)" : cleanupBudgetSummary(manifest)));
+    }
+
+    private static boolean cleanupFutureNeedsAttention(@Nullable CompletableFuture<?> future) {
+        return future != null && (!future.isDone() || future.isCancelled() || future.isCompletedExceptionally());
+    }
+
     private void appendCleanupDiagnostics(List<String> lines, MinecraftServer server,
                                            EvaluationSession session, UUID targetId, EvaluationManifest manifest,
                                            @Nullable EvaluationBranch branch, long now) {
         CleanupProgress progress = cleanupProgress.get(targetId);
         lines.add("target=" + targetId + ", dim=" + manifest.targetDimension().location() + " | "
-                + (progress == null ? "progress=not_observed_yet" : progress.summary(now)));
+                + (progress == null ? "progress=not_observed_yet" : progress.summary(now))
+                + " | " + cleanupBudgetSummary(manifest));
         lines.add(cleanupSample(server, session, targetId, manifest, branch).details());
     }
 
@@ -1396,10 +1553,7 @@ public final class EvaluationCloneManager {
         }
         if (!runtime.storedFuture.join().allAbsent()) {
             progress.verificationFailed();
-            runtime.operation = Operation.NONE;
-            runtime.storedFuture = null;
-            runtime.footprintIndex = 0;
-            return;
+            throw new CleanupVerificationFailure();
         }
         runtime.footprintIndex++;
         progress.advance(CleanupProgress.Phase.VERIFY_EMPTY, runtime.footprintIndex, now);
@@ -1492,12 +1646,18 @@ public final class EvaluationCloneManager {
     }
 
     static void syncCritical(MinecraftServer server, EvaluationSavedData data) {
-        if (data.criticalSessions().isEmpty()) {
-            EvaluationCriticalJournal.deleteIfEmpty(server, data);
-        } else {
-            EvaluationCriticalJournal.write(server, data);
+        try {
+            if (data.criticalSessions().isEmpty()) {
+                EvaluationCriticalJournal.deleteIfEmpty(server, data);
+            } else {
+                EvaluationCriticalJournal.write(server, data);
+            }
+            server.overworld().getDataStorage().save();
+        } catch (RuntimeException exception) {
+            VirtualMachineErrors.rethrowIfPresent(exception);
+            EvaluationCriticalJournal.rethrowIfPersistenceFailure(exception);
+            throw EvaluationCriticalJournal.writeFailure("无法提交评估关键状态", exception);
         }
-        server.overworld().getDataStorage().save();
     }
 
     private static void notifyOwner(MinecraftServer server, EvaluationSession session, Component message) {
@@ -1573,26 +1733,60 @@ public final class EvaluationCloneManager {
     }
 
     private void closeAllRuntimes() {
-        cleanupProgress.clear();
+        observePendingFatalErrors();
         for (UUID id : new ArrayList<>(runtimes.keySet())) {
-            closeRuntime(id);
+            if (!closeRuntime(id)) {
+                throw new IllegalStateException("仍有未排空的评估 IO，不能关闭或遗失 staging owner");
+            }
         }
+        cleanupProgress.clear();
     }
 
-    private void closeRuntime(UUID sessionId) {
-        CLONE_LOGGED_WATERMARK.remove(sessionId);
-        if (sessionId.equals(publishingSession)) {
-            publishingSession = null;
+    /** Close first, retain the owner in the map until its completion has been committed. */
+    private boolean prepareRuntimeClose(UUID id) {
+        RuntimeState runtime = runtimes.get(id);
+        if (runtime == null) return true;
+        observePendingFatalErrors();
+        CleanupFutures.Observation own = runtime.observeIo();
+        for (RuntimeException failure : own.failures()) {
+            EvaluationCriticalJournal.rethrowIfPersistenceFailure(failure);
         }
-        RuntimeState runtime = runtimes.remove(sessionId);
-        if (runtime == null || !runtime.ownsStaging) {
-            return;
+        if (!own.settled()) return false;
+        if (own.failure() != null) throw own.failure();
+        if (!runtime.ownsStaging || runtime.stagingClosed) return true;
+        // Parallel branch runtimes borrow this handle. All their producers must be quiet as well.
+        for (RuntimeState shared : runtimes.values()) {
+            if (shared == runtime || shared.staging != runtime.staging) continue;
+            CleanupFutures.Observation observed = shared.observeIo();
+            for (RuntimeException failure : observed.failures()) {
+                EvaluationCriticalJournal.rethrowIfPersistenceFailure(failure);
+            }
+            if (!observed.settled()) return false;
+            if (observed.failure() != null) throw observed.failure();
         }
         try {
             runtime.staging.close();
+            runtime.stagingClosed = true;
+            return true;
         } catch (IOException exception) {
             VirtualMachineErrors.rethrowIfPresent(exception);
+            EvaluationCriticalJournal.rethrowIfPersistenceFailure(exception);
             throw new IllegalStateException("无法关闭评估 staging", exception);
+        }
+    }
+
+    private boolean closeRuntime(UUID id) {
+        if (!prepareRuntimeClose(id)) return false;
+        // No pending producer is abandoned; a failed close leaves this exact owner reachable.
+        runtimes.remove(id);
+        CLONE_LOGGED_WATERMARK.remove(id);
+        if (id.equals(publishingSession)) publishingSession = null;
+        return true;
+    }
+
+    private static final class CleanupVerificationFailure extends IllegalStateException {
+        private CleanupVerificationFailure() {
+            super("清理验空仍有记录");
         }
     }
 
@@ -1612,6 +1806,10 @@ public final class EvaluationCloneManager {
         private final ChunkStorage staging;
         /** 是否拥有 staging 句柄：父会话/独立 runtime=true；并行分支共享父句柄=false。 */
         private final boolean ownsStaging;
+        private boolean stagingClosed;
+        private boolean drainingCleanup;
+        private boolean cleanupFailureAccounted;
+        private String cleanupStage = CleanupRecovery.STAGE_DRAIN_IO;
         private final Map<ChunkPos, ListTag> sourceEntities = new LinkedHashMap<>();
         private final Map<ChunkPos, CompoundTag> sourcePoi = new LinkedHashMap<>();
         /** 探针：写 staging 时的源区块 tag（diff 排查摘要不一致）。 */
@@ -1654,7 +1852,19 @@ public final class EvaluationCloneManager {
             this.ownsStaging = ownsStaging;
         }
 
+        private CleanupFutures.Observation observeIo() {
+            return CleanupFutures.inspect(sourceFuture, tagFuture, storedFuture, writeFuture, auxiliaryWriteFuture);
+        }
+
         private void clearOperation() {
+            CleanupFutures.Observation observed = observeIo();
+            for (RuntimeException failure : observed.failures()) {
+                EvaluationCriticalJournal.rethrowIfPersistenceFailure(failure);
+            }
+            if (!observed.settled()) {
+                throw new IllegalStateException("不能遗失尚未静止的评估 IO");
+            }
+            if (observed.failure() != null && !cleanupFailureAccounted) throw observed.failure();
             operation = Operation.NONE;
             chunk = null;
             sourceFuture = null;

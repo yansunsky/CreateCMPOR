@@ -100,8 +100,11 @@ if (providers.gradleProperty('riskValidation').isPresent()) {
         riskGameTest {
             type = 'gameTestServer'
             sourceSet = sourceSets.gameTest
-            gameDirectory = layout.buildDirectory.dir('acceptance-0514/server').get().asFile
+            gameDirectory = file(providers.gradleProperty('riskRunDirectory')
+                    .getOrElse('build/acceptance-0515/server'))
             systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+            systemProperty 'createcmpor.cleanupRestartPhase', providers.gradleProperty('cleanupRestartPhase').getOrElse('roundtrip')
+            systemProperty 'createcmpor.riskTestControl', providers.gradleProperty('riskTestControl').getOrElse('false')
         }
     }
 }
@@ -189,6 +192,24 @@ tasks.register('verifyBoundaryAudit', JavaExec) {
     }
 }
 
+tasks.register('verifyCleanupRecovery', JavaExec) {
+    group = 'verification'
+    description = 'Verifies persistent per-target cleanup budgets and manifest recovery data.'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.yansunsky.createcmpor.evaluation.CleanupRecoveryTest'
+    workingDir = layout.buildDirectory.get().asFile
+}
+
+tasks.register('verifyCleanupFutures', JavaExec) {
+    group = 'verification'
+    description = 'Verifies owned cleanup futures retain pending and fatal results.'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.yansunsky.createcmpor.evaluation.CleanupFuturesTest'
+    workingDir = layout.buildDirectory.get().asFile
+}
+
 tasks.register('verifyVirtualMachineErrors', JavaExec) {
     group = 'verification'
     description = 'Checks fatal cause propagation and mixed CompletableFuture failures without a world.'
@@ -237,7 +258,8 @@ tasks.named('check') {
     dependsOn tasks.named('verifyObservationSessionBinding'), tasks.named('verifyIoExtensionCapabilityWiring'),
             tasks.named('verifyCleanupProgress'), tasks.named('verifyRoomProjection'),
             tasks.named('verifyBoundaryAudit'), tasks.named('verifyVirtualMachineErrors'),
-            tasks.named('verifyFatalErrorWiring'), tasks.named('verifyFatalCallback')
+            tasks.named('verifyFatalErrorWiring'), tasks.named('verifyFatalCallback'),
+            tasks.named('verifyCleanupRecovery'), tasks.named('verifyCleanupFutures')
 }
 
 // 处理 templates 中的 neoforge.mods.toml 占位符

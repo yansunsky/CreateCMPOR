@@ -1,6 +1,7 @@
 package com.yansunsky.createcmpor.evaluation;
 
 import com.yansunsky.createcmpor.CreateCMPOR;
+import com.yansunsky.createcmpor.util.VirtualMachineErrors;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
@@ -37,6 +38,8 @@ public final class EvaluationSavedData extends SavedData {
                 EvaluationSession session = EvaluationSession.load(sessionTags.getCompound(index), registries);
                 data.sessions.put(session.id(), session);
             } catch (RuntimeException exception) {
+                VirtualMachineErrors.rethrowIfPresent(exception);
+                EvaluationCriticalJournal.rethrowIfPersistenceFailure(exception);
                 data.failedSessionTags.add(sessionTags.getCompound(index).copy());
                 CreateCMPOR.LOGGER.error("无法读取评估会话 {}，原始记录已保留在 recovery_failed_sessions", index, exception);
             }
@@ -72,7 +75,9 @@ public final class EvaluationSavedData extends SavedData {
             if (!session.hasPhase4Manifest()) {
                 throw new IllegalArgumentException("关键 journal 包含非 Phase 4 会话");
             }
-            criticalById.put(session.id(), session);
+            if (criticalById.put(session.id(), session) != null) {
+                throw new IllegalArgumentException("关键 journal 包含重复会话 ID");
+            }
         }
         boolean hasSavedPhase4 = sessions.values().stream().anyMatch(EvaluationSession::hasPhase4Manifest);
         if (!journalExists && hasSavedPhase4) {
