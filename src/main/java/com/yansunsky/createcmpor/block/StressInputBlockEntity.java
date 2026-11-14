@@ -8,6 +8,7 @@ import com.simibubi.create.foundation.blockEntity.behaviour.BlockEntityBehaviour
 import com.simibubi.create.foundation.blockEntity.behaviour.ValueBoxTransform;
 import com.simibubi.create.foundation.utility.CreateLang;
 import com.yansunsky.createcmpor.CreateCMPOR;
+import com.yansunsky.createcmpor.client.StressInputParticles;
 import com.yansunsky.createcmpor.init.ModBlockEntities;
 import com.yansunsky.createcmpor.stress.StressEvaluationRegistry;
 import net.createmod.catnip.math.AngleHelper;
@@ -88,11 +89,21 @@ public class StressInputBlockEntity extends GeneratingKineticBlockEntity {
         return convertToDirection(generatedSpeed.getValue(), getBlockState().getValue(StressInputBlock.FACING));
     }
 
+    /** Client direction preview only; this does not generate rotation or capacity. */
+    public float getDirectionPreviewSpeed() {
+        return isActive() ? getSpeed()
+                : convertToDirection(generatedSpeed.getValue(), getBlockState().getValue(StressInputBlock.FACING));
+    }
+
     @Override
     public void tick() {
         super.tick();
-        if (level == null || level.isClientSide())
+        if (level == null)
             return;
+        if (level.isClientSide()) {
+            StressInputParticles.tick(this);
+            return;
+        }
         if (!isActive() || roomCode == null)
             return;
         // Phase 1 已剥离旧外部评估主线，不再查询旧评估注册表。

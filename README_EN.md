@@ -2,7 +2,15 @@
 
 > Create × CompactMachines: Parallel Room Evaluation System
 > Minecraft 1.21.1 · NeoForge 21.1.x · Create 6.0.10-281 · CompactMachines 7.0.81
-> Current version: **0.5.15**
+> Current version: **0.5.16**
+
+## 0.5.16 Stress Input Direction and Particles (Client Acceptance Pending)
+
+- Placement next to a shaft now points the single output towards that shaft. Free placement and sneaking follow Create's creative motor controls.
+- Within 16 blocks, wearing engineer's goggles emits direction indicators every 20 ticks. Inactive inputs preview the configured direction while generating no rotation; active inputs use their actual speed. A zero setting produces no inactive preview.
+- Removing goggles stops new emissions. Existing Create particles fade naturally over 10–41 ticks, about two seconds.
+- Forced offline checks and all 18 isolated server GameTests passed. A control build with the original placement and an incorrect preview source failed all three new tests as expected. Particle appearance and density still need client acceptance.
+- UI coordinates and textures are unchanged, pending the player's screenshots. [Implementation and acceptance record (Chinese)](docs/78-0.5.16-应力输入方向与粒子验证.md).
 
 ## 0.5.15 Cleanup Recovery
 

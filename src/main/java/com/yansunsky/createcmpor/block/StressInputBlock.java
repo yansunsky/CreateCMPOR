@@ -7,6 +7,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LevelReader;
 import net.minecraft.world.level.block.Block;
@@ -43,6 +44,15 @@ public class StressInputBlock extends DirectionalKineticBlock implements IBE<Str
     protected void createBlockStateDefinition(StateDefinition.Builder<Block, BlockState> builder) {
         super.createBlockStateDefinition(builder);
         builder.add(ACTIVE);
+    }
+
+    @Override
+    public BlockState getStateForPlacement(BlockPlaceContext context) {
+        Direction preferred = getPreferredFacing(context);
+        if (context.getPlayer() != null && context.getPlayer().isShiftKeyDown() || preferred == null)
+            return super.getStateForPlacement(context);
+        // Like Create's creative motor, the single output shaft must face the neighbouring shaft.
+        return defaultBlockState().setValue(FACING, preferred);
     }
 
     @Override
