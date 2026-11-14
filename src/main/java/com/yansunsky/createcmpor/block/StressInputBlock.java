@@ -1,5 +1,6 @@
 package com.yansunsky.createcmpor.block;
 
+import com.simibubi.create.AllShapes;
 import com.yansunsky.createcmpor.init.ModBlockEntities;
 import com.simibubi.create.content.kinetics.base.DirectionalKineticBlock;
 import com.simibubi.create.foundation.block.IBE;
@@ -8,6 +9,7 @@ import net.minecraft.core.Direction;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.context.BlockPlaceContext;
+import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LevelReader;
 import net.minecraft.world.level.block.Block;
@@ -17,6 +19,8 @@ import net.minecraft.world.level.block.state.StateDefinition;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.state.properties.BooleanProperty;
 import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.shapes.CollisionContext;
+import net.minecraft.world.phys.shapes.VoxelShape;
 
 /**
  * 应力输入方块（放置于压缩空间内部）。
@@ -38,6 +42,11 @@ public class StressInputBlock extends DirectionalKineticBlock implements IBE<Str
     public StressInputBlock(Properties properties) {
         super(properties);
         registerDefaultState(defaultBlockState().setValue(ACTIVE, false));
+    }
+
+    @Override
+    public VoxelShape getShape(BlockState state, BlockGetter level, BlockPos pos, CollisionContext context) {
+        return AllShapes.MOTOR_BLOCK.get(state.getValue(FACING));
     }
 
     @Override

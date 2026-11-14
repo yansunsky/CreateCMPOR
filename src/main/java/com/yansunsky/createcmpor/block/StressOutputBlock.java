@@ -1,5 +1,6 @@
 package com.yansunsky.createcmpor.block;
 
+import com.simibubi.create.content.kinetics.gauge.GaugeBlock;
 import com.yansunsky.createcmpor.init.ModBlockEntities;
 import com.simibubi.create.content.kinetics.base.DirectionalKineticBlock;
 import com.simibubi.create.foundation.block.IBE;
@@ -7,6 +8,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LevelReader;
 import net.minecraft.world.level.block.Block;
@@ -16,6 +18,8 @@ import net.minecraft.world.level.block.state.StateDefinition;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.state.properties.BooleanProperty;
 import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.shapes.CollisionContext;
+import net.minecraft.world.phys.shapes.VoxelShape;
 
 /**
  * 应力输出方块（放置于压缩空间内部）。
@@ -38,6 +42,20 @@ public class StressOutputBlock extends DirectionalKineticBlock implements IBE<St
     public StressOutputBlock(Properties properties) {
         super(properties);
         registerDefaultState(defaultBlockState().setValue(ACTIVE, false));
+    }
+
+    @Override
+    public VoxelShape getShape(BlockState state, BlockGetter level, BlockPos pos, CollisionContext context) {
+        Direction shaft = state.getValue(FACING);
+        // Our FACING is the shaft axis; Create's gauge FACING is the panel normal.
+        // Match the existing gauge/base and gauge/base_wall blockstate rotations.
+        Direction panel = switch (shaft) {
+            case DOWN, EAST -> Direction.SOUTH;
+            case UP, WEST -> Direction.NORTH;
+            case NORTH -> Direction.EAST;
+            case SOUTH -> Direction.WEST;
+        };
+        return GaugeBlock.GAUGE.get(panel, shaft.getAxis() == Direction.Axis.X);
     }
 
     @Override
