@@ -15,15 +15,13 @@
 
 Automated checks and all **21 isolated server GameTests passed**, covering six directions, active/inactive states, and 40 oblique input-control rays. Particle appearance and actual mouse dragging still need in-game client verification.
 
-[Release notes](docs/80-CHANGELOG-0.5.16-0.5.17-EN.md) · [0.5.16 implementation and validation (Chinese)](docs/78-0.5.16-应力输入方向与粒子验证.md) · [0.5.17 fix and validation (Chinese)](docs/79-0.5.17-应力方块碰撞与滑块命中验证.md)
-
 ## 0.5.15 Cleanup Recovery
 
 - Each cleanup target has a shared limit of three retryable failures, with 20/40-tick backoff before a persistent block. Room responsibility is retained; active chunks are never force-deleted after a timeout.
 - Waiting for idle chunks or pending IO consumes no failure budget. A failing lane does not stop healthy lanes.
 - After fixing the cause, a permission-level-2 administrator can run `/ccmpor evaluation resume <session UUID>`. The entire batch commits together; persistence failure retains the original budgets.
 - Two separate isolated GameTest processes each passed all 15 required tests, including blocked-state recovery after restart and the real resume command. Full CM cloning, real player tickets, and logistics across ticks still require further validation.
-- [Fix and validation record (Chinese)](docs/76-0.5.15-清理有界恢复与重启验证.md); includes the earlier [0.5.13 room-boundary fix](docs/74-0.5.13-房间边界修复与验证.md) and [0.5.14 fatal-error propagation](docs/75-0.5.14-致命异常传播与隔离验证.md).
+- Also includes the 0.5.13 room-boundary and 0.5.14 fatal-error propagation fixes.
 
 ## 0.5.12 Fixes
 
@@ -31,7 +29,6 @@ Automated checks and all **21 isolated server GameTests passed**, covering six d
 - Serial branch transitions, solidification, rollback and exception cleanup release observers by session footprint; cleanup also rejects new arrivals and removes unowned players that can actually hold target chunk tickets.
 - Nearby observers bound to another live session are preserved; they exit only when occupying the exact manifest chunk being cleaned and that chunk is not owned by their session.
 - Dependency-free rule checks cover unique session/lane resolution, fail-closed ambiguity, legacy/cross-session ownership, ticket distance and spectator gamerule behavior. Real player-ticket behavior still requires isolated-server validation.
-
 
 ## Introduction
 
@@ -153,7 +150,6 @@ A solidified **Factory Block draws the whole production line inside itself as a 
 | `purificationWhitelist` | Create logistics/processing buffers | Block IDs cleared in WHITELIST mode |
 | `purificationBlacklist` | `[]` | Block IDs exempted from clearing in BLACKLIST mode |
 | `purificationFallbackOnContraption` | `true` | Fall back to a normal evaluation when a moving structure is detected |
-
 
 ### Miniature Preview (0.4.0+; KB values are NBT sizes)
 
