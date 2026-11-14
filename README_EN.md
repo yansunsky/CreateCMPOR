@@ -1,23 +1,21 @@
 # CreateCMPOR
 
+[中文](README.md) | **English**
+
 > Create × CompactMachines: Parallel Room Evaluation System
 > Minecraft 1.21.1 · NeoForge 21.1.x · Create 6.0.10-281 · CompactMachines 7.0.81
 > Current version: **0.5.17**
 
-## 0.5.17 Stress Block Shapes and Speed-Control Hits (Client Acceptance Pending)
+## Recent Changes (0.5.16–0.5.17)
 
-- The reported UI offset was caused by missing outline/collision shapes on both stress blocks. UI coordinates are unchanged.
-- Stress input now uses the creative motor's directional shape, restoring the horizontal standing height to `13/16` of a block. Stress output uses the gauge shape rotated to its existing model.
-- Forced offline checks and all 21 isolated server GameTests passed, covering six directions and both active states for each block, plus 40 oblique input-control rays. Restoring the old full-cube shapes failed all three new tests as expected.
-- Models, textures, and speed-control positions are retained. Output-stress display and possible model/texture changes are tracked separately. [Fix, verification, and client acceptance checklist (Chinese)](docs/79-0.5.17-应力方块碰撞与滑块命中验证.md).
+- Fixed reversed stress input placement when connecting to an existing shaft. Normal placement and sneaking follow Create's creative motor controls.
+- Stress inputs continuously show rotation-direction indicators while wearing Engineer's Goggles within 16 blocks. Inactive inputs preview the configured direction without generating power; active inputs show their actual direction. Existing particles fade naturally after removing goggles.
+- Corrected stress input and output collision and selection shapes to match their models, improving input speed-control hits from oblique side and top angles.
+- Horizontal stress inputs now have the same `13/16`-block standing height as creative motors. UI layout, models, and textures are unchanged.
 
-## 0.5.16 Stress Input Direction and Particles (Client Acceptance Pending)
+Automated checks and all **21 isolated server GameTests passed**, covering six directions, active/inactive states, and 40 oblique input-control rays. Particle appearance and actual mouse dragging still need in-game client verification.
 
-- Placement next to a shaft now points the single output towards that shaft. Free placement and sneaking follow Create's creative motor controls.
-- Within 16 blocks, wearing engineer's goggles emits direction indicators every 20 ticks. Inactive inputs preview the configured direction while generating no rotation; active inputs use their actual speed. A zero setting produces no inactive preview.
-- Removing goggles stops new emissions. Existing Create particles fade naturally over 10–41 ticks, about two seconds.
-- Forced offline checks and all 18 isolated server GameTests passed. A control build with the original placement and an incorrect preview source failed all three new tests as expected. Particle appearance and density still need client acceptance.
-- This version retained UI coordinates and textures; subsequent screenshots identified a shape issue, fixed in 0.5.17. [Implementation and acceptance record (Chinese)](docs/78-0.5.16-应力输入方向与粒子验证.md).
+[Release notes](docs/80-CHANGELOG-0.5.16-0.5.17-EN.md) · [0.5.16 implementation and validation (Chinese)](docs/78-0.5.16-应力输入方向与粒子验证.md) · [0.5.17 fix and validation (Chinese)](docs/79-0.5.17-应力方块碰撞与滑块命中验证.md)
 
 ## 0.5.15 Cleanup Recovery
 
